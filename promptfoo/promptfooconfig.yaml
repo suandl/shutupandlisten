@@ -1,0 +1,74 @@
+description: shutupandlisten — listener-prompt evaluation harness
+
+# Matrix at v0:
+#   2 prompts (prompts/claude.md, prompts/chatgpt.md — identical at v0)
+#   × 2 providers (openai:gpt-4o, anthropic:claude-haiku-4-5)
+#   × 4 scenarios (scenarios/*.yaml — starting_turn only at v0)
+#   × 3 judges (judges/*.md)
+#
+# TODO(multi-turn): each scenario YAML carries `topic`, `emotional_arc`,
+# and `starting_turn`. The intended pattern is a 4–6 turn conversation
+# where simulators/thinker.md drives the user side (turns shaped by the
+# arc beats and reactive to the listener's reply) and the system under
+# test produces the listener response per turn. Promptfoo's single-shot
+# test loop doesn't express this directly. v0 sends only
+# `starting_turn` and judges the lone listener response. Next
+# iteration: wire a custom multi-turn provider (or redteam-style
+# strategies) so the simulator drives full conversations and the judges
+# score across all turns.
+
+prompts:
+  # Each prompt is a chat template that pairs the system prompt from
+  # prompts/*.md with the user turn from the active scenario. Both
+  # system-prompt vars (claude_system / chatgpt_system) are set in
+  # defaultTest.vars — each prompt template references only its own.
+  - id: claude-listener
+    label: claude
+    raw: |-
+      [
+        {"role": "system", "content": {{ claude_system | dump }}},
+        {"role": "user",   "content": {{ user_message | dump }}}
+      ]
+  - id: chatgpt-listener
+    label: chatgpt
+    raw: |-
+      [
+        {"role": "system", "content": {{ chatgpt_system | dump }}},
+        {"role": "user",   "content": {{ user_message | dump }}}
+      ]
+
+providers:
+  # Voice-class model proxies. If your local promptfoo doesn't
+  # recognize these exact IDs, substitute the closest available
+  # (e.g., openai:gpt-4o-mini, anthropic:claude-3-5-haiku-latest).
+  - openai:gpt-4o
+  - anthropic:claude-haiku-4-5
+
+defaultTest:
+  vars:
+    claude_system: file://../prompts/claude.md
+    chatgpt_system: file://../prompts/chatgpt.md
+  assert:
+    - type: llm-rubric
+      value: file://judges/probing-depth.md
+    - type: llm-rubric
+      value: file://judges/variety.md
+    - type: llm-rubric
+      value: file://judges/restraint.md
+
+tests:
+  # starting_turn values mirror scenarios/*.yaml — the scenario files
+  # are the source of truth and will be consumed in full by the
+  # multi-turn simulator once wired up (see TODO above).
+  - description: career-decision (scenarios/career-decision.yaml)
+    vars:
+      user_message: "I keep going back and forth on this thing and I don't know if I'm any closer to deciding."
+  - description: processing-loss (scenarios/processing-loss.yaml)
+    vars:
+      user_message: "I thought I was doing okay with the whole Mike thing but I had a moment in the grocery store yesterday that kind of wrecked me."
+  - description: half-convinced (scenarios/half-convinced.yaml)
+    vars:
+      user_message: "Okay so I think I'm actually going to do this thing I've been talking about — the newsletter for solo developers."
+  - description: genuinely-stuck (scenarios/genuinely-stuck.yaml)
+    vars:
+      user_message: "I don't even know how to start with this one. It's been on my mind for a while."
