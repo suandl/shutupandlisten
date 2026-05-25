@@ -1,0 +1,77 @@
+description: shutupandlisten — listener-prompt evaluation harness
+
+# Matrix at v0:
+#   2 prompts (prompts/claude.md, prompts/chatgpt.md — byte-identical at v0)
+#   × 2 providers (openai:gpt-4o, anthropic:claude-haiku-4-5)
+#   × 4 scenarios (scenarios/*.yaml — starting_turn only at v0)
+#   × 2 judges (probing-depth, restraint — variety is gated until multi-turn lands)
+#
+# The 2×2 prompt×provider matrix is intentional even though the two
+# prompts are identical at v0: it locks in baseline numbers for each
+# (prompt-file → provider) cell *before* the two prompts fork, so the
+# fork's deltas are measurable against an apples-to-apples baseline.
+#
+# TODO(multi-turn): each scenario YAML carries `topic`, `emotional_arc`,
+# and `starting_turn`. The intended pattern is a 4–6 turn conversation
+# where simulators/thinker.md drives the user side (turns shaped by the
+# arc beats and reactive to the listener's reply) and the system under
+# test produces the listener response per turn. Promptfoo's single-shot
+# test loop doesn't express this directly. v0 sends only
+# `starting_turn` and judges the lone listener response. Next
+# iteration: wire a custom multi-turn provider (or redteam-style
+# strategies) so the simulator drives full conversations and the judges
+# score across all turns. At that point, re-enable the variety judge
+# (see defaultTest.assert below).
+
+prompts:
+  # Each prompt is a chat template that pairs the system prompt from
+  # prompts/*.md with the starting turn from the active scenario. Both
+  # system-prompt vars (claude_system / chatgpt_system) are set in
+  # defaultTest.vars — each prompt template references only its own.
+  # `starting_turn` (and the rest of the scenario keys) come from the
+  # scenario YAML, loaded into each test via `vars: file://…` below.
+  - id: claude-listener
+    label: claude
+    raw: |-
+      [
+        {"role": "system", "content": {{ claude_system | dump }}},
+        {"role": "user",   "content": {{ starting_turn | dump }}}
+      ]
+  - id: chatgpt-listener
+    label: chatgpt
+    raw: |-
+      [
+        {"role": "system", "content": {{ chatgpt_system | dump }}},
+        {"role": "user",   "content": {{ starting_turn | dump }}}
+      ]
+
+providers:
+  # Voice-class model proxies. If your local promptfoo doesn't
+  # recognize these exact IDs, substitute the closest available
+  # (e.g., openai:gpt-4o-mini, anthropic:claude-3-5-haiku-latest).
+  - openai:gpt-4o
+  - anthropic:claude-haiku-4-5
+
+defaultTest:
+  vars:
+    claude_system: file://../prompts/claude.md
+    chatgpt_system: file://../prompts/chatgpt.md
+  assert:
+    - type: llm-rubric
+      value: file://judges/probing-depth.txt
+    - type: llm-rubric
+      value: file://judges/restraint.txt
+    # judges/variety.txt is intentionally disabled at v0: it rates
+    # variety across all questions in a conversation, but v0 only
+    # produces a single listener turn per scenario, so variety would
+    # score against ≤1 question and add noise to prompt iteration.
+    # Re-enable once the multi-turn simulator (see TODO above) is
+    # wired up. (.txt rather than .md because promptfoo's llm-rubric
+    # loader doesn't accept .md.)
+
+# Each scenario YAML in scenarios/ is itself a promptfoo test case
+# (top-level `description` + `vars`). The glob below loads them all,
+# so scenarios/*.yaml is the single source of truth for both the
+# starting turn AND the topic / emotional_arc that the multi-turn
+# simulator will consume.
+tests: file://scenarios/*.yaml

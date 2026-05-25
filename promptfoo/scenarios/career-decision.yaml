@@ -1,0 +1,14 @@
+description: career-decision
+# topic + emotional_arc live under `metadata` rather than `vars` so
+# promptfoo doesn't parametrically expand the arc list into one test
+# per beat. They'll be consumed by the multi-turn simulator once it's
+# wired up; for v0 only `starting_turn` is read by the prompt template.
+metadata:
+  topic: weighing leaving a stable senior engineering role at a midsize company for a riskier early-stage founding-engineer offer
+  emotional_arc:
+    - cautious enthusiasm — naming the appeal of the new role
+    - drift into anxiety — money, status, what their partner would say
+    - a buried doubt about whether the current role is really as safe as it looks
+    - circling back, not landing
+vars:
+  starting_turn: "I keep going back and forth on this thing and I don't know if I'm any closer to deciding."

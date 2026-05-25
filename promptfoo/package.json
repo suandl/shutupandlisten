@@ -1,0 +1,14 @@
+{
+  "name": "shutupandlisten-promptfoo",
+  "private": true,
+  "description": "promptfoo evaluation harness for the shutupandlisten prompts",
+  "scripts": {
+    "validate": "promptfoo validate",
+    "eval": "promptfoo eval --env-file ../.env.local",
+    "eval:smoke": "promptfoo eval --env-file ../.env.local --filter-pattern career-decision --filter-providers openai --filter-prompts claude",
+    "view": "promptfoo view"
+  },
+  "devDependencies": {
+    "promptfoo": "^0.121.12"
+  }
+}
