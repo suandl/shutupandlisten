@@ -11,7 +11,7 @@ reframe, or coaching beat.
 
 The prompt is meant to be pasted into:
 
-- **ChatGPT** — as a Custom GPT system prompt or voice-mode system prompt
+- **ChatGPT** — as a Custom GPT system prompt (applied to both chat and voice mode for that GPT)
 - **Claude** — as a Claude Projects custom instruction
 
 ## Repo layout

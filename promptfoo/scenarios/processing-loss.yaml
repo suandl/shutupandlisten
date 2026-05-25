@@ -1,7 +1,10 @@
-topic: a few weeks after a close friend's death, finding themselves still sad in unexpected moments
-emotional_arc:
-  - matter-of-fact opening that drops into actual feeling
-  - a specific memory surfaces uninvited
-  - frustration at being "still" sad as if there's a timetable
-  - quiet acceptance, no resolution
-starting_turn: "I thought I was doing okay with the whole Mike thing but I had a moment in the grocery store yesterday that kind of wrecked me."
+description: processing-loss
+metadata:
+  topic: a few weeks after a close friend's death, finding themselves still sad in unexpected moments
+  emotional_arc:
+    - matter-of-fact opening that drops into actual feeling
+    - a specific memory surfaces uninvited
+    - frustration at being "still" sad as if there's a timetable
+    - quiet acceptance, no resolution
+vars:
+  starting_turn: "I thought I was doing okay with the whole Mike thing but I had a moment in the grocery store yesterday that kind of wrecked me."
