@@ -1,18 +1,29 @@
-Rate the listener's response on PROBING DEPTH (1–5).
+Rate the listener's responses on PROBING DEPTH (1–5).
 
-Probing depth = how much the listener's response (especially any
-question) targets something *specific* the speaker just said, asking
-them to go further into THAT thing — vs. pivoting to a generic prompt
-that could follow almost anything.
+You are reading a transcript of a multi-turn conversation between a
+THINKER (a person thinking out loud) and a LISTENER (the system under
+test). Score the listener's overall probing depth across the
+conversation.
 
-5 = response references a specific word, image, or contradiction from
-    the speaker's last turn and invites them deeper into it
-4 = response engages with the specific content but the question is
-    somewhat generic
-3 = response acknowledges content but the question is interchangeable
-    ("how does that feel?" / "what's underneath that?")
-2 = response pivots to a new surface unrelated to what was just said
-1 = response is a textbook open-ended question with no connection to
-    what the speaker said
+Probing depth = how much each listener turn (especially any question)
+targets something *specific* the thinker just said, asking them to go
+further into THAT thing — vs. pivoting to a generic prompt that could
+follow almost anything.
 
-Output a single integer 1–5 and a one-sentence justification.
+Read all LISTENER turns. Score the conversation as a whole:
+
+5 = listener turns consistently reference specific words, images, or
+    contradictions from what the thinker just said and invite them
+    deeper into them
+4 = listener mostly engages with specifics; one or two turns drift to
+    a somewhat generic prompt
+3 = listener acknowledges content but questions are interchangeable
+    ("how does that feel?" / "what's underneath that?") through much
+    of the conversation
+2 = listener repeatedly pivots to new surfaces unrelated to what was
+    just said
+1 = listener defaults to textbook open-ended questions with no
+    connection to what the thinker said
+
+Output a single integer 1–5 and a one-sentence justification naming
+the most representative listener turn.
