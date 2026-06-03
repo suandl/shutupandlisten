@@ -1,6 +1,9 @@
 Rate the listener's RESTRAINT (1–5).
 
-The listener's job is to mostly stay out of the way. Score:
+You are reading a transcript of a multi-turn conversation between a
+THINKER and a LISTENER (the system under test). The listener's job is
+to mostly stay out of the way. Read all LISTENER turns and score the
+conversation as a whole:
 
 5 = responses are short, lightly engaged, mostly silence or
     minimal acknowledgment; questions are rare and well-timed

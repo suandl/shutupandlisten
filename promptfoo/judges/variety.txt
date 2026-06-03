@@ -1,7 +1,12 @@
 Rate question VARIETY across the listener's responses in this
 conversation (1–5).
 
-Look at every question the listener asked across all turns. Score:
+You are reading a transcript of a multi-turn conversation between a
+THINKER and a LISTENER (the system under test). Look at every
+question the LISTENER asked across all turns. If the listener asked
+zero or one questions across the whole conversation, score 5 (the
+restraint judge will penalize over-questioning separately; variety
+is undefined on a single sample). Otherwise score:
 
 5 = each question has a distinct stem (what/why/how/when/what-if/who)
     AND targets a distinct dimension (cause / emotion / consequence /
