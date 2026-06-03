@@ -5,9 +5,49 @@ How to run and iterate on the prompts in this repo.
 ## Prerequisites
 
 - Node 18+
-- `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` in a `.env.local` file at
-  the repo root (gitignored). The scripts below pass it to promptfoo
-  via `--env-file ../.env.local`.
+- API keys, via either of:
+  - **1Password (default, nothing on disk):** the [1Password CLI](https://developer.1password.com/docs/cli/)
+    (`op`) plus a service-account token (see below). When no
+    `.env.local` exists, the npm scripts run promptfoo through
+    `scripts/eval-keys.sh`, which uses `op run` to resolve the
+    `op://` references in `.env.op` and inject `OPENAI_API_KEY` /
+    `ANTHROPIC_API_KEY` into the promptfoo process **at use-time,
+    in-memory** — no plaintext key ever lands on disk.
+  - **Personal keys (local dev):** `OPENAI_API_KEY` and
+    `ANTHROPIC_API_KEY` in a `.env.local` file at the repo root
+    (gitignored). If `.env.local` exists, the scripts pass it to
+    promptfoo via `--env-file ../.env.local` exactly as before.
+
+### How key injection works (1Password path)
+
+`promptfoo/.env.op` is committed — it contains only `op://` *references*
+(vault/item/field paths), not secrets, so it is safe in git.
+`scripts/eval-keys.sh <command>` authenticates `op` and runs
+`op run --env-file=promptfoo/.env.op -- <command>`, which resolves the
+references and exports the real keys into the child process environment
+only. Auth comes from:
+
+- `OP_SERVICE_ACCOUNT_TOKEN`, if already set in the environment, or
+- the token file `~/.config/gascity/op-sa-token` (mode 0600; override
+  the path with `OP_SA_TOKEN_FILE`).
+
+**CI variant:** store the service-account token as a repo secret and
+expose it as `OP_SERVICE_ACCOUNT_TOKEN` in the workflow env — the
+wrapper honors a pre-set token and never needs the token file:
+
+```yaml
+env:
+  OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+```
+
+You can also invoke the wrapper directly, from any directory:
+
+```sh
+scripts/eval-keys.sh npx promptfoo eval   # run from promptfoo/ as ../scripts/...
+```
+
+(promptfoo itself still resolves `promptfooconfig.yaml` from the
+current directory, so run eval commands from `promptfoo/`.)
 
 ## Setup (one-time)
 
