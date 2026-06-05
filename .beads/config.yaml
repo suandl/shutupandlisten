@@ -1,0 +1,11 @@
+issue_prefix: su
+issue-prefix: su
+dolt.auto-start: false
+export.auto: false
+gc.endpoint_origin: inherited_city
+gc.endpoint_status: verified
+sync.remote: "git+ssh://git@github.com/suandl/shutupandlisten.git"
+types.custom: molecule,convoy,message,event,gate,merge-request,agent,role,rig,session,spec,convergence,step
+dolt.auto-commit: "batch"
+dolt:
+  disable-event-flush: true
