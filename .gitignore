@@ -15,3 +15,15 @@ output/
 .env
 .env.local
 *.log
+
+# Gas City / Beads runtime
+# When loomington uses this repo as a `gc` rig, `bd`/`gc` regenerate
+# machine-local runtime state under .beads/ (Dolt server state, ports, locks,
+# routing, backups, per-host identity). Ignore it so a rig checkout stays clean
+# and fast-forwards without manual reset; keep the product-canonical config
+# tracked. Mirrors signal-loom; replaces the per-machine .git/info/exclude
+# band-aid (see bead su-7dn, reconcile tk-sdz8). See .beads/.gitignore for the
+# per-file rationale.
+.beads/*
+!.beads/.gitignore
+!.beads/config.yaml
