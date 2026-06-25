@@ -4,8 +4,8 @@
   "description": "promptfoo evaluation harness for the shutupandlisten prompts",
   "scripts": {
     "validate": "promptfoo validate",
-    "eval": "promptfoo eval --env-file ../.env.local",
-    "eval:smoke": "promptfoo eval --env-file ../.env.local --filter-pattern career-decision --filter-providers openai --filter-prompts claude",
+    "eval": "if [ -f ../.env.local ]; then promptfoo eval --env-file ../.env.local; else ../scripts/eval-keys.sh npx promptfoo eval; fi",
+    "eval:smoke": "if [ -f ../.env.local ]; then promptfoo eval --env-file ../.env.local --filter-pattern career-decision --filter-providers openai --filter-prompts claude; else ../scripts/eval-keys.sh npx promptfoo eval --filter-pattern career-decision --filter-providers openai --filter-prompts claude; fi",
     "view": "promptfoo view"
   },
   "devDependencies": {
