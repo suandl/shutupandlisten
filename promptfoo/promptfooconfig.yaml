@@ -68,6 +68,96 @@ providers:
       maxTurns: 5
       simulatorSystemPath: simulators/thinker.md
 
+  # ---- On-device-class candidates (U2: R2, R10, R11) --------------------
+  # Each candidate is a small instruct model with builds on ALL THREE
+  # runtimes the pipeline targets — Ollama / llama.cpp (this harness),
+  # WebLLM-prebuilt (Rung 1, browser), and MLX (Rung 2, Apple Silicon) — so
+  # the class picked here is runnable on every rung. The availability matrix
+  # is in docs/findings/on-device-text-quality.md.
+  #
+  # The `ollama:` target prefix is deliberately isolated from the pinned
+  # `openai:gpt-4o` simulator and the `llm-rubric` judges, so swapping the
+  # listener never perturbs the thinker or the scorers. Each candidate runs
+  # twice: full-brain (multi-turn.js — the model handles every listener turn)
+  # and reduced-role (reduced-role.js — the rules gate answers hierarchy
+  # levels 1-2 with a no-model ack, escalating to the model only for
+  # substantive turns). Filter to the whole on-device family with
+  # `--filter-providers ollama`.
+  #
+  # The thinker emits clean prose, so these are a CLEAN-TEXT UPPER BOUND
+  # relative to live disfluent STT output (the U2->U5 handoff gap).
+  #
+  # For an OpenAI-compatible local server instead of Ollama (mlx_lm.server,
+  # llama-server), keep targetModel on the `openai:` family and point only
+  # the listener at the server with `targetConfig` — never a global
+  # OPENAI_BASE_URL, which would also hijack the simulator and judges:
+  #     targetModel: openai:chat:<served-model-id>
+  #     targetConfig: { apiBaseUrl: "http://localhost:8080/v1", apiKey: "local" }
+
+  # Llama-3.2-3B-Instruct
+  - id: file://providers/multi-turn.js
+    label: ollama-llama3.2-3b-full
+    config:
+      targetModel: ollama:chat:llama3.2:3b
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+  - id: file://providers/reduced-role.js
+    label: ollama-llama3.2-3b-reduced
+    config:
+      targetModel: ollama:chat:llama3.2:3b
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+
+  # Qwen2.5-3B-Instruct
+  - id: file://providers/multi-turn.js
+    label: ollama-qwen2.5-3b-full
+    config:
+      targetModel: ollama:chat:qwen2.5:3b
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+  - id: file://providers/reduced-role.js
+    label: ollama-qwen2.5-3b-reduced
+    config:
+      targetModel: ollama:chat:qwen2.5:3b
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+
+  # Phi-3.5-mini-instruct (3.8B)
+  - id: file://providers/multi-turn.js
+    label: ollama-phi3.5-full
+    config:
+      targetModel: ollama:chat:phi3.5
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+  - id: file://providers/reduced-role.js
+    label: ollama-phi3.5-reduced
+    config:
+      targetModel: ollama:chat:phi3.5
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+
+  # Gemma-2-2B-it
+  - id: file://providers/multi-turn.js
+    label: ollama-gemma2-2b-full
+    config:
+      targetModel: ollama:chat:gemma2:2b
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+  - id: file://providers/reduced-role.js
+    label: ollama-gemma2-2b-reduced
+    config:
+      targetModel: ollama:chat:gemma2:2b
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+
 defaultTest:
   vars:
     claude_system: file://../prompts/claude.md
