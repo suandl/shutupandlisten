@@ -54,11 +54,20 @@ meaning — use them as written, and map synonyms back to them.
   replies — lowering the quality bar a small, eventually on-device, model must
   clear.
 
+- **patience window** — The load-bearing turn-detection tunable: how long silence
+  must persist before a pause is treated as a finished thought rather than active
+  thinking. Biases the companion toward waiting; most pauses never cross it.
+
 ## Delivery economics
 
 - **the baseline** — The operator's ChatGPT voice + the instructions: the fixed
   reference every candidate is measured against. It already works for daily use,
   so the question is "match or beat it," not "does this work."
+
+- **usefulness bar** — The on-device acceptance reference that replaces a scored
+  comparison to the baseline: a short qualitative rubric of what would make the
+  operator reach for the on-device flow, flaws and all. The question becomes
+  "useful enough?", not "better than the baseline?".
 
 - **off-host** — A delivery whose marginal compute cost the operator does not pay:
   the user's own device runs the models (on-device). The economic endgame,
