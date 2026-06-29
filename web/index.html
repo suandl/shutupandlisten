@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>shutupandlisten — turn detection (U3 timing-only)</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --ink: #e7e9ee;
+        --muted: #9aa3b2;
+        --line: #2a2f3a;
+        --accent: #6ad08a;
+        --warn: #e0b341;
+        --speak: #4aa3ff;
+        --pending: #e0b341;
+        --respond: #b07cff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+      header { padding: 18px 22px; border-bottom: 1px solid var(--line); }
+      header h1 { margin: 0; font-size: 18px; }
+      header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+      .wrap { display: grid; grid-template-columns: 1fr 380px; gap: 16px; padding: 16px 22px; }
+      @media (max-width: 880px) { .wrap { grid-template-columns: 1fr; } }
+      .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+      .panel h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+
+      .modebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+      .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+      .seg button { background: transparent; color: var(--ink); border: 0; padding: 7px 14px; cursor: pointer; }
+      .seg button[aria-pressed="true"] { background: var(--accent); color: #0b0e12; font-weight: 600; }
+      .status { color: var(--muted); font-size: 13px; }
+
+      .stage { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+      .badge {
+        font-size: 26px; font-weight: 700; letter-spacing: 0.02em;
+        padding: 10px 18px; border-radius: 10px; border: 1px solid var(--line);
+        background: #11141a;
+      }
+      .badge[data-state="listening"] { color: var(--muted); }
+      .badge[data-state="speaking"] { color: var(--speak); border-color: var(--speak); }
+      .badge[data-state="pending"] { color: var(--pending); border-color: var(--pending); }
+      .badge[data-state="responding"] { color: var(--respond); border-color: var(--respond); }
+
+      .meta { display: flex; gap: 22px; color: var(--muted); font-size: 13px; }
+      .meta b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+      .patience { width: 100%; }
+      .patience .track { height: 12px; background: #0c0f14; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+      .patience .fill { height: 100%; width: 0%; background: var(--pending); transition: width 90ms linear; }
+      .patience .cap { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+      .respond-ind { display: none; align-items: center; gap: 8px; color: var(--respond); font-weight: 600; }
+      .respond-ind[data-on="true"] { display: inline-flex; }
+      .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--respond); animation: pulse 0.9s infinite; }
+      @keyframes pulse { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+      .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+      .controls button {
+        background: #1d212b; color: var(--ink); border: 1px solid var(--line);
+        border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 13px;
+      }
+      .controls button:hover { border-color: var(--accent); }
+      .controls .hint { color: var(--muted); font-size: 12px; flex-basis: 100%; margin-top: 2px; }
+
+      .knob { margin-bottom: 14px; }
+      .knob label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+      .knob label .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+      .knob input[type="range"] { width: 100%; }
+      .knob .help { color: var(--muted); font-size: 12px; margin-top: 3px; }
+      .knob.toggle label { cursor: pointer; }
+
+      .log { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 280px; overflow-y: auto; }
+      .log div { white-space: pre; border-bottom: 1px solid #1b1f27; padding: 2px 0; }
+      .log .turn-end { color: var(--accent); }
+      .log .turn-start { color: var(--speak); }
+      .log .barge-in { color: var(--warn); }
+      .log .response-start, .log .response-end { color: var(--respond); }
+      .log .in { color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>shutupandlisten — patience-tuned turn detection</h1>
+      <p>U3 timing-only milestone: Web Audio → Silero VAD → silence floor → smart-turn asymmetric veto → stubbed response. No STT/LLM/TTS yet.</p>
+    </header>
+
+    <div class="modebar" style="padding: 0 22px;">
+      <div class="seg" id="mode">
+        <button data-mode="sim" aria-pressed="true">Simulation</button>
+        <button data-mode="mic" aria-pressed="false">Microphone</button>
+      </div>
+      <span class="status" id="source-info">simulation (idle)</span>
+    </div>
+
+    <div class="wrap">
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        <div class="panel">
+          <h2>Stage</h2>
+          <div class="stage">
+            <div class="badge" id="state-badge" data-state="listening">LISTENING</div>
+            <div class="meta">
+              <span>turn <b id="turn-n">0</b></span>
+              <span>verdict <b id="verdict">—</b></span>
+              <span>arm <b id="arm">smart-turn + floor</b></span>
+            </div>
+            <div class="patience">
+              <div class="track"><div class="fill" id="patience-fill"></div></div>
+              <div class="cap" id="patience-cap">patience window idle</div>
+            </div>
+            <div class="respond-ind" id="respond-ind"><span class="dot"></span> companion responding (stubbed)…</div>
+          </div>
+
+          <div class="controls" id="sim-controls"></div>
+          <div class="controls" id="mic-controls" style="display: none;">
+            <button id="mic-start">Start microphone</button>
+            <button id="mic-stop">Stop</button>
+            <span class="hint">Grant mic access, then talk and pause naturally. Tune the knobs and feel the patience. (Models load on first start.)</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Event log</h2>
+          <div class="log" id="log"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Live knobs</h2>
+        <div id="turn-knobs"></div>
+        <h2 style="margin-top: 18px;">VAD knobs (mic only)</h2>
+        <div id="vad-knobs"></div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
