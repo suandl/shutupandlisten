@@ -59,10 +59,17 @@ npm install
 ## Run
 
 ```sh
-npm run eval         # full matrix (all scenarios × providers × prompts)
-npm run eval:smoke   # one scenario × openai × claude-prompt (cheap)
-npm run validate     # schema-check the config without calling APIs
+npm run eval                # full matrix (all scenarios × providers × prompts)
+npm run eval:smoke          # one scenario × openai × claude-prompt (cheap)
+npm run eval:smoke:ondevice # one on-device (Ollama) model × one scenario (needs Ollama)
+npm run validate            # schema-check the config without calling APIs
+npm test                    # gate + banned-phrase-sync unit tests (keyless, no model)
 ```
+
+The on-device-class candidates (full-brain and reduced-role) and the
+runtime they each need are documented in
+[`docs/findings/on-device-text-quality.md`](../docs/findings/on-device-text-quality.md);
+filter the whole on-device family with `--filter-providers ollama`.
 
 ## View results
 
