@@ -147,8 +147,13 @@ async function switchMode(next: 'sim' | 'mic'): Promise<void> {
 
 function wireAudio(src: AudioSource): void {
   src.onEvent = (e: InputEvent) => {
-    if (e.type === 'eou' && typeof e.completionProb === 'number') {
-      verdictEl.textContent = `${e.completionProb >= detector.config.completionThreshold ? 'complete' : 'incomplete'} (${e.completionProb.toFixed(2)})`;
+    if (e.type === 'eou') {
+      // Mic events carry completionProb (thresholded here); sim events carry a
+      // direct verdict. Show whichever is present.
+      verdictEl.textContent =
+        typeof e.completionProb === 'number'
+          ? `${e.completionProb >= detector.config.completionThreshold ? 'complete' : 'incomplete'} (${e.completionProb.toFixed(2)})`
+          : (e.verdict ?? '—');
     }
     logInput(e);
     detector.input(e);
