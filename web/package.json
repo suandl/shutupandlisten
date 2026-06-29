@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Rung 1 in-browser quiet-companion harness — U3 timing-only milestone: VAD + silence floor + smart-turn asymmetric veto.",
+  "description": "Rung 1 in-browser quiet-companion harness — U3 timing (VAD + silence floor + smart-turn asymmetric veto) + U4 on-device STT (Moonshine/Whisper, CPU·WASM) with turn-aligned transcript.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
