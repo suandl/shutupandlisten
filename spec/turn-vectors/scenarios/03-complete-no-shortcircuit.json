@@ -1,0 +1,30 @@
+{
+  "name": "03-complete-no-shortcircuit",
+  "description": "A 'complete' EOU signal during a sub-floor pause does NOT short-circuit the floor. The turn ends at the floor (4000), never at the verdict time (2100).",
+  "knobs": {
+    "silenceFloorMs": 2000,
+    "incompleteExtensionMs": 4000,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1500,
+    "useSmartTurn": true
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 2000, "type": "speech-end" },
+    { "t": 2100, "type": "eou", "verdict": "complete" },
+    { "t": 6000, "type": "tick" }
+  ],
+  "expected": {
+    "turnStartCount": 1,
+    "turnEndCount": 1,
+    "turnEnds": [
+      { "t": 4000, "turn": 1, "reason": "floor" }
+    ],
+    "emit": [
+      { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 4000, "type": "turn-end", "turn": 1, "reason": "floor" },
+      { "t": 4000, "type": "response-start", "turn": 1 },
+      { "t": 5500, "type": "response-end", "turn": 1, "reason": "completed" }
+    ]
+  }
+}

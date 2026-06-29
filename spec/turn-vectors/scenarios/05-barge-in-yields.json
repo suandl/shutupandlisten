@@ -1,0 +1,32 @@
+{
+  "name": "05-barge-in-yields",
+  "description": "Barge-in: the user speaking over a reply yields instantly and returns to listening. The response is cut at the interrupt (4500), not at its natural end (5500); a fresh turn (2) starts.",
+  "knobs": {
+    "silenceFloorMs": 2000,
+    "incompleteExtensionMs": 4000,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1500,
+    "useSmartTurn": true
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 2000, "type": "speech-end" },
+    { "t": 4500, "type": "speech-start" },
+    { "t": 6000, "type": "tick" }
+  ],
+  "expected": {
+    "turnStartCount": 2,
+    "turnEndCount": 1,
+    "turnEnds": [
+      { "t": 4000, "turn": 1, "reason": "floor" }
+    ],
+    "emit": [
+      { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 4000, "type": "turn-end", "turn": 1, "reason": "floor" },
+      { "t": 4000, "type": "response-start", "turn": 1 },
+      { "t": 4500, "type": "barge-in", "turn": 1 },
+      { "t": 4500, "type": "response-end", "turn": 1, "reason": "barge-in" },
+      { "t": 4500, "type": "turn-start", "turn": 2 }
+    ]
+  }
+}
