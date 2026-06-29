@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test 'src/**/*.test.ts'",
-    "test:watch": "node --test --watch 'src/**/*.test.ts'"
+    "test:watch": "node --test --watch 'src/**/*.test.ts'",
+    "measure": "node src/measure.ts"
   },
   "dependencies": {
     "@ricky0123/vad-web": "^0.0.24",

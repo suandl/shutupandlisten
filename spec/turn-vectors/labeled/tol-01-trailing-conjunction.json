@@ -1,0 +1,23 @@
+{
+  "name": "tol-01-trailing-conjunction",
+  "description": "Thinking out loud with one trailing-conjunction pause smart-turn reads as 'incomplete' (\"...the deadline is—\" [1s pause] \"...actually upstream of the convoy\"), then a real end-of-thought. At an 800ms floor the bare floor clips the mid-thought pause; the incomplete veto holds it open.",
+  "knobs": {
+    "silenceFloorMs": 800,
+    "incompleteExtensionMs": 2500,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1200,
+    "useSmartTurn": true
+  },
+  "trueTurnBoundaries": [
+    { "t": 5500, "note": "the one real end-of-thought" }
+  ],
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 2000, "type": "speech-end" },
+    { "t": 2050, "type": "eou", "verdict": "incomplete" },
+    { "t": 3000, "type": "speech-start" },
+    { "t": 5500, "type": "speech-end" },
+    { "t": 5560, "type": "eou", "verdict": "complete" },
+    { "t": 12000, "type": "tick" }
+  ]
+}
