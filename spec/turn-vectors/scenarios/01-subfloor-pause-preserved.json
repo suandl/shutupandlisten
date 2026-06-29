@@ -1,0 +1,26 @@
+{
+  "name": "01-subfloor-pause-preserved",
+  "description": "A pause shorter than the silence floor does not end the turn (thinking-pause preserved). The cardinal-failure guard and the TDD red anchor: a mid-thought pause under the floor must NOT emit an end-of-turn.",
+  "knobs": {
+    "silenceFloorMs": 2000,
+    "incompleteExtensionMs": 4000,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1500,
+    "useSmartTurn": true
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 1200, "type": "speech-end" },
+    { "t": 2000, "type": "speech-start" },
+    { "t": 3500, "type": "speech-end" },
+    { "t": 4500, "type": "tick" }
+  ],
+  "expected": {
+    "turnStartCount": 1,
+    "turnEndCount": 0,
+    "turnEnds": [],
+    "emit": [
+      { "t": 0, "type": "turn-start", "turn": 1 }
+    ]
+  }
+}

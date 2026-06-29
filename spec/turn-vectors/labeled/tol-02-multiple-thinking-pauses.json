@@ -1,0 +1,26 @@
+{
+  "name": "tol-02-multiple-thinking-pauses",
+  "description": "A longer deliberation with two mid-thought pauses, both flagged 'incomplete', before the real end. The bare 800ms floor cuts off twice; smart-turn holds both open and only ends at the genuine finish.",
+  "knobs": {
+    "silenceFloorMs": 800,
+    "incompleteExtensionMs": 2500,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1200,
+    "useSmartTurn": true
+  },
+  "trueTurnBoundaries": [
+    { "t": 7000, "note": "real end after two thinking-pauses" }
+  ],
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 1500, "type": "speech-end" },
+    { "t": 1550, "type": "eou", "verdict": "incomplete" },
+    { "t": 2400, "type": "speech-start" },
+    { "t": 4000, "type": "speech-end" },
+    { "t": 4050, "type": "eou", "verdict": "incomplete" },
+    { "t": 5000, "type": "speech-start" },
+    { "t": 7000, "type": "speech-end" },
+    { "t": 7060, "type": "eou", "verdict": "complete" },
+    { "t": 14000, "type": "tick" }
+  ]
+}

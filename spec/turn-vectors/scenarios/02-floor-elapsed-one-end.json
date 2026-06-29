@@ -1,0 +1,29 @@
+{
+  "name": "02-floor-elapsed-one-end",
+  "description": "Silence past the floor with no 'incomplete' EOU signal emits exactly one end-of-turn, at the floor.",
+  "knobs": {
+    "silenceFloorMs": 2000,
+    "incompleteExtensionMs": 4000,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1500,
+    "useSmartTurn": true
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 2000, "type": "speech-end" },
+    { "t": 8000, "type": "tick" }
+  ],
+  "expected": {
+    "turnStartCount": 1,
+    "turnEndCount": 1,
+    "turnEnds": [
+      { "t": 4000, "turn": 1, "reason": "floor" }
+    ],
+    "emit": [
+      { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 4000, "type": "turn-end", "turn": 1, "reason": "floor" },
+      { "t": 4000, "type": "response-start", "turn": 1 },
+      { "t": 5500, "type": "response-end", "turn": 1, "reason": "completed" }
+    ]
+  }
+}

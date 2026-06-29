@@ -1,0 +1,23 @@
+{
+  "name": "shutupandlisten-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Rung 1 in-browser quiet-companion harness — U3 timing-only milestone: VAD + silence floor + smart-turn asymmetric veto.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test 'src/**/*.test.ts'",
+    "test:watch": "node --test --watch 'src/**/*.test.ts'",
+    "measure": "node src/measure.ts"
+  },
+  "dependencies": {
+    "@ricky0123/vad-web": "^0.0.24",
+    "onnxruntime-web": "^1.20.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

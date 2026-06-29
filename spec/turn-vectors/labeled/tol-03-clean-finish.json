@@ -1,0 +1,20 @@
+{
+  "name": "tol-03-clean-finish",
+  "description": "Control: a single utterance with no mid-thought pause, ending cleanly (smart-turn 'complete'). Both arms should detect the end correctly with no error — confirms the veto does not regress a clean finish.",
+  "knobs": {
+    "silenceFloorMs": 800,
+    "incompleteExtensionMs": 2500,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1200,
+    "useSmartTurn": true
+  },
+  "trueTurnBoundaries": [
+    { "t": 3000, "note": "clean end-of-thought" }
+  ],
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 3000, "type": "speech-end" },
+    { "t": 3060, "type": "eou", "verdict": "complete" },
+    { "t": 9000, "type": "tick" }
+  ]
+}

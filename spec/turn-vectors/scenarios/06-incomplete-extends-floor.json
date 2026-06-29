@@ -1,0 +1,30 @@
+{
+  "name": "06-incomplete-extends-floor",
+  "description": "An 'incomplete' EOU verdict holds the turn open past the floor: the turn ends at floor + extension (8000), not at the bare floor (4000). This is the value the asymmetric veto adds over a patience-only baseline.",
+  "knobs": {
+    "silenceFloorMs": 2000,
+    "incompleteExtensionMs": 4000,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1500,
+    "useSmartTurn": true
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 2000, "type": "speech-end" },
+    { "t": 2100, "type": "eou", "verdict": "incomplete" },
+    { "t": 10000, "type": "tick" }
+  ],
+  "expected": {
+    "turnStartCount": 1,
+    "turnEndCount": 1,
+    "turnEnds": [
+      { "t": 8000, "turn": 1, "reason": "extended" }
+    ],
+    "emit": [
+      { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 8000, "type": "turn-end", "turn": 1, "reason": "extended" },
+      { "t": 8000, "type": "response-start", "turn": 1 },
+      { "t": 9500, "type": "response-end", "turn": 1, "reason": "completed" }
+    ]
+  }
+}
