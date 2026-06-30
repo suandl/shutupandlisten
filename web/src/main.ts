@@ -14,9 +14,40 @@ import {
 } from './knobs.ts';
 import { MicAudioSource, type AudioSource } from './vad.ts';
 import { SimAudioSource, SIM_SCRIPTS } from './simulator.ts';
+import type { TranscriberOptions } from './stt.ts';
+import { sanitizeEngineUrl } from './engine-url.ts';
+import { groupTranscript, type TranscriptSegment, type TurnStartMark, type TurnEndMark } from './transcript.ts';
 
 const now = () => performance.now();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+// STT model config from the URL (operator-enable for the feel-test without a
+// code edit; default = no model → labelled stub). Local URLs honour the plan's
+// no-network-by-default posture — nothing is fetched unless these are set.
+//   ?sttEngine=<transformers.js-compatible module URL>
+//   &sttModel=<moonshine model id/path>&sttFallback=<whisper-small id/path>
+function sttOptionsFromQuery(): TranscriberOptions {
+  const q = new URLSearchParams(location.search);
+  const o: TranscriberOptions = {};
+  const engine = q.get('sttEngine');
+  if (engine) {
+    // Restrict to a same-origin / self-hosted module: the worker import()s this
+    // and feeds it live mic audio, so a remote URL must never reach it. (su-0hi #1)
+    const safe = sanitizeEngineUrl(engine, location.href);
+    if (safe) o.engineUrl = safe;
+    else
+      console.warn(
+        `Ignoring ?sttEngine=${engine}: the STT engine module must be same-origin/self-hosted ` +
+          `(it runs as code on microphone audio). Serve it from this origin to enable it.`,
+      );
+  }
+  const moon = q.get('sttModel') ?? q.get('moonshine');
+  if (moon) o.moonshineModel = moon;
+  const whisper = q.get('sttFallback') ?? q.get('whisper');
+  if (whisper) o.whisperModel = whisper;
+  return o;
+}
+const sttOptions = sttOptionsFromQuery();
 
 // ── detector + live state ──
 const turnKnobs: TurnKnobs = defaultTurnKnobs();
@@ -39,6 +70,19 @@ const patienceCap = $('patience-cap');
 const respondInd = $('respond-ind');
 const logEl = $('log');
 const sourceInfo = $('source-info');
+const transcriptEl = $('transcript');
+
+// ── transcript state (additive display; aligned to detector turns) ──
+const transcriptSegments = new Map<number, TranscriptSegment>();
+let turnStarts: TurnStartMark[] = [];
+let turnEnds: TurnEndMark[] = [];
+
+function resetTranscript(): void {
+  transcriptSegments.clear();
+  turnStarts = [];
+  turnEnds = [];
+  renderTranscript();
+}
 
 // ── knobs ──
 renderKnobs($('turn-knobs'), TURN_KNOBS, (key, value) => {
@@ -135,8 +179,9 @@ async function switchMode(next: 'sim' | 'mic'): Promise<void> {
   if (next === mode) return;
   await audio.stop();
   mode = next;
-  audio = next === 'mic' ? new MicAudioSource({ now, vadKnobs }) : new SimAudioSource(now);
+  audio = next === 'mic' ? new MicAudioSource({ now, vadKnobs, sttOptions }) : new SimAudioSource(now);
   wireAudio(audio);
+  resetTranscript();
   $('mode')
     .querySelectorAll('button')
     .forEach((b) => b.setAttribute('aria-pressed', String((b as HTMLElement).dataset.mode === next)));
@@ -159,11 +204,26 @@ function wireAudio(src: AudioSource): void {
     detector.input(e);
     refreshStage();
   };
+  // STT transcripts (mic only) — upsert by id so the pending placeholder is
+  // replaced by the resolved text, then re-align against the detector's turns.
+  src.onTranscript = (seg: TranscriptSegment) => {
+    transcriptSegments.set(seg.id, seg);
+    renderTranscript();
+  };
 }
 
 // ── output handling ──
 function handleOut(e: OutputEvent): void {
   logOutput(e);
+  // Capture turn boundaries so the transcript can show where each turn ended
+  // relative to the words. Strictly read-only — does not touch the detector.
+  if (e.type === 'turn-start') {
+    turnStarts.push({ turn: e.turn, t: e.t });
+    renderTranscript();
+  } else if (e.type === 'turn-end') {
+    turnEnds.push({ turn: e.turn, t: e.t, reason: e.reason });
+    renderTranscript();
+  }
   if (e.type === 'response-start') {
     respondInd.dataset.on = 'true';
     beep();
@@ -171,6 +231,85 @@ function handleOut(e: OutputEvent): void {
     respondInd.dataset.on = 'false';
   }
   refreshStage();
+}
+
+// ── transcript rendering: words grouped by turn, with speech-end + turn-end
+// markers so the operator can SEE where the patience window cut or held ──
+function renderTranscript(): void {
+  transcriptEl.replaceChildren();
+
+  if (mode !== 'mic') {
+    const hint = document.createElement('div');
+    hint.className = 'tx-empty';
+    hint.textContent = 'Transcript appears in microphone mode (the simulator drives events with no audio to transcribe).';
+    transcriptEl.appendChild(hint);
+    return;
+  }
+
+  const groups = groupTranscript({
+    segments: [...transcriptSegments.values()],
+    turnStarts,
+    turnEnds,
+  });
+
+  if (groups.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'tx-empty';
+    empty.textContent = 'Start the microphone and speak — your words appear here, aligned to where each turn ended.';
+    transcriptEl.appendChild(empty);
+    return;
+  }
+
+  for (const g of groups) {
+    const turnEl = document.createElement('div');
+    turnEl.className = 'tx-turn';
+
+    const head = document.createElement('span');
+    head.className = 'tx-turn-head';
+    head.textContent = `turn ${g.turn}`;
+    turnEl.appendChild(head);
+
+    if (g.segments.length === 0) {
+      const ph = document.createElement('span');
+      ph.className = 'tx-seg pending';
+      ph.textContent = '…';
+      turnEl.appendChild(ph);
+    }
+    for (const seg of g.segments) {
+      const word = document.createElement('span');
+      const cls = ['tx-seg'];
+      if (seg.pending) cls.push('pending');
+      if (seg.mode === 'stub') cls.push('stub');
+      word.className = cls.join(' ');
+      word.textContent = seg.pending ? '…' : seg.text || '∅';
+      word.title = `${fmtT(seg.startT)}–${fmtT(seg.endT)} · ${seg.mode}`;
+      turnEl.appendChild(word);
+      // speech-end tick after each segment's words
+      const tick = document.createElement('span');
+      tick.className = 'tx-speechend';
+      tick.textContent = '⏷';
+      tick.title = `speech-end ${fmtT(seg.endT)}`;
+      turnEl.appendChild(tick);
+    }
+
+    if (g.end) {
+      const last = g.segments[g.segments.length - 1];
+      const heldMs = last ? Math.round(g.end.t - last.endT) : null;
+      const endEl = document.createElement('span');
+      endEl.className = `tx-end ${g.end.reason}`;
+      endEl.textContent =
+        `▏turn-end ${g.end.reason}` + (heldMs !== null ? ` · ${heldMs}ms after last speech` : '');
+      endEl.title = `turn ${g.turn} ended at ${fmtT(g.end.t)} (${g.end.reason})`;
+      turnEl.appendChild(endEl);
+    } else {
+      const open = document.createElement('span');
+      open.className = 'tx-open';
+      open.textContent = '▏open…';
+      turnEl.appendChild(open);
+    }
+    transcriptEl.appendChild(turnEl);
+  }
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
 // ── stage rendering ──
@@ -247,4 +386,5 @@ function beep(): void {
 }
 
 refreshStage();
+renderTranscript();
 sourceInfo.textContent = audio.info;

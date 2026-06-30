@@ -84,12 +84,32 @@
       .log .barge-in { color: var(--warn); }
       .log .response-start, .log .response-end { color: var(--respond); }
       .log .in { color: var(--muted); }
+
+      /* Transcript: words grouped by turn, with speech-end + turn-end markers. */
+      .transcript { font: 14px/1.6 ui-sans-serif, system-ui, sans-serif; max-height: 300px; overflow-y: auto; }
+      .tx-empty { color: var(--muted); font-size: 13px; }
+      .tx-turn { padding: 6px 0 6px 10px; border-left: 2px solid var(--line); margin-bottom: 8px; }
+      .tx-turn-head {
+        display: inline-block; color: var(--muted); font-size: 11px; text-transform: uppercase;
+        letter-spacing: 0.06em; margin-right: 8px; font-variant-numeric: tabular-nums;
+      }
+      .tx-seg { color: var(--ink); }
+      .tx-seg.pending { color: var(--muted); font-style: italic; }
+      .tx-seg.stub { color: var(--muted); }
+      .tx-speechend { color: var(--speak); font-size: 11px; margin: 0 6px 0 2px; opacity: 0.8; vertical-align: 1px; }
+      .tx-end {
+        display: inline-block; margin-left: 4px; padding: 1px 7px; border-radius: 6px;
+        font-size: 11px; font-weight: 600; border: 1px solid var(--line); white-space: nowrap;
+      }
+      .tx-end.floor { color: var(--accent); border-color: var(--accent); }
+      .tx-end.extended { color: var(--pending); border-color: var(--pending); }
+      .tx-open { color: var(--muted); font-size: 11px; margin-left: 4px; }
     </style>
   </head>
   <body>
     <header>
       <h1>shutupandlisten — patience-tuned turn detection</h1>
-      <p>U3 timing-only milestone: Web Audio → Silero VAD → silence floor → smart-turn asymmetric veto → stubbed response. No STT/LLM/TTS yet.</p>
+      <p>U3 timing + U4 STT: Web Audio → Silero VAD → silence floor → smart-turn asymmetric veto → stubbed response, with on-device transcription (Moonshine/Whisper, CPU·WASM) aligned to turn boundaries. LLM/TTS still to come.</p>
     </header>
 
     <div class="modebar" style="padding: 0 22px;">
@@ -124,6 +144,11 @@
             <button id="mic-stop">Stop</button>
             <span class="hint">Grant mic access, then talk and pause naturally. Tune the knobs and feel the patience. (Models load on first start.)</span>
           </div>
+        </div>
+
+        <div class="panel">
+          <h2>Transcript (mic)</h2>
+          <div class="transcript" id="transcript"></div>
         </div>
 
         <div class="panel">
