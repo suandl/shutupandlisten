@@ -113,14 +113,18 @@ export async function createTranscriber(opts: TranscriberOptions = {}): Promise<
   }
 
   let nextId = 0;
-  const pending = new Map<number, (r: TranscriptResult) => void>();
+  // Each pending request stores its timer-clearing settler plus a per-request
+  // fallback — the labelled stub for THIS segment — so a worker error reply
+  // degrades to the stub text instead of an empty string the transcript would
+  // render as ∅. (su-0hi #2)
+  const pending = new Map<number, { settle: (r: TranscriptResult) => void; fallback: () => TranscriptResult }>();
   const onMessage = (ev: { data?: unknown }): void => {
     const msg = ev.data as { type?: string; id?: number; text?: string; error?: boolean } | undefined;
     if (!msg || msg.type !== 'result' || typeof msg.id !== 'number') return;
-    const resolve = pending.get(msg.id);
-    if (!resolve) return;
+    const entry = pending.get(msg.id);
+    if (!entry) return;
     pending.delete(msg.id);
-    resolve({ text: typeof msg.text === 'string' ? msg.text : '', mode: msg.error ? 'stub' : mode });
+    entry.settle(msg.error ? entry.fallback() : { text: typeof msg.text === 'string' ? msg.text : '', mode });
   };
   worker.addEventListener('message', onMessage);
 
@@ -132,9 +136,12 @@ export async function createTranscriber(opts: TranscriberOptions = {}): Promise<
         const timer = setTimeout(() => {
           if (pending.delete(id)) resolve(stubResult(audio, sampleRate));
         }, timeoutMs);
-        pending.set(id, (r) => {
-          clearTimeout(timer);
-          resolve(r);
+        pending.set(id, {
+          settle: (r) => {
+            clearTimeout(timer);
+            resolve(r);
+          },
+          fallback: () => stubResult(audio, sampleRate),
         });
         try {
           // No transfer list: structured-clone the samples so the caller's

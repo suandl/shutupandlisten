@@ -14,11 +14,14 @@
 // scope), so it is not exercised by the node test suite; the testable seams
 // (handshake, per-segment fallback, stub) live in stt.ts.
 
+import { sanitizeEngineUrl } from './engine-url.ts';
+
 // Structural view of the dedicated-worker global — avoids the DOM/WebWorker lib
 // clash that referencing `self`'s typed shape would cause under this tsconfig.
 const ctx = globalThis as unknown as {
   postMessage(message: unknown): void;
   addEventListener(type: 'message', listener: (ev: { data: unknown }) => void): void;
+  location?: { href: string };
 };
 
 interface InitMessage {
@@ -56,9 +59,17 @@ async function handleInit(msg: InitMessage): Promise<void> {
     ctx.postMessage({ type: 'error', reason: 'no engine url' });
     return;
   }
+  // Defense in depth: the main thread already restricts ?sttEngine= to a
+  // same-origin module, but this worker receives real mic audio, so it never
+  // import()s a URL it hasn't re-verified against its own origin. (su-0hi #1)
+  const engineUrl = sanitizeEngineUrl(msg.engineUrl, ctx.location?.href ?? '');
+  if (!engineUrl) {
+    ctx.postMessage({ type: 'error', reason: 'engine url rejected (not self-hosted)' });
+    return;
+  }
   let engine: Engine;
   try {
-    engine = (await import(/* @vite-ignore */ msg.engineUrl)) as Engine;
+    engine = (await import(/* @vite-ignore */ engineUrl)) as Engine;
   } catch {
     ctx.postMessage({ type: 'error', reason: 'engine import failed' });
     return;

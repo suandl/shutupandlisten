@@ -15,6 +15,7 @@ import {
 import { MicAudioSource, type AudioSource } from './vad.ts';
 import { SimAudioSource, SIM_SCRIPTS } from './simulator.ts';
 import type { TranscriberOptions } from './stt.ts';
+import { sanitizeEngineUrl } from './engine-url.ts';
 import { groupTranscript, type TranscriptSegment, type TurnStartMark, type TurnEndMark } from './transcript.ts';
 
 const now = () => performance.now();
@@ -29,7 +30,17 @@ function sttOptionsFromQuery(): TranscriberOptions {
   const q = new URLSearchParams(location.search);
   const o: TranscriberOptions = {};
   const engine = q.get('sttEngine');
-  if (engine) o.engineUrl = engine;
+  if (engine) {
+    // Restrict to a same-origin / self-hosted module: the worker import()s this
+    // and feeds it live mic audio, so a remote URL must never reach it. (su-0hi #1)
+    const safe = sanitizeEngineUrl(engine, location.href);
+    if (safe) o.engineUrl = safe;
+    else
+      console.warn(
+        `Ignoring ?sttEngine=${engine}: the STT engine module must be same-origin/self-hosted ` +
+          `(it runs as code on microphone audio). Serve it from this origin to enable it.`,
+      );
+  }
   const moon = q.get('sttModel') ?? q.get('moonshine');
   if (moon) o.moonshineModel = moon;
   const whisper = q.get('sttFallback') ?? q.get('whisper');

@@ -73,7 +73,6 @@ export class MicAudioSource implements AudioSource {
     // at start() rather than breaking the whole page load.
     const { MicVAD } = await import('@ricky0123/vad-web');
     this.smartTurn = await createSmartTurn({ modelUrl: this.modelUrl });
-    this.transcriber = await createTranscriber(this.sttOptions);
 
     this.vad = await MicVAD.new({
       positiveSpeechThreshold: this.vadKnobs.positiveSpeechThreshold,
@@ -99,6 +98,12 @@ export class MicAudioSource implements AudioSource {
         // Sub-min-speech blip — not a real utterance; ignore.
       },
     });
+    // Create the STT worker only AFTER the mic + VAD are established. If mic
+    // permission/setup fails above, start() throws before this line, so a
+    // loaded-model STT worker is never created and cannot leak while the UI
+    // reports "mic failed". transcribe() runs only after vad.start() (on real
+    // speech), by which point this is set. (su-0hi #3)
+    this.transcriber = await createTranscriber(this.sttOptions);
     this.vad.start();
     this._info = `Silero VAD + smart-turn (${this.smartTurn.mode}) + STT (${this.transcriber.mode})`;
   }

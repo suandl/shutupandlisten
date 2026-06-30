@@ -79,16 +79,19 @@ test('init error → degrade to stub and terminate the worker', async () => {
   assert.equal(r.mode, 'stub'); // the stub still transcribes
 });
 
-test('a per-segment worker error degrades just that segment to stub', async () => {
+test('a per-segment worker error degrades just that segment to the labelled stub', async () => {
   const w = new FakeWorker();
   w.onInit = () => queueMicrotask(() => w.emit('message', { type: 'ready', mode: 'whisper' }));
   w.onTranscribe = (m) => queueMicrotask(() => w.emit('message', { type: 'result', id: m.id, text: '', error: true }));
 
   const t = await createTranscriber({ createWorker: () => w, whisperModel: 'whisper-small' });
   assert.equal(t.mode, 'whisper');
-  const r = await t.transcribe(new Float32Array(16000), 16000);
+  const r = await t.transcribe(new Float32Array(16000), 16000); // 1.0s @ 16kHz
   assert.equal(r.mode, 'stub');
-  assert.equal(r.text, '');
+  // The error reply must surface the labelled stub, not an empty string that the
+  // transcript renders as ∅. (su-0hi #2)
+  assert.ok(r.text.includes('1.0s'), `expected labelled stub, got "${r.text}"`);
+  assert.ok(r.text.includes('not loaded'), `expected labelled stub, got "${r.text}"`);
 });
 
 test('a silent worker times out per segment → stub result', async () => {
