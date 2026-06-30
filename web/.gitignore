@@ -2,3 +2,11 @@ node_modules/
 dist/
 *.log
 .vite/
+
+# Self-hosted STT assets — provisioned at build/deploy by `npm run provision:stt`
+# (transformers.js engine bundle + ONNX Runtime wasm, and the Moonshine/Whisper
+# model weights). Never committed: large binaries, and the no-egress design serves
+# them same-origin from public/ → dist/. Absent → the adapter uses the labelled
+# stub. The committed public/stt-engine.js wrapper is NOT under these paths.
+public/stt/
+public/models/

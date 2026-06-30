@@ -14,40 +14,19 @@ import {
 } from './knobs.ts';
 import { MicAudioSource, type AudioSource } from './vad.ts';
 import { SimAudioSource, SIM_SCRIPTS } from './simulator.ts';
-import type { TranscriberOptions } from './stt.ts';
-import { sanitizeEngineUrl } from './engine-url.ts';
+import { resolveSttOptions } from './stt-config.ts';
 import { groupTranscript, type TranscriptSegment, type TurnStartMark, type TurnEndMark } from './transcript.ts';
 
 const now = () => performance.now();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-// STT model config from the URL (operator-enable for the feel-test without a
-// code edit; default = no model → labelled stub). Local URLs honour the plan's
-// no-network-by-default posture — nothing is fetched unless these are set.
-//   ?sttEngine=<transformers.js-compatible module URL>
-//   &sttModel=<moonshine model id/path>&sttFallback=<whisper-small id/path>
-function sttOptionsFromQuery(): TranscriberOptions {
-  const q = new URLSearchParams(location.search);
-  const o: TranscriberOptions = {};
-  const engine = q.get('sttEngine');
-  if (engine) {
-    // Restrict to a same-origin / self-hosted module: the worker import()s this
-    // and feeds it live mic audio, so a remote URL must never reach it. (su-0hi #1)
-    const safe = sanitizeEngineUrl(engine, location.href);
-    if (safe) o.engineUrl = safe;
-    else
-      console.warn(
-        `Ignoring ?sttEngine=${engine}: the STT engine module must be same-origin/self-hosted ` +
-          `(it runs as code on microphone audio). Serve it from this origin to enable it.`,
-      );
-  }
-  const moon = q.get('sttModel') ?? q.get('moonshine');
-  if (moon) o.moonshineModel = moon;
-  const whisper = q.get('sttFallback') ?? q.get('whisper');
-  if (whisper) o.whisperModel = whisper;
-  return o;
-}
-const sttOptions = sttOptionsFromQuery();
+// STT model config. Defaults to the self-hosted same-origin engine + Moonshine/
+// Whisper weights (see stt-config.ts / stt.ts), so a provisioned deploy
+// transcribes out-of-the-box and an un-provisioned one degrades to the labelled
+// stub — nothing is fetched cross-origin and no mic audio leaves the page. The
+// URL query retunes it for the feel-test without a code edit:
+//   ?stt=off  ·  ?sttEngine=<same-origin url>  ·  ?sttModel=<id>  ·  ?sttFallback=<id>
+const sttOptions = resolveSttOptions(location.search, location.href);
 
 // ── detector + live state ──
 const turnKnobs: TurnKnobs = defaultTurnKnobs();
