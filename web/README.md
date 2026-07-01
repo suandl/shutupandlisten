@@ -33,11 +33,24 @@ npm test         # scenario + measurement suites (Node's runner, zero extra deps
 npm run measure  # scenario-6 metrics table: smart-turn+floor vs patience-only
 npm run dev      # Vite dev server — open the harness in a browser
 npm run build    # static production build to dist/ (no server needed to serve it)
+
+npm run provision:stt  # build/deploy step: fetch the self-hosted STT engine +
+                       # Moonshine/Whisper weights into public/ so mic mode transcribes
 ```
 
 `npm test` runs under Node's built-in test runner via native TypeScript
 type-stripping, so the crux logic is verifiable without installing anything —
 the browser model libs are only needed by the harness, not the tests.
+
+**STT is on by default**, served entirely from the app's own origin. `npm run
+provision:stt` (`scripts/provision-stt.mjs`) is the build/deploy-time step that
+downloads the self-hosted transformers.js engine bundle and the Moonshine/Whisper
+weights into `public/` (gitignored — large binaries, served same-origin out of
+`dist/`). It reaches the network only at deploy time — the running app never
+fetches engine or weights cross-origin, and no microphone audio ever leaves the
+page. It is optional: skip it and mic mode falls back to the labelled stub. See
+**Component substitutions** below for the models, per-run overrides, and the
+`?stt=off` kill switch.
 
 ## Using the harness
 
@@ -48,9 +61,11 @@ Two modes (top bar):
   same script ends the turn mid-thought below the floor and holds above it — the
   fastest way to see what the patience window does. No mic or download needed.
 - **Microphone** — real Silero VAD + smart-turn on your voice, for the operator
-  feel-test. Models load on first start. Speech is transcribed into the
-  **Transcript** panel (see below); pass `?sttModel=…` to load a real STT model
-  (otherwise a labelled stub keeps the layout legible).
+  feel-test. Models load on first start. STT is **on by default**: on a
+  provisioned deploy (see `npm run provision:stt` above) real speech is
+  transcribed into the **Transcript** panel (see below). With no provisioned
+  assets — or with `?stt=off` — a labelled stub keeps the layout legible. Retune
+  the engine/models per run with query params (see **Component substitutions**).
 
 The **Stage** shows the live state, a patience countdown bar (held open visibly
 when the incomplete veto is active), the current turn/verdict/arm, and the
@@ -108,28 +123,41 @@ audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ U
   smart-turn v3 ONNX export (input tensor + mel front-end) is the first task of
   that tuning pass.
 
-- **STT model (Moonshine / Whisper-small)** — mirrors smart-turn. `src/stt.ts`
-  runs STT in a Web Worker (`src/stt.worker.ts`, CPU/WASM, off the GPU) that
-  loads a [transformers.js](https://github.com/huggingface/transformers.js)-compatible
-  engine and model from **operator-supplied URLs**, set via query params for the
-  feel-test (no code edit, nothing fetched by default — honouring the plan's
-  no-network/self-hosted-weights posture):
+- **STT model (Moonshine / Whisper-small)** — wired real and **default-on**,
+  served self-hosted. `src/stt.ts` runs STT in a Web Worker (`src/stt.worker.ts`,
+  CPU/WASM, off the GPU) that loads a
+  [transformers.js](https://github.com/huggingface/transformers.js)-compatible
+  engine and models from the app's **own origin**: the committed wrapper
+  `public/stt-engine.js`, plus the engine bundle under `public/stt/` and weights
+  under `public/models/<id>/`, provisioned at build/deploy by `npm run
+  provision:stt` (those two trees gitignored — large binaries). The defaults
+  (`src/stt.ts`) are Moonshine `onnx-community/moonshine-base-ONNX` (primary) and
+  Whisper `onnx-community/whisper-small` (fallback). The no-egress posture from
+  PR #12 / su-0hi is preserved: the engine module is accepted **same-origin
+  only** (a remote `?sttEngine=` is rejected back to the default and warned),
+  `env.allowRemoteModels=false`, and no microphone audio leaves the page —
+  provisioning is the only network fetch and it runs at deploy time, not in the
+  running app.
+
+  Query params retune per run without a code edit (feel-test), never relaxing
+  that posture:
 
   ```
-  ?sttEngine=<engine module URL>&sttModel=<moonshine id/path>&sttFallback=<whisper-small id/path>
+  ?stt=off                       # kill switch → force the labelled stub (also: stub|none|0|false|no)
+  ?sttEngine=<same-origin url>   # override the engine module (must be self-hosted)
+  ?sttModel=<moonshine id/path>  # override the primary model   (alias: ?moonshine=)
+  ?sttFallback=<whisper id/path> # override the fallback model  (alias: ?whisper=)
   ```
 
-  Absent that config — and in CI, where there is no headless mic or bundled
-  weights — the adapter degrades to a transparent, labelled **stub**
-  (`⟨speech 1.4s — STT model not loaded⟩`), and the Stage shows the live mode
-  (`STT (moonshine|whisper|stub)`). The transcript **alignment** logic
-  (`src/transcript.ts`) is identical and fully unit-tested regardless of which
-  mode is live; only transcription *quality/read-back* depends on the model,
-  resolved on real audio during the feel-test. Wiring a specific Moonshine ONNX
-  export + tokenizer is the first task of that pass — the same substitution shape
-  as smart-turn's, for the same reason (the model is validated in the browser,
-  not in CI). The Whisper fallback exists because Whisper zero-pads every segment
-  to 30 s where Moonshine processes variable length proportionally.
+  A deploy that skips provisioning — and CI, where there is no headless mic or
+  bundled weights — has no assets to load, so the adapter degrades to a
+  transparent, labelled **stub** (`⟨speech 1.4s — STT model not loaded⟩`), and
+  the Stage shows the live mode (`STT (moonshine|whisper|stub)`). The transcript
+  **alignment** logic (`src/transcript.ts`) is identical and fully unit-tested
+  regardless of which mode is live; only transcription *quality/read-back*
+  depends on the model, resolved on real audio during the feel-test. The Whisper
+  fallback exists because Whisper zero-pads every segment to 30 s where Moonshine
+  processes variable length proportionally.
 
 ## Verification boundary
 
