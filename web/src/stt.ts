@@ -61,6 +61,30 @@ export interface Transcriber {
 const SAMPLE_RATE = 16000;
 const DEFAULT_TIMEOUT_MS = 15000;
 
+// ── Default self-hosted STT config — the U4 tuning-pass wiring ──
+//
+// These point the adapter at an engine + weights served from the app's OWN
+// origin, so the harness transcribes out-of-the-box once the assets are
+// provisioned (`npm run provision:stt`, run at build/deploy). No third-party
+// origin is fetched for engine or model at runtime and no user audio leaves the
+// page — the su-0hi #1 / no-egress posture. When the assets are ABSENT (fresh
+// clone, CI, un-provisioned deploy) the worker's engine import 404s, the
+// handshake fails closed, and the adapter degrades to the labelled stub exactly
+// as before. See web/public/stt-engine.js, web/scripts/provision-stt.mjs, README.
+//
+// Engine: the committed same-origin wrapper public/stt-engine.js. It pins the
+// on-device / no-egress env (ONNX wasmPaths + localModelPath same-origin,
+// allowRemoteModels=false) around a provisioned transformers.js v3 (3.8.1) ESM
+// bundle, and defaults inference to CPU/WASM + quantized weights. Model ids
+// resolve under env.localModelPath (= same-origin /models/<id>/).
+//
+// Models — concrete, transformers.js-v3-compatible, quantized (q8) for CPU/WASM:
+//   primary  — onnx-community/moonshine-base-ONNX  (variable-length, proportional compute)
+//   fallback — onnx-community/whisper-small        (noisy / disfluent speech)
+export const DEFAULT_STT_ENGINE_URL = '/stt-engine.js';
+export const DEFAULT_MOONSHINE_MODEL = 'onnx-community/moonshine-base-ONNX';
+export const DEFAULT_WHISPER_MODEL = 'onnx-community/whisper-small';
+
 /** A labelled placeholder so the alignment UI stays legible without a model. */
 export function stubText(durationMs: number): string {
   return `⟨speech ${(durationMs / 1000).toFixed(1)}s — STT model not loaded⟩`;

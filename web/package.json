@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test": "node --test 'src/**/*.test.ts'",
     "test:watch": "node --test --watch 'src/**/*.test.ts'",
+    "provision:stt": "node scripts/provision-stt.mjs",
     "measure": "node src/measure.ts"
   },
   "dependencies": {
