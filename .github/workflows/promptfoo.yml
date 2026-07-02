@@ -1,0 +1,152 @@
+name: promptfoo eval
+
+# Run the promptfoo listener-prompt evals on PRs that touch the prompts or the
+# eval harness, and post a per-provider / per-scenario / per-judge score summary
+# as a PR comment so prompt-quality regressions surface in review.
+#
+# Cost control: each eval cell makes paid OpenAI + Anthropic API calls, so the
+# job is gated — it runs only on an explicit manual dispatch or when a
+# maintainer adds the `run-evals` label to the PR. (Secrets are also unavailable
+# to fork PRs, so this never bills on untrusted forks.)
+#
+# Keys: injected at use-time from 1Password by scripts/eval-keys.sh via the
+# `op` CLI. The only secret the workflow needs is a 1Password service-account
+# token exposed as OP_SERVICE_ACCOUNT_TOKEN (see promptfoo/README.md → CI variant).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'prompts/**'
+      - 'promptfoo/**'
+      - 'scripts/eval-keys.sh'
+      - '.github/workflows/promptfoo.yml'
+      - '.github/scripts/summarize-eval.js'
+  workflow_dispatch:
+
+# One eval per PR/branch at a time; a newer push cancels an in-flight run.
+concurrency:
+  group: promptfoo-eval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  eval:
+    name: promptfoo eval (cloud providers)
+    runs-on: ubuntu-latest
+    # Cost gate: run only on manual dispatch or a maintainer-applied label.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-evals')
+    timeout-minutes: 30
+    env:
+      PROMPTFOO_DISABLE_TELEMETRY: '1'
+      PROMPTFOO_DISABLE_UPDATE: '1'
+      # Cloud providers only — the config also defines on-device (ollama:*)
+      # providers that need a local Ollama runtime unavailable on the runner.
+      EVAL_PROVIDERS: 'openai-gpt-4o|anthropic-claude-haiku-4-5'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: promptfoo/package-lock.json
+
+      - name: Install 1Password CLI
+        uses: 1password/install-cli-action@v4
+
+      - name: Install promptfoo deps
+        working-directory: promptfoo
+        run: npm ci
+
+      - name: Run promptfoo eval
+        id: eval
+        working-directory: promptfoo
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        run: |
+          if [ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
+            echo "::error::OP_SERVICE_ACCOUNT_TOKEN is not set — add it as a repository secret (see promptfoo/README.md)."
+            echo "exit_code=1" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          set +e
+          ../scripts/eval-keys.sh npx promptfoo eval \
+            --no-cache \
+            --filter-providers "$EVAL_PROVIDERS" \
+            --output "$RUNNER_TEMP/promptfoo-results.json" \
+            --output "$RUNNER_TEMP/promptfoo-results.html"
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          # promptfoo exits 100 when a cell fails its judge threshold — that is a
+          # completed run whose scores we still want to surface, not an infra
+          # error. Any other non-zero is a genuine failure (auth, network, config).
+          if [ "$code" -ne 0 ] && [ "$code" -ne 100 ]; then
+            echo "::error::promptfoo eval failed to run (exit $code)"
+            exit "$code"
+          fi
+          if [ "$code" -eq 100 ]; then
+            echo "::warning::promptfoo eval completed with cells below judge threshold (exit 100) — see the PR comment."
+          fi
+
+      - name: Upload full report
+        if: always() && steps.eval.outputs.exit_code != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: promptfoo-report
+          path: |
+            ${{ runner.temp }}/promptfoo-results.json
+            ${{ runner.temp }}/promptfoo-results.html
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Build summary
+        id: summary
+        if: always() && steps.eval.outputs.exit_code != ''
+        env:
+          EVAL_EXIT_CODE: ${{ steps.eval.outputs.exit_code }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ARTIFACT_NAME: promptfoo-report
+        run: |
+          node .github/scripts/summarize-eval.js "$RUNNER_TEMP/promptfoo-results.json" \
+            > "$RUNNER_TEMP/promptfoo-summary.md"
+          cat "$RUNNER_TEMP/promptfoo-summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment eval summary on PR
+        # Only on real PR runs that produced an eval (skip infra failures and
+        # manual dispatch, which has no PR to comment on).
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          (steps.eval.outputs.exit_code == '0' || steps.eval.outputs.exit_code == '100')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- promptfoo-eval-summary -->';
+            let body;
+            try {
+              body = fs.readFileSync(process.env.RUNNER_TEMP + '/promptfoo-summary.md', 'utf8');
+            } catch (e) {
+              body = marker + '\n## 🧪 promptfoo eval\n\n_Summary unavailable — see the workflow artifact._';
+            }
+            if (!body.includes(marker)) body = marker + '\n' + body;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
