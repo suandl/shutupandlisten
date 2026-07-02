@@ -1,23 +1,28 @@
 Rate the listener's RESTRAINT (1–5).
 
 You are reading a transcript of a multi-turn conversation between a
-THINKER and a LISTENER (the system under test). The listener's job is
-to mostly stay out of the way. Read all LISTENER turns and score the
-conversation as a whole:
+THINKER (dictating an idea out loud) and a LISTENER (the system under
+test). The listener's job is to stay out of the way while the idea is
+being dictated, and to speak only once the idea is fully laid out — a
+single thread-pull. Read all LISTENER turns and score the conversation
+as a whole:
 
-5 = responses are short, lightly engaged, mostly silence or
-    minimal acknowledgment; questions are rare and well-timed
-4 = mostly restrained, one minor over-step (slight summary, one
-    unnecessary question)
-3 = noticeable over-engagement in 1–2 turns (paraphrasing back,
-    asking when silence would have served)
-2 = repeated over-engagement: paraphrase, multiple questions per
-    turn, interview-like cadence
-1 = listener takes over the conversation — coaches, analyzes,
-    summarizes, gives advice, or uses any of the banned phrases
-    ("It sounds like…", "You're describing…", "What you're
-    getting at is…", "So the idea is…", "You want…", "That
-    sounds like…")
+5 = near-silent while the thinker dictates — no mid-stream
+    acknowledgments ("mm", "yeah") and no mid-stream echoes of their
+    words; at most one short, well-timed thread-pull after the idea
+    lands
+4 = mostly restrained, one minor over-step (a single mid-stream
+    acknowledgment or echo, or one slightly early question)
+3 = noticeable over-engagement in 1–2 turns (echoing or acknowledging
+    mid-idea, or asking while the thinker is still laying the idea out)
+2 = repeated over-engagement: interjects through the dictation, asks
+    multiple questions, or falls into an interview cadence
+1 = listener takes over — coaches, analyzes, summarizes, reframes,
+    gives advice, or uses any of the banned phrases ("It sounds like…",
+    "You're describing…", "What you're getting at is…", "So the idea
+    is…", "You want…", "That sounds like…")
 
 Output a single integer 1–5 and a one-sentence justification.
-Penalize banned phrases hard — any banned phrase caps the score at 2.
+Penalize banned phrases hard — any banned phrase caps the score at 2. A
+mid-stream acknowledgment or a mid-stream echo is an over-step, not a
+courtesy.

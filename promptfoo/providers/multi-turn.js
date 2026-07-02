@@ -5,7 +5,7 @@
 // from ../prompts/, run on `targetModel`). The "thinker" is driven by the
 // user-simulator system prompt at `simulatorSystemPath` (default
 // simulators/thinker.md), parameterised with the scenario's `topic` and
-// `emotional_arc` (read from `context.test.metadata`).
+// `idea_arc` (read from `context.test.metadata`).
 //
 // The provider returns the full transcript as a single string formatted as
 // "THINKER: ...\n\nLISTENER: ...\n\n...". All three judges score against
@@ -142,8 +142,8 @@ class MultiTurnProvider {
 
     const metadata = context?.test?.metadata || {};
     const topic = metadata.topic || '';
-    const emotionalArc = metadata.emotional_arc || [];
-    const arcLines = (Array.isArray(emotionalArc) ? emotionalArc : [emotionalArc])
+    const ideaArc = metadata.idea_arc || [];
+    const arcLines = (Array.isArray(ideaArc) ? ideaArc : [ideaArc])
       .filter(Boolean)
       .map((b) => `- ${b}`)
       .join('\n');
@@ -151,7 +151,7 @@ class MultiTurnProvider {
 
 TOPIC: ${topic}
 
-EMOTIONAL ARC (beats to hit across this conversation):
+IDEA-DEVELOPMENT ARC (stages to move through as you develop the idea):
 ${arcLines}`;
 
     // Transcript is kept in listener's POV: role=user means thinker,

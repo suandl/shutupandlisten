@@ -1,0 +1,10 @@
+description: story-premise
+metadata:
+  topic: a story premise about a town where, one unpredictable day each year, everyone hears the thoughts of one random stranger for the whole day
+  idea_arc:
+    - open the premise and the core image — one day a year the whole town hears one random stranger's inner monologue
+    - develop the rules of the world — it's anonymous, unchosen, and everyone experiences the same person at once
+    - follow an implication toward the story's tension — what living with that possibility does to people the other 364 days
+    - reach a natural stopping point — the premise is laid out
+vars:
+  starting_turn: "Okay, I have a premise and I just want to talk it out. There's a town, and one day a year — nobody knows which day until it's happening — everyone in the town can suddenly hear the thoughts of one single stranger. The same person, for all of them, all day long. And then at midnight it just stops."

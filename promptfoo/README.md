@@ -82,11 +82,11 @@ per-judge scores, with side-by-side run comparison.
 
 ## What's being tested
 
-Each scenario in `scenarios/` defines a `topic`, an `emotional_arc`,
+Each scenario in `scenarios/` defines a `topic`, an `idea_arc`,
 and a `starting_turn`. Each scenario runs as a 4–6 turn conversation:
 `simulators/thinker.md` (a user-simulator system prompt — a person
-thinking out loud, not asking for advice) drives the user side,
-parameterised with the scenario's `topic` and `emotional_arc` and
+dictating an idea out loud, not asking for advice) drives the user side,
+parameterised with the scenario's `topic` and `idea_arc` and
 reactive to the listener's reply each turn. The system under test
 (one of the prompts from `../prompts/`) produces the listener turn.
 
@@ -99,11 +99,12 @@ models). It returns the full transcript as the cell's output.
 
 The transcript is scored by three LLM-rubric judges in `judges/`:
 
-- `judges/probing-depth.txt` — across the listener's turns, do they
-  engage with the *specific* things the thinker said, or pivot to
-  generic prompts?
-- `judges/restraint.txt` — does the listener stay out of the way, or
-  take over with summary / coaching / paraphrase?
+- `judges/probing-depth.txt` — once the idea is laid out, does the
+  listener's thread-pull engage a *specific* thread of the idea, or
+  pivot to a generic / emotional prompt?
+- `judges/restraint.txt` — does the listener stay silent while the
+  idea is dictated, or take over with mid-stream acks / echoes /
+  summary / coaching?
 - `judges/variety.txt` — across the conversation, do the listener's
   questions vary in stem and target? (Returns 5 if the listener asks
   ≤1 questions — restraint penalises over-questioning separately.)

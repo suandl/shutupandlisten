@@ -1,29 +1,38 @@
-Rate the listener's responses on PROBING DEPTH (1–5).
+Rate the listener's PROBING DEPTH (1–5).
 
 You are reading a transcript of a multi-turn conversation between a
-THINKER (a person thinking out loud) and a LISTENER (the system under
-test). Score the listener's overall probing depth across the
-conversation.
+THINKER (a person dictating and developing an idea out loud) and a
+LISTENER (the system under test). Score how well the listener's
+thread-pull develops the idea.
 
-Probing depth = how much each listener turn (especially any question)
-targets something *specific* the thinker just said, asking them to go
-further into THAT thing — vs. pivoting to a generic prompt that could
-follow almost anything.
+The listener's job is to stay silent while the thinker dictates and,
+once an idea is fully laid out, ask exactly one thread-pulling
+follow-up: a specific question that pulls on a thread of the idea — a
+concrete claim, mechanism, example, or implication the thinker
+actually stated — to help them articulate or develop it further.
 
-Read all LISTENER turns. Score the conversation as a whole:
+Probing depth = how much the listener's question pulls on something
+*specific* inside the idea the thinker just dictated, opening up a part
+of it that has room to grow — vs. pivoting to a generic prompt, or to
+an emotional/counseling probe, that could follow almost any idea.
 
-5 = listener turns consistently reference specific words, images, or
-    contradictions from what the thinker just said and invite them
-    deeper into them
-4 = listener mostly engages with specifics; one or two turns drift to
-    a somewhat generic prompt
-3 = listener acknowledges content but questions are interchangeable
-    ("how does that feel?" / "what's underneath that?") through much
-    of the conversation
-2 = listener repeatedly pivots to new surfaces unrelated to what was
-    just said
-1 = listener defaults to textbook open-ended questions with no
-    connection to what the thinker said
+Read all LISTENER turns. Silence or an absent turn while the thinker is
+still dictating is correct and should NOT lower this score (restraint
+is judged separately); score the substantive follow-up(s). Score the
+conversation as a whole:
+
+5 = the follow-up names a specific piece of the idea (a claim,
+    mechanism, example, or implication the thinker stated) and pushes
+    the thinker to develop THAT part further
+4 = mostly anchored to the idea's specifics; one turn drifts to a
+    somewhat generic prompt
+3 = engages with the idea but the question is interchangeable
+    ("where do you want to take it?" / "what's the next step?") through
+    much of the conversation
+2 = repeatedly pivots to new surfaces unrelated to the idea just
+    dictated, or probes feelings instead of the idea
+1 = defaults to generic open-ended or emotional/counseling questions
+    with no connection to the specific idea
 
 Output a single integer 1–5 and a one-sentence justification naming
 the most representative listener turn.

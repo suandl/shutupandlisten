@@ -1,0 +1,10 @@
+description: feature-idea
+metadata:
+  topic: a product idea for a grocery app that plans meals backward from what's about to expire in your fridge, instead of forward from recipes you pick
+  idea_arc:
+    - open the idea and the motivation — meal planners start from recipes, but the real problem is food you already bought going to waste
+    - develop the core mechanic — it knows what you have and roughly when it expires, and proposes meals ordered by what needs eating first
+    - follow an implication — how it treats staples vs perishables, and what it does when you keep ignoring a suggestion
+    - reach a natural stopping point — the idea is out, hand it over
+vars:
+  starting_turn: "So the idea is a grocery app, but backwards. Every meal-planning thing I've seen starts from recipes — you pick what you want to cook and it builds a shopping list. But my actual problem isn't picking recipes, it's the half a bag of spinach and the chicken thighs slowly dying in my fridge because I forgot they were in there."
