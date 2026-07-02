@@ -11,6 +11,7 @@
     "test": "node --test 'src/**/*.test.ts'",
     "test:watch": "node --test --watch 'src/**/*.test.ts'",
     "provision:stt": "node scripts/provision-stt.mjs",
+    "provision:llm": "node scripts/provision-llm.mjs",
     "measure": "node src/measure.ts"
   },
   "dependencies": {

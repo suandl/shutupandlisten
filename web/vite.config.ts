@@ -27,4 +27,9 @@ export default defineConfig({
   build: { target: 'es2022', outDir: 'dist' },
   worker: { format: 'es' },
   optimizeDeps: { include: ['@ricky0123/vad-web'] },
+  // main.ts imports the listener system prompt from ../../prompts/chatgpt.md?raw
+  // (single source of truth, no TS copy to drift). The dev server restricts file
+  // serving to the project root by default; allow the parent so that raw import
+  // resolves. Vite build inlines the string, so this only affects `vite dev`.
+  server: { fs: { allow: ['..'] } },
 });

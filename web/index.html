@@ -104,12 +104,26 @@
       .tx-end.floor { color: var(--accent); border-color: var(--accent); }
       .tx-end.extended { color: var(--pending); border-color: var(--pending); }
       .tx-open { color: var(--muted); font-size: 11px; margin-left: 4px; }
+
+      /* U5 listener reply, rendered under each turn's transcript. */
+      .tx-response { display: block; margin: 6px 0 0 2px; font-size: 13px; line-height: 1.5; }
+      .tx-response.held { color: var(--muted); font-size: 11px; opacity: 0.7; }
+      .tx-tier {
+        display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 6px;
+        font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
+        border: 1px solid var(--respond); color: var(--respond); vertical-align: 1px;
+      }
+      .tx-tier.acknowledge { border-color: var(--muted); color: var(--muted); }
+      .tx-response-body { color: var(--respond); }
+      .tx-response.acknowledge .tx-response-body { color: var(--muted); font-style: italic; }
+      .tx-response-body.pending { color: var(--muted); font-style: italic; }
+      .tx-response-body.stub { color: var(--muted); }
     </style>
   </head>
   <body>
     <header>
       <h1>shutupandlisten — patience-tuned turn detection</h1>
-      <p>U3 timing + U4 STT: Web Audio → Silero VAD → silence floor → smart-turn asymmetric veto → stubbed response, with on-device transcription (Moonshine/Whisper, CPU·WASM) aligned to turn boundaries. LLM/TTS still to come.</p>
+      <p>U3 timing + U4 STT + U5 listener: Web Audio → Silero VAD → silence floor → smart-turn asymmetric veto → on-device STT (Moonshine/Whisper, CPU·WASM) → a response-hierarchy gate + small on-device LLM (WebGPU) that replies only when a turn earns it. TTS still to come (U6).</p>
     </header>
 
     <div class="modebar" style="padding: 0 22px;">
@@ -147,7 +161,7 @@
         </div>
 
         <div class="panel">
-          <h2>Transcript (mic)</h2>
+          <h2>Transcript + listener (mic)</h2>
           <div class="transcript" id="transcript"></div>
         </div>
 
