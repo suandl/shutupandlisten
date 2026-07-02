@@ -5,7 +5,7 @@
 // from ../prompts/, run on `targetModel`). The "thinker" is driven by the
 // user-simulator system prompt at `simulatorSystemPath` (default
 // simulators/thinker.md), parameterised with the scenario's `topic` and
-// `emotional_arc` (read from `context.test.metadata`).
+// `idea_arc` (read from `context.test.metadata`).
 //
 // The provider returns the full transcript as a single string formatted as
 // "THINKER: ...\n\nLISTENER: ...\n\n...". All three judges score against
@@ -142,8 +142,8 @@ class MultiTurnProvider {
 
     const metadata = context?.test?.metadata || {};
     const topic = metadata.topic || '';
-    const emotionalArc = metadata.emotional_arc || [];
-    const arcLines = (Array.isArray(emotionalArc) ? emotionalArc : [emotionalArc])
+    const ideaArc = metadata.idea_arc || [];
+    const arcLines = (Array.isArray(ideaArc) ? ideaArc : [ideaArc])
       .filter(Boolean)
       .map((b) => `- ${b}`)
       .join('\n');
@@ -151,7 +151,7 @@ class MultiTurnProvider {
 
 TOPIC: ${topic}
 
-EMOTIONAL ARC (beats to hit across this conversation):
+IDEA-DEVELOPMENT ARC (stages to move through as you develop the idea):
 ${arcLines}`;
 
     // Transcript is kept in listener's POV: role=user means thinker,
@@ -183,13 +183,15 @@ ${arcLines}`;
 
       if (turn === this.maxTurns - 1) break;
 
-      const simulatorMessages = [
-        { role: 'system', content: simulatorSystem },
-        ...transcript.map((m) => ({
+      // Flip roles so the simulator sees itself as the assistant, then
+      // sanitize for the provider (drop silent turns, keep roles alternating).
+      const simulatorMessages = toProviderMessages(
+        simulatorSystem,
+        transcript.map((m) => ({
           role: m.role === 'user' ? 'assistant' : 'user',
           content: m.content,
         })),
-      ];
+      );
       const simResp = await this._simulator.callApi(
         JSON.stringify(simulatorMessages),
         context,
@@ -203,7 +205,13 @@ ${arcLines}`;
       cost += simResp.cost || 0;
     }
 
+    // Silent listener turns (idea-dictation: the listener stays quiet while the
+    // thinker dictates) carry no text — omit them so the transcript reads as the
+    // thinker dictating with the listener speaking only when it pulls a thread.
+    // The judges score this text; restraint reads the sparse listener presence
+    // as silence, probing-depth scores the thread-pull(s) that remain.
     const formatted = transcript
+      .filter((m) => String(m.content ?? '').trim() !== '')
       .map((m) => `${m.role === 'user' ? 'THINKER' : 'LISTENER'}: ${m.content}`)
       .join('\n\n');
 
@@ -233,10 +241,7 @@ ${arcLines}`;
   // Returns: { text, tokenUsage, cost, modelCalled } on success;
   //          { error } on failure (aborts the run).
   async _listenerTurn({ listenerSystem, transcript, context, turn }) {
-    const listenerMessages = [
-      { role: 'system', content: listenerSystem },
-      ...transcript,
-    ];
+    const listenerMessages = toProviderMessages(listenerSystem, transcript);
     const resp = await this._listener.callApi(
       JSON.stringify(listenerMessages),
       context,
@@ -251,6 +256,28 @@ ${arcLines}`;
       modelCalled: true,
     };
   }
+}
+
+// Build a provider-safe chat array from listener-POV turns. An idea-dictation
+// listener stays silent while the thinker dictates, which surfaces as an empty
+// turn; the Anthropic Messages API rejects BOTH empty content blocks and
+// non-alternating roles, so a silent turn would abort the run. Drop empty
+// (silent) turns and merge consecutive same-role turns so what we SEND always
+// alternates and is non-empty. The raw transcript keeps the silences intact —
+// only the model-facing copy is sanitized.
+function toProviderMessages(systemContent, turns) {
+  const msgs = [{ role: 'system', content: systemContent }];
+  for (const t of turns) {
+    const content = String(t.content ?? '').trim();
+    if (!content) continue; // silence — nothing to send
+    const last = msgs[msgs.length - 1];
+    if (last.role === t.role) {
+      last.content += `\n\n${content}`; // keep roles strictly alternating
+    } else {
+      msgs.push({ role: t.role, content });
+    }
+  }
+  return msgs;
 }
 
 function accumulateUsage(total, u) {

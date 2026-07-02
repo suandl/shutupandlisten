@@ -1,0 +1,10 @@
+description: research-hunch
+metadata:
+  topic: a research hunch that people judge how long a route is by the number of turns rather than the distance, and a rough idea of how to test it
+  idea_arc:
+    - open the hunch and where it came from — a personal observation about preferring fewer-turn routes even when they're longer
+    - develop the mechanism you suspect — turns cost attention and decisions, so a straighter route feels cheaper than it actually is
+    - move toward how you'd test it — pairs of routes that trade turns against distance, and what you'd measure
+    - reach a natural stopping point — the hunch and rough test are laid out
+vars:
+  starting_turn: "Here's a hunch I can't shake. I think people judge how long a route is by the number of turns, not the actual distance. Like, I will genuinely pick a route that's longer in miles as long as it's basically a straight shot, and then I'll swear it was faster even when my phone's timer says it wasn't."

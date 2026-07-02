@@ -1,0 +1,15 @@
+description: essay-thesis
+# topic + idea_arc live under `metadata` rather than `vars` so promptfoo
+# doesn't parametrically expand the arc list into one test per stage.
+# The multi-turn simulator (providers/multi-turn.js) reads them from
+# context.test.metadata and drives the thinker through the arc; the
+# prompt template reads only `starting_turn`.
+metadata:
+  topic: an essay thesis that the real cost of open-plan offices isn't noise but the loss of being unobserved, which quietly changes how people think
+  idea_arc:
+    - open the thesis and what provoked it — the usual complaint is noise, but that misses the deeper thing
+    - develop the argument — constant visibility makes people perform work instead of doing it, and kills the half-formed thinking that needs privacy
+    - bring in a concrete example or contrast — how a closed door changes what you're willing to try before it's any good
+    - reach a natural stopping point — the thesis is laid out
+vars:
+  starting_turn: "I think I finally have the thesis for this piece. Everyone writes about open-plan offices being loud, and sure, they are — but I think noise is the shallow complaint. The real thing we lost is the ability to be unobserved. To not be performing work for a room full of people who can see your screen the whole time."

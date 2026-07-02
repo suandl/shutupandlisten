@@ -13,7 +13,7 @@ description: shutupandlisten — listener-prompt evaluation harness
 #
 # Each scenario runs as a 4-6 turn conversation: simulators/thinker.md
 # drives the user (thinker) side using the scenario's `topic` and
-# `emotional_arc`, reactive to the listener's reply each turn. The
+# `idea_arc`, reactive to the listener's reply each turn. The
 # system under test produces the listener turn. providers/multi-turn.js
 # orchestrates the loop and returns the full transcript as the output;
 # the judges score against that transcript.
@@ -177,6 +177,6 @@ defaultTest:
 # Each scenario YAML in scenarios/ is itself a promptfoo test case
 # (top-level `description` + `vars` + `metadata`). The glob below loads
 # them all, so scenarios/*.yaml is the single source of truth for both
-# the starting turn AND the topic / emotional_arc that the multi-turn
+# the starting turn AND the topic / idea_arc that the multi-turn
 # simulator consumes.
 tests: file://scenarios/*.yaml
