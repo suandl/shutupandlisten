@@ -1,4 +1,4 @@
-# web/ — Rung 1 in-browser harness (U3 timing + U4 STT + U5 listener)
+# web/ — Rung 1 in-browser harness (U3 timing + U4 STT + U5 listener + U6 TTS)
 
 The product-defining turn-detection layer, built first and in isolation as a
 **timing-only milestone**: Web Audio → Silero VAD → a configurable **silence
@@ -26,8 +26,20 @@ rule. `silence`/`acknowledge` are answered from RULES with no model call (the
 (off the CPU/WASM the STT uses), prompted with [`prompts/chatgpt.md`](../prompts/chatgpt.md)
 and constrained to the chosen tier. The reply renders under its turn in the
 Transcript panel. Like STT it is additive and downstream of the detector — it
-reads turn boundaries + words, never the tested timing. TTS + the end-to-end
-warmed loop are still to come (U6).
+reads turn boundaries + words, never the tested timing.
+
+**U6** closes the loop: the gated reply is now **spoken**. On-device **TTS**
+([`src/tts.ts`](src/tts.ts)) synthesizes each substantive reply (and the short
+acknowledge backchannel; silence stays silent) on **CPU/WASM** — off the GPU the
+listener uses — and main.ts plays it through Web Audio, so the harness responds
+*aloud*, in a real back-and-forth. If the thinker speaks while a reply is playing
+it **yields instantly** (barge-in stops the voice and returns to listening),
+reusing the detector's tested barge-in event without touching its timing. A pure
+**loop-metrics** ([`src/loop-metrics.ts`](src/loop-metrics.ts)) recorder measures
+the warmed loop per stage — *turn-end → transcript → gate → reply → speech-start* —
+surfaced in a **Loop latency** panel so the operator can see where time goes.
+Un-provisioned (or `?tts=off`), TTS degrades to a short, labelled **placeholder
+tone** so the loop still audibly closes.
 
 > The bead frames the ladder as "listen > acknowledge > probe > advise". That is
 > shorthand: the repo's canonical hierarchy (CONCEPTS.md) is the four tiers above
@@ -56,6 +68,8 @@ npm run provision:stt  # build/deploy step: fetch the self-hosted STT engine +
                        # Moonshine/Whisper weights into public/ so mic mode transcribes
 npm run provision:llm  # build/deploy step: fetch the self-hosted LLM engine +
                        # small instruct-model weights into public/ so the listener replies
+npm run provision:tts  # build/deploy step: fetch the self-hosted TTS engine +
+                       # small voice-model weights into public/ so the companion speaks
 ```
 
 `npm test` runs under Node's built-in test runner via native TypeScript
@@ -89,17 +103,20 @@ Two modes (top bar):
 
 The **Stage** shows the live state, a patience countdown bar (held open visibly
 when the incomplete veto is active), the current turn/verdict/arm, and the
-stubbed-response indicator (a soft tone, not TTS). The **Transcript + listener** panel
-(mic) shows the running transcript grouped by turn: each segment's words, a `⏷`
-where speech-end landed, and a `turn-end floor|extended` chip (with how long the
-floor held after the last speech) where the detector ended the turn — so you can
-read back what was said and see exactly where patience cut or held. Under each
-completed turn the **listener's reply** appears: a faint `· held ·` when the gate
-holds silence, a `mm`/`yeah` backchannel for a minimal acknowledgment, or a
-`reflection`/`question` tier chip with the on-device LLM's reply (or its labelled
-stub) — so you can see the response hierarchy escalate, or decline to. The **event
-log** streams the input events (← from the audio source) and output events (→
-from the detector).
+responding indicator. The **Transcript + listener** panel (mic) shows the running
+transcript grouped by turn: each segment's words, a `⏷` where speech-end landed,
+and a `turn-end floor|extended` chip (with how long the floor held after the last
+speech) where the detector ended the turn — so you can read back what was said and
+see exactly where patience cut or held. Under each completed turn the **listener's
+reply** appears: a faint `· held ·` when the gate holds silence, a `mm`/`yeah`
+backchannel for a minimal acknowledgment, or a `reflection`/`question` tier chip
+with the on-device LLM's reply (or its labelled stub) — so you can see the response
+hierarchy escalate, or decline to. **In mic mode that reply is also spoken aloud**
+(U6): silence stays silent, the acknowledge backchannel and the substantive reply
+are voiced, and if you talk over it the voice yields instantly. The **Loop latency**
+panel reports the warmed loop's per-stage cost (turn-end → transcript → gate →
+reply → speech-start) so you can see where time goes. The **event log** streams the
+input events (← from the audio source) and output events (→ from the detector).
 
 ### Live knobs
 
@@ -115,7 +132,7 @@ from the detector).
 ## Architecture
 
 ```
-audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ UI / stubbed response
+audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ UI / spoken reply (U6)
 (mic | sim)                  (pure, tested)
 ```
 
@@ -144,9 +161,17 @@ audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ U
   (small instruct model on WebGPU, WASM fallback) + labelled stub fallback (see
   substitutions). `src/listener-config.ts` resolves its live config (same-origin
   guard + `?llm=` overrides), split out to be unit-testable like `stt-config.ts`.
-- `src/knobs.ts`, `src/main.ts`, `index.html` — knob specs and UI wiring
-  (main.ts also runs the U5 gate + listener over completed turns and renders each
-  reply under its transcript turn).
+- `src/tts.ts` / `src/tts.worker.ts` — on-device TTS adapter (small voice model on
+  CPU/WASM) that synthesizes the gated reply to PCM + a placeholder-tone stub
+  fallback (see substitutions). `src/tts-config.ts` resolves its live config
+  (same-origin guard + `?tts=` overrides), split out to be unit-testable.
+- `src/loop-metrics.ts` — the U6 crux: a pure per-stage latency recorder for the
+  warmed loop (turn-end → transcript → gate → reply → speech-start). No DOM, no
+  clock — fully unit-tested, the same discipline as `measurement.ts`.
+- `src/knobs.ts`, `src/main.ts`, `index.html` — knob specs and UI wiring (main.ts
+  also runs the U5 gate + listener over completed turns, renders each reply under
+  its transcript turn, speaks it via the U6 voice with barge-in yield, and records
+  the loop-latency panel).
 
 ## Component substitutions (per the plan: substitute and note)
 
@@ -230,14 +255,52 @@ audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ U
   unit-tested regardless, so only reply *wording* depends on the model, validated
   on real audio during the feel-test.
 
+- **TTS voice (U6)** — wired real and served self-hosted, the same pattern as STT
+  (CPU/WASM). `src/tts.worker.ts` runs a
+  [transformers.js](https://github.com/huggingface/transformers.js)-compatible
+  `text-to-speech` pipeline from the committed same-origin wrapper
+  `public/tts-engine.js` (`device: 'wasm'`, `dtype: q8`) plus the model under
+  `public/models/<id>/`, provisioned at build/deploy by `npm run provision:tts`
+  (the `public/tts/` + `public/models/` trees gitignored — large binaries). The
+  same no-egress posture holds: the engine module is accepted **same-origin only**
+  (`sanitizeEngineUrl`), `env.allowRemoteModels=false`, and no synthesized audio
+  leaves the page — provisioning is the only network fetch and it runs at deploy
+  time. Synthesis runs in a Web Worker off the main thread and off the GPU (the
+  listener's); STT (listening) and TTS (responding) never contend for CPU/WASM at
+  the same time.
+
+  Per-run overrides, never relaxing that posture:
+
+  ```
+  ?tts=off                     # kill switch → force the placeholder tone (also: stub|none|0|false|no)
+  ?ttsEngine=<same-origin url> # override the engine module (must be self-hosted)
+  ?ttsModel=<id/path>          # override the on-device voice model
+  ```
+
+  SUBSTITUTE-AND-NOTE (mirroring STT/LLM, and the operator's "tangibility first"
+  steer — a crude-but-real spoken reply beats a polished voice that takes longer):
+  the concrete voice is the first task of a U6 tuning pass. The adapter ships
+  **Xenova/mms-tts-eng** — a small VITS voice with a transformers.js ONNX export
+  and no speaker-embedding step, so a single `synthesize(text)` runs it on
+  CPU/WASM — as the placeholder default, and stays engine-agnostic behind the
+  same-origin `?ttsEngine=` override so a finalised pick swaps in without a code
+  edit. With no provisioned assets — or `?tts=off` — the adapter degrades not to
+  silence but to a short, labelled **placeholder tone** (the audible analog of the
+  listener's labelled-text stub), so the warmed loop still audibly closes and the
+  Stage shows the live mode (`tts (wasm|stub)`); only voice *quality* depends on
+  the model, validated on real audio during the feel-test.
+
 ## Verification boundary
 
 Open-PR criteria (met): scenarios 1–5 pass as automated tests, the asymmetric
 veto and scenario-6 measurement pass, the transcript-alignment, STT-fallback,
-**response-hierarchy-gate, listener-fallback, and listener-config** suites pass,
-the project type-checks, and the harness builds and runs live with working knobs.
-The **operator feel-test** — talking through a real session and tuning the knobs
-against the usefulness bar — is a separate post-merge gate owned by the epic
-host, and is where the live mic + real smart-turn, STT, and **listener** models
-are exercised end to end (real transcription read-back and reply *quality* are
-validated there, not in CI — CI pins the gate ROUTING, which is model-independent).
+response-hierarchy-gate, listener-fallback, listener-config, **TTS-fallback,
+TTS-config, and loop-metrics** suites pass, the project type-checks, and the
+harness builds and runs live with working knobs. The **operator feel-test** —
+talking through a real **warmed loop** and rating it against the usefulness bar —
+is a separate post-merge gate owned by the epic host, and is where the live mic +
+real smart-turn, STT, listener, and **TTS** models are exercised end to end (real
+transcription read-back, reply *quality*, and the spoken back-and-forth are
+validated there, not in CI — CI pins the gate ROUTING and the loop-latency math,
+which are model-independent). Rating a real warmed session is where the epic's
+decision-ready verdict (U8) gets its evidence.

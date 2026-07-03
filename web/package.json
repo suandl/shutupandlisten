@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Rung 1 in-browser quiet-companion harness — U3 timing (VAD + silence floor + smart-turn asymmetric veto) + U4 on-device STT (Moonshine/Whisper, CPU·WASM) with turn-aligned transcript.",
+  "description": "Rung 1 in-browser quiet-companion harness — U3 timing (VAD + silence floor + smart-turn asymmetric veto) + U4 on-device STT (Moonshine/Whisper, CPU·WASM) + U5 response-hierarchy gate + on-device listener LLM (WebGPU) + U6 on-device TTS (CPU·WASM) closing the end-to-end warmed loop with per-stage instrumentation.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -12,6 +12,7 @@
     "test:watch": "node --test --watch 'src/**/*.test.ts'",
     "provision:stt": "node scripts/provision-stt.mjs",
     "provision:llm": "node scripts/provision-llm.mjs",
+    "provision:tts": "node scripts/provision-tts.mjs",
     "measure": "node src/measure.ts"
   },
   "dependencies": {

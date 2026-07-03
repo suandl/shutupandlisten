@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>shutupandlisten — turn detection (U3 timing-only)</title>
+    <title>shutupandlisten — warmed loop (U3 timing · U4 STT · U5 listener · U6 TTS)</title>
     <style>
       :root {
         --bg: #0f1115;
@@ -118,12 +118,22 @@
       .tx-response.acknowledge .tx-response-body { color: var(--muted); font-style: italic; }
       .tx-response-body.pending { color: var(--muted); font-style: italic; }
       .tx-response-body.stub { color: var(--muted); }
+
+      /* U6 warmed-loop latency panel: mean per-stage latency + recent per-turn totals. */
+      .metrics { font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+      .lm-summary { color: var(--ink); font-weight: 600; margin-bottom: 8px; }
+      .lm-legs { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+      .lm-leg { display: flex; justify-content: space-between; gap: 10px; }
+      .lm-leg-label { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+      .lm-leg-val { color: var(--speak); font-size: 12px; font-variant-numeric: tabular-nums; }
+      .lm-turns { display: flex; flex-direction: column; gap: 2px; }
+      .lm-turn { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
     </style>
   </head>
   <body>
     <header>
       <h1>shutupandlisten — patience-tuned turn detection</h1>
-      <p>U3 timing + U4 STT + U5 listener: Web Audio → Silero VAD → silence floor → smart-turn asymmetric veto → on-device STT (Moonshine/Whisper, CPU·WASM) → a response-hierarchy gate + small on-device LLM (WebGPU) that replies only when a turn earns it. TTS still to come (U6).</p>
+      <p>The end-to-end warmed loop: Web Audio → Silero VAD → silence floor → smart-turn asymmetric veto → on-device STT (Moonshine/Whisper, CPU·WASM) → a response-hierarchy gate + small on-device LLM (WebGPU) that replies only when a turn earns it → on-device TTS (CPU·WASM) that speaks the reply aloud, yields the floor instantly on barge-in, then returns to listening. Per-stage loop latency is measured below.</p>
     </header>
 
     <div class="modebar" style="padding: 0 22px;">
@@ -149,7 +159,7 @@
               <div class="track"><div class="fill" id="patience-fill"></div></div>
               <div class="cap" id="patience-cap">patience window idle</div>
             </div>
-            <div class="respond-ind" id="respond-ind"><span class="dot"></span> companion responding (stubbed)…</div>
+            <div class="respond-ind" id="respond-ind"><span class="dot"></span> companion responding…</div>
           </div>
 
           <div class="controls" id="sim-controls"></div>
@@ -163,6 +173,11 @@
         <div class="panel">
           <h2>Transcript + listener (mic)</h2>
           <div class="transcript" id="transcript"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Loop latency (mic)</h2>
+          <div class="metrics" id="loop-metrics"></div>
         </div>
 
         <div class="panel">

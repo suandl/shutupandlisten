@@ -5,12 +5,14 @@ dist/
 
 # Self-hosted on-device model assets — provisioned at build/deploy by
 # `npm run provision:stt` (STT: transformers.js engine + ONNX Runtime wasm +
-# Moonshine/Whisper weights) and `npm run provision:llm` (U5 listener: engine +
-# the small instruct-model weights). Never committed: large binaries, and the
+# Moonshine/Whisper weights), `npm run provision:llm` (U5 listener: engine +
+# the small instruct-model weights), and `npm run provision:tts` (U6 voice:
+# engine + the small TTS-model weights). Never committed: large binaries, and the
 # no-egress design serves them same-origin from public/ → dist/. Absent → the
-# adapters use their labelled stubs. The committed public/stt-engine.js and
-# public/llm-engine.js wrappers are NOT under these paths. public/models/ is the
-# shared weight tree for both.
+# adapters use their labelled stubs (the TTS adapter a placeholder tone). The
+# committed public/stt-engine.js, public/llm-engine.js and public/tts-engine.js
+# wrappers are NOT under these paths. public/models/ is the shared weight tree.
 public/stt/
 public/llm/
+public/tts/
 public/models/
