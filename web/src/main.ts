@@ -24,6 +24,9 @@ import {
 } from './transcript.ts';
 import { resolveListenerOptions } from './listener-config.ts';
 import { createListener, listenerStubText, type Listener, type ListenerMode } from './listener.ts';
+import { resolveTtsOptions } from './tts-config.ts';
+import { createSpeaker, type Speaker, type SpeakerMode } from './tts.ts';
+import { LoopMetrics, LOOP_LEGS, legKey } from './loop-metrics.ts';
 import {
   decideTier,
   buildListenerRequest,
@@ -53,6 +56,12 @@ const sttOptions = resolveSttOptions(location.search, location.href);
 //   ?llm=off  ·  ?llmEngine=<same-origin url>  ·  ?llmModel=<id>
 const listenerOptions = resolveListenerOptions(location.search, location.href);
 
+// TTS config — U6, same shape again: self-hosted same-origin engine + a small
+// on-device voice by default (a provisioned deploy speaks; an un-provisioned one /
+// CI degrades to a placeholder tone), retunable per run:
+//   ?tts=off  ·  ?ttsEngine=<same-origin url>  ·  ?ttsModel=<id>
+const ttsOptions = resolveTtsOptions(location.search, location.href);
+
 // ── detector + live state ──
 const turnKnobs: TurnKnobs = defaultTurnKnobs();
 const vadKnobs: VadKnobs = { ...DEFAULT_VAD_KNOBS };
@@ -75,6 +84,7 @@ const respondInd = $('respond-ind');
 const logEl = $('log');
 const sourceInfo = $('source-info');
 const transcriptEl = $('transcript');
+const metricsEl = $('loop-metrics');
 
 // ── transcript state (additive display; aligned to detector turns) ──
 const transcriptSegments = new Map<number, TranscriptSegment>();
@@ -86,7 +96,10 @@ function resetTranscript(): void {
   turnStarts = [];
   turnEnds = [];
   turnResponses.clear();
+  loopMetrics.reset();
+  stopSpeech();
   renderTranscript();
+  renderMetrics();
 }
 
 // ── listener (U5): response-hierarchy gate + on-device LLM, additive over the
@@ -101,6 +114,8 @@ interface TurnResponse {
   text: string; // rendered reply: ack, LLM reply, LLM stub, or '' for silence
   mode?: ListenerMode; // set for reflection/question (webgpu | wasm | stub)
   status: 'pending' | 'done';
+  spoken?: boolean; // guard: this reply's audio was already synthesized + played
+  ttsMode?: SpeakerMode; // which voice spoke it (webgpu | wasm | stub tone)
 }
 const turnResponses = new Map<number, TurnResponse>();
 
@@ -115,6 +130,88 @@ function disposeListener(): void {
   const p = listenerPromise;
   listenerPromise = null;
   if (p) void p.then((l) => l.close()).catch(() => {});
+}
+
+// ── TTS (U6): the on-device voice, warmed lazily like the listener and reused.
+// The speaker synthesizes the gated reply to PCM (pure/testable); playback and the
+// barge-in yield are WebAudio glue that lives here, kept out of the adapter. ──
+let speakerPromise: Promise<Speaker> | null = null;
+function getSpeaker(): Promise<Speaker> {
+  if (!speakerPromise) speakerPromise = createSpeaker(ttsOptions);
+  return speakerPromise;
+}
+function disposeSpeaker(): void {
+  const p = speakerPromise;
+  speakerPromise = null;
+  stopSpeech();
+  if (p) void p.then((s) => s.close()).catch(() => {});
+}
+
+// The current utterance's WebAudio source, so a barge-in (or a new turn) can cut it.
+let currentSpeech: AudioBufferSourceNode | null = null;
+function stopSpeech(): void {
+  if (!currentSpeech) return;
+  try {
+    currentSpeech.onended = null;
+    currentSpeech.stop();
+  } catch {
+    /* already stopped */
+  }
+  currentSpeech = null;
+}
+function playPcm(pcm: Float32Array, sampleRate: number): void {
+  ensureAudioCtx();
+  if (!audioCtx || pcm.length === 0 || sampleRate <= 0) return;
+  stopSpeech(); // one voice at a time — a new reply replaces the last
+  const buf = audioCtx.createBuffer(1, pcm.length, sampleRate);
+  buf.getChannelData(0).set(pcm);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(audioCtx.destination);
+  src.onended = () => {
+    if (currentSpeech === src) currentSpeech = null;
+  };
+  currentSpeech = src;
+  src.start();
+}
+
+// ── warmed-loop instrumentation (U6): per-stage latency turn-end → transcript →
+// gate → reply → speech-start, recorded as the harness observes each stage. ──
+const loopMetrics = new LoopMetrics();
+
+// Live device modes, shown next to the source once each adapter resolves.
+let liveListenerMode: ListenerMode | null = null;
+let liveSpeakerMode: SpeakerMode | null = null;
+function refreshSourceInfo(): void {
+  const parts = [audio.info];
+  if (liveListenerMode) parts.push(`listener (${liveListenerMode})`);
+  if (liveSpeakerMode) parts.push(`tts (${liveSpeakerMode})`);
+  sourceInfo.textContent = parts.join(' + ');
+}
+
+/**
+ * Speak a completed turn's gated reply. silence stays silent; acknowledge speaks its
+ * short backchannel; reflection/question speak the LLM reply. Synthesis + playback
+ * are async and idempotent per turn (the `spoken` guard), so this is safe to call
+ * from the reply-ready paths without double-voicing on re-render.
+ */
+function speakResponse(entry: TurnResponse): void {
+  if (mode !== 'mic' || entry.spoken) return;
+  const text = entry.text.trim();
+  if (!text || entry.decision.tier === 'silence') return; // silence stays silent
+  entry.spoken = true;
+  void getSpeaker()
+    .then((sp) => sp.synthesize(text))
+    .then((res) => {
+      entry.ttsMode = res.mode;
+      loopMetrics.mark(entry.turn, 'speech-start', now());
+      playPcm(res.audio, res.sampleRate);
+      renderMetrics();
+      renderTranscript();
+    })
+    .catch(() => {
+      /* the speaker never rejects (it degrades to the tone); nothing to do */
+    });
 }
 
 // ── knobs ──
@@ -196,12 +293,21 @@ $('mic-start').addEventListener('click', async () => {
   ensureAudioCtx();
   try {
     await audio.start();
-    sourceInfo.textContent = audio.info;
-    // Warm the listener now so it is ready by the first completed turn; when it
-    // resolves, surface which mode is live (webgpu | wasm | stub) next to STT.
-    // Guard against a stop / mode-switch that happened while it was loading.
+    refreshSourceInfo();
+    // Warm the listener AND the voice now so both are ready by the first completed
+    // turn; when each resolves, surface which mode is live next to the source.
+    // Guard against a stop / mode-switch that happened while they were loading.
     void getListener().then((l) => {
-      if (mode === 'mic' && listenerPromise) sourceInfo.textContent = `${audio.info} + listener (${l.mode})`;
+      if (mode === 'mic' && listenerPromise) {
+        liveListenerMode = l.mode;
+        refreshSourceInfo();
+      }
+    });
+    void getSpeaker().then((s) => {
+      if (mode === 'mic' && speakerPromise) {
+        liveSpeakerMode = s.mode;
+        refreshSourceInfo();
+      }
     });
   } catch (err) {
     sourceInfo.textContent = `mic failed: ${(err as Error).message} — staying in simulation`;
@@ -210,6 +316,9 @@ $('mic-start').addEventListener('click', async () => {
 $('mic-stop').addEventListener('click', () =>
   void audio.stop().then(() => {
     disposeListener();
+    disposeSpeaker();
+    liveListenerMode = null;
+    liveSpeakerMode = null;
     sourceInfo.textContent = audio.info;
   }),
 );
@@ -223,6 +332,9 @@ async function switchMode(next: 'sim' | 'mic'): Promise<void> {
   if (next === mode) return;
   await audio.stop();
   disposeListener(); // free the LLM worker when leaving mic; recreated lazily on next mic start
+  disposeSpeaker(); // free the TTS worker + stop any playback; recreated lazily on next mic start
+  liveListenerMode = null;
+  liveSpeakerMode = null;
   mode = next;
   audio = next === 'mic' ? new MicAudioSource({ now, vadKnobs, sttOptions }) : new SimAudioSource(now);
   wireAudio(audio);
@@ -264,17 +376,24 @@ function handleOut(e: OutputEvent): void {
   // relative to the words. Strictly read-only — does not touch the detector.
   if (e.type === 'turn-start') {
     turnStarts.push({ turn: e.turn, t: e.t });
+    // A new turn means the thinker is speaking again — yield the floor: cut any
+    // reply still playing (covers a TTS clip that outlasts the responding window).
+    stopSpeech();
     renderTranscript();
   } else if (e.type === 'turn-end') {
     turnEnds.push({ turn: e.turn, t: e.t, reason: e.reason });
+    // Stage 1 of the warmed-loop metric: the detector ended this turn.
+    loopMetrics.mark(e.turn, 'turn-end', e.t);
     renderTranscript();
   }
   if (e.type === 'response-start') {
     respondInd.dataset.on = 'true';
-    beep();
   } else if (e.type === 'response-end' || e.type === 'barge-in') {
     respondInd.dataset.on = 'false';
   }
+  // Barge-in — the detector emits it on speech-start during responding — yields the
+  // voice instantly, reusing the tested detector event without altering its timing.
+  if (e.type === 'barge-in') stopSpeech();
   refreshStage();
 }
 
@@ -390,7 +509,10 @@ function maybeRespond(groups: TurnTranscript[]): void {
       .sort((a, b) => a.turn - b.turn)
       .map((r) => ({ turn: r.turn, tier: r.decision.tier }));
 
+    // Stage 2+3: the transcript resolved (we have userText) and the gate decides.
+    loopMetrics.mark(g.turn, 'transcript', now());
     const decision = decideTier({ turn: g.turn, text: userText, endReason: g.end.reason }, priorDecisions);
+    loopMetrics.mark(g.turn, 'gate', now());
     const entry: TurnResponse = {
       turn: g.turn,
       userText,
@@ -413,15 +535,27 @@ function maybeRespond(groups: TurnTranscript[]): void {
           entry.text = res.text;
           entry.mode = res.mode;
           entry.status = 'done';
+          loopMetrics.mark(g.turn, 'reply', now()); // stage 4: reply text ready
+          speakResponse(entry); // stage 5 (speech-start) recorded when playback begins
           renderTranscript();
+          renderMetrics();
         })
         .catch(() => {
           entry.text = listenerStubText(decision.tier);
           entry.mode = 'stub';
           entry.status = 'done';
+          loopMetrics.mark(g.turn, 'reply', now());
+          speakResponse(entry);
           renderTranscript();
+          renderMetrics();
         });
+    } else if (entry.text) {
+      // acknowledge: the backchannel is ready synchronously → speak it now.
+      // (silence: text is '' → it stays silent, nothing to voice.)
+      loopMetrics.mark(g.turn, 'reply', now());
+      speakResponse(entry);
     }
+    renderMetrics();
   }
 }
 
@@ -471,6 +605,67 @@ function tierChip(tier: Tier): HTMLElement {
   return chip;
 }
 
+// ── warmed-loop metrics panel (U6): the per-stage latency of the end-to-end loop,
+// so the operator can SEE where time goes between a turn ending and the companion
+// speaking. Mic-only (the simulator drives no real STT/LLM/TTS pipeline). ──
+function renderMetrics(): void {
+  metricsEl.replaceChildren();
+
+  if (mode !== 'mic') {
+    const hint = document.createElement('div');
+    hint.className = 'tx-empty';
+    hint.textContent = 'Loop latency appears in microphone mode, once a turn has been spoken.';
+    metricsEl.appendChild(hint);
+    return;
+  }
+
+  const summary = loopMetrics.summary();
+  const head = document.createElement('div');
+  head.className = 'lm-summary';
+  head.textContent =
+    summary.completed > 0
+      ? `${summary.completed} spoken · mean turn-end→speech ${summary.meanTotalMs}ms`
+      : 'waiting for the first spoken reply…';
+  metricsEl.appendChild(head);
+
+  // Per-leg mean latency (the pipeline's costs: STT / gate / LLM / TTS).
+  const legRows = LOOP_LEGS.map(({ from, to }) => ({ from, to, ms: summary.meanLegMs[legKey(from, to)] })).filter(
+    (r) => r.ms !== undefined,
+  );
+  if (legRows.length) {
+    const legs = document.createElement('div');
+    legs.className = 'lm-legs';
+    for (const r of legRows) {
+      const row = document.createElement('div');
+      row.className = 'lm-leg';
+      const label = document.createElement('span');
+      label.className = 'lm-leg-label';
+      label.textContent = `${r.from} → ${r.to}`;
+      const val = document.createElement('span');
+      val.className = 'lm-leg-val';
+      val.textContent = `${r.ms}ms`;
+      row.append(label, val);
+      legs.appendChild(row);
+    }
+    metricsEl.appendChild(legs);
+  }
+
+  // Recent per-turn totals (most-recent first), so a slow turn stands out.
+  const recent = loopMetrics.all().slice(-6).reverse();
+  if (recent.length) {
+    const list = document.createElement('div');
+    list.className = 'lm-turns';
+    for (const tl of recent) {
+      const row = document.createElement('div');
+      row.className = 'lm-turn';
+      row.textContent =
+        tl.totalMs !== null ? `turn ${tl.turn}: ${tl.totalMs}ms` : `turn ${tl.turn}: — (not spoken)`;
+      list.appendChild(row);
+    }
+    metricsEl.appendChild(list);
+  }
+}
+
 // ── stage rendering ──
 function refreshStage(): void {
   const snap = detector.peek(now());
@@ -491,7 +686,7 @@ function refreshStage(): void {
     }`;
   } else {
     patienceFill.style.width = '0%';
-    patienceCap.textContent = snap.state === 'responding' ? 'responding (stubbed)…' : 'patience window idle';
+    patienceCap.textContent = snap.state === 'responding' ? 'responding…' : 'patience window idle';
   }
 }
 
@@ -521,7 +716,8 @@ function logOutput(e: OutputEvent): void {
   append(e.type, `${fmtT(e.t)}  → ${e.type} turn ${e.turn}${reason}`);
 }
 
-// ── a soft canned tone for the stubbed response (no TTS) ──
+// ── WebAudio context for TTS playback, created lazily on the first user gesture
+// (a click on a sim script or mic-start) so autoplay policy is satisfied. ──
 function ensureAudioCtx(): void {
   if (!audioCtx) {
     const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -529,21 +725,8 @@ function ensureAudioCtx(): void {
   }
   void audioCtx?.resume();
 }
-function beep(): void {
-  if (!audioCtx) return;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.type = 'sine';
-  osc.frequency.value = 240;
-  gain.gain.value = 0.0001;
-  osc.connect(gain).connect(audioCtx.destination);
-  const t = audioCtx.currentTime;
-  gain.gain.exponentialRampToValueAtTime(0.06, t + 0.02);
-  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
-  osc.start(t);
-  osc.stop(t + 0.2);
-}
 
 refreshStage();
 renderTranscript();
+renderMetrics();
 sourceInfo.textContent = audio.info;
