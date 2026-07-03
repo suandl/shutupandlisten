@@ -290,6 +290,59 @@ audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ U
   Stage shows the live mode (`tts (wasm|stub)`); only voice *quality* depends on
   the model, validated on real audio during the feel-test.
 
+- **Denoise stage — background-noise robustness (increment 2)** — an on-device
+  noise-suppression stage that sits **ahead of the Silero VAD**: the mic is
+  routed mic → denoise `AudioWorkletNode` → `MediaStreamDestination`, and the VAD
+  captures the **denoised** stream. This is the coffee-shop repro fix — with the
+  audio cleaned, light background music no longer fills the silence gap or reads
+  as false speech, so the gap reappears and turns end. `src/denoise.ts` is the
+  adapter; `src/vad.ts` feeds the denoised stream to `@ricky0123/vad-web`'s
+  `stream` option. Served self-hosted the same way as STT/LLM/TTS: the committed
+  same-origin wrapper `public/denoise-engine.js` loads the RNNoise worklet + wasm
+  from `public/denoise/`, provisioned at build/deploy by `npm run
+  provision:denoise` (that tree gitignored — binaries). The no-egress posture
+  holds: the engine module is accepted **same-origin only** (`sanitizeEngineUrl`,
+  a remote `?denoiseEngine=` is rejected back to the default and warned), and no
+  microphone audio leaves the page — provisioning is the only network fetch and it
+  runs at deploy time.
+
+  Per-run overrides, never relaxing that posture:
+
+  ```
+  ?denoise=off                     # kill switch → force passthrough (also: passthrough|none|0|false|no)
+  ?denoiseEngine=<same-origin url> # override the engine module (must be self-hosted)
+  ```
+
+  Provenance (adopted engine — RNNoise, the mature "just filter it out" tech, not
+  hand-rolled DSP):
+
+  | Component | Package / pin | Upstream | License | Source |
+  |---|---|---|---|---|
+  | RNNoise Web Audio worklet + wasm | `@sapphi-red/web-noise-suppressor@0.3.5` | RNNoise — [xiph/rnnoise](https://github.com/xiph/rnnoise) | MIT | [jsDelivr `@0.3.5/dist`](https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.3.5/) · [repo](https://github.com/sapphi-red/web-noise-suppressor) |
+
+  Provisioned-file SHA-256 (also recorded in `public/denoise/manifest.json`):
+
+  ```
+  rnnoise/workletProcessor.js  7e95f138ff6901a6a246dd29e6be4a1e8e4ada2baf0bcc04dae065745b51ff3d
+  rnnoise.wasm                 8b60a2ab88fdae2d1a9f940249d0eb072f28ba8e796f7304347b4e07839c8853
+  rnnoise_simd.wasm            8b60a2ab88fdae2d1a9f940249d0eb072f28ba8e796f7304347b4e07839c8853
+  ```
+
+  SUBSTITUTE-AND-NOTE (mirroring STT/LLM/TTS): with no provisioned assets — a
+  fresh clone, CI, an un-provisioned deploy — or `?denoise=off`, the adapter
+  degrades to a transparent **passthrough** that returns no stream, so the VAD
+  captures the mic itself, **byte-identical to the pre-denoise path**. That is the
+  downstream-safety guarantee — the tested turn-detection state machine
+  (`spec/turn-state-machine.md` + vectors) is provably unchanged whenever denoise
+  is off. The Stage shows the live mode (`denoise (rnnoise|passthrough)`). The
+  real-time RNNoise worklet runs only in a browser (headless CI has no Web Audio),
+  so — exactly like the STT model export — it is validated on real background
+  music during the operator feel-test; the CI-tested surface is the adapter's
+  passthrough/fallback contract (`src/denoise.test.ts`) and the config resolver
+  (`src/denoise-config.test.ts`). The stage stays engine-agnostic behind the
+  same-origin `?denoiseEngine=` override, so a DTLN/ONNX module can swap in
+  without a code edit.
+
 ## Verification boundary
 
 Open-PR criteria (met): scenarios 1–5 pass as automated tests, the asymmetric
