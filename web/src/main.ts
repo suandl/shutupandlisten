@@ -15,6 +15,7 @@ import {
 import { MicAudioSource, type AudioSource } from './vad.ts';
 import { SimAudioSource, SIM_SCRIPTS } from './simulator.ts';
 import { resolveSttOptions } from './stt-config.ts';
+import { resolveDenoiseOptions } from './denoise-config.ts';
 import {
   groupTranscript,
   type TranscriptSegment,
@@ -49,6 +50,13 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 // URL query retunes it for the feel-test without a code edit:
 //   ?stt=off  ·  ?sttEngine=<same-origin url>  ·  ?sttModel=<id>  ·  ?sttFallback=<id>
 const sttOptions = resolveSttOptions(location.search, location.href);
+
+// Denoise config — background-noise increment 2. An on-device denoise stage
+// ahead of the VAD (self-hosted same-origin engine when provisioned; passthrough
+// otherwise, so the mic path is unchanged), retunable per run for the noisy
+// feel-test:
+//   ?denoise=off  ·  ?denoiseEngine=<same-origin url>
+const denoiseOptions = resolveDenoiseOptions(location.search, location.href);
 
 // Listener LLM config — same shape as STT: self-hosted same-origin engine + a
 // small instruct model by default (a provisioned deploy responds; an
@@ -336,7 +344,7 @@ async function switchMode(next: 'sim' | 'mic'): Promise<void> {
   liveListenerMode = null;
   liveSpeakerMode = null;
   mode = next;
-  audio = next === 'mic' ? new MicAudioSource({ now, vadKnobs, sttOptions }) : new SimAudioSource(now);
+  audio = next === 'mic' ? new MicAudioSource({ now, vadKnobs, sttOptions, denoiseOptions }) : new SimAudioSource(now);
   wireAudio(audio);
   resetTranscript();
   $('mode')

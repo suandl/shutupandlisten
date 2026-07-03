@@ -13,6 +13,7 @@ import type { InputEvent } from './turn-detection.ts';
 import type { VadKnobs } from './knobs.ts';
 import { createSmartTurn, type SmartTurn } from './smart-turn.ts';
 import { createTranscriber, type Transcriber, type TranscriberOptions } from './stt.ts';
+import { createDenoiser, type Denoiser, type DenoiserOptions } from './denoise.ts';
 import type { TranscriptSegment } from './transcript.ts';
 
 export interface AudioSource {
@@ -37,6 +38,8 @@ export interface MicOptions {
   smartTurnModelUrl?: string;
   /** STT model config (default: no model → labelled stub). */
   sttOptions?: TranscriberOptions;
+  /** Denoise stage config (default: no engine → passthrough, mic path unchanged). */
+  denoiseOptions?: DenoiserOptions;
 }
 
 const VAD_SAMPLE_RATE = 16000;
@@ -50,9 +53,11 @@ export class MicAudioSource implements AudioSource {
   private readonly vadKnobs: VadKnobs;
   private readonly modelUrl?: string;
   private readonly sttOptions: TranscriberOptions;
+  private readonly denoiseOptions: DenoiserOptions;
   private vad: { start: () => void; pause: () => void; destroy?: () => void } | null = null;
   private smartTurn: SmartTurn | null = null;
   private transcriber: Transcriber | null = null;
+  private denoiser: Denoiser | null = null;
   private segmentId = 0;
   private segmentStartT = 0;
   private _info = 'microphone (not started)';
@@ -62,6 +67,7 @@ export class MicAudioSource implements AudioSource {
     this.vadKnobs = opts.vadKnobs;
     this.modelUrl = opts.smartTurnModelUrl;
     this.sttOptions = opts.sttOptions ?? {};
+    this.denoiseOptions = opts.denoiseOptions ?? {};
   }
 
   get info(): string {
@@ -74,7 +80,17 @@ export class MicAudioSource implements AudioSource {
     const { MicVAD } = await import('@ricky0123/vad-web');
     this.smartTurn = await createSmartTurn({ modelUrl: this.modelUrl });
 
+    // On-device denoise stage AHEAD of the VAD (background-noise increment 2):
+    // route the mic through a denoise AudioWorkletNode and hand the VAD the
+    // DENOISED stream, so background music no longer reads as speech and the
+    // silence gap reappears. Passthrough (default / ?denoise=off / un-provisioned
+    // / mic-or-Web-Audio failure) yields no stream — MicVAD captures the mic
+    // itself exactly as before, so the tested speech-event stream is unchanged.
+    this.denoiser = await createDenoiser(this.denoiseOptions);
+    const denoisedStream = this.denoiser.stream;
+
     this.vad = await MicVAD.new({
+      ...(denoisedStream ? { stream: denoisedStream as unknown as MediaStream } : {}),
       positiveSpeechThreshold: this.vadKnobs.positiveSpeechThreshold,
       negativeSpeechThreshold: this.vadKnobs.negativeSpeechThreshold,
       redemptionFrames: this.vadKnobs.redemptionFrames,
@@ -105,7 +121,7 @@ export class MicAudioSource implements AudioSource {
     // speech), by which point this is set. (su-0hi #3)
     this.transcriber = await createTranscriber(this.sttOptions);
     this.vad.start();
-    this._info = `Silero VAD + smart-turn (${this.smartTurn.mode}) + STT (${this.transcriber.mode})`;
+    this._info = `denoise (${this.denoiser.mode}) → Silero VAD + smart-turn (${this.smartTurn.mode}) + STT (${this.transcriber.mode})`;
   }
 
   private async classify(audio: Float32Array): Promise<void> {
@@ -131,6 +147,11 @@ export class MicAudioSource implements AudioSource {
     this.vad = null;
     this.transcriber?.close();
     this.transcriber = null;
+    // Close the denoiser AFTER the VAD: it releases the mic tracks and the
+    // AudioContext hosting the denoise worklet. Idempotent if the VAD already
+    // stopped the provided stream.
+    this.denoiser?.close();
+    this.denoiser = null;
     this._info = 'microphone (stopped)';
   }
 }
