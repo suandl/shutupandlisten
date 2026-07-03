@@ -3,10 +3,14 @@ dist/
 *.log
 .vite/
 
-# Self-hosted STT assets — provisioned at build/deploy by `npm run provision:stt`
-# (transformers.js engine bundle + ONNX Runtime wasm, and the Moonshine/Whisper
-# model weights). Never committed: large binaries, and the no-egress design serves
-# them same-origin from public/ → dist/. Absent → the adapter uses the labelled
-# stub. The committed public/stt-engine.js wrapper is NOT under these paths.
+# Self-hosted on-device model assets — provisioned at build/deploy by
+# `npm run provision:stt` (STT: transformers.js engine + ONNX Runtime wasm +
+# Moonshine/Whisper weights) and `npm run provision:llm` (U5 listener: engine +
+# the small instruct-model weights). Never committed: large binaries, and the
+# no-egress design serves them same-origin from public/ → dist/. Absent → the
+# adapters use their labelled stubs. The committed public/stt-engine.js and
+# public/llm-engine.js wrappers are NOT under these paths. public/models/ is the
+# shared weight tree for both.
 public/stt/
+public/llm/
 public/models/

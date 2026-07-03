@@ -15,7 +15,26 @@ import {
 import { MicAudioSource, type AudioSource } from './vad.ts';
 import { SimAudioSource, SIM_SCRIPTS } from './simulator.ts';
 import { resolveSttOptions } from './stt-config.ts';
-import { groupTranscript, type TranscriptSegment, type TurnStartMark, type TurnEndMark } from './transcript.ts';
+import {
+  groupTranscript,
+  type TranscriptSegment,
+  type TurnStartMark,
+  type TurnEndMark,
+  type TurnTranscript,
+} from './transcript.ts';
+import { resolveListenerOptions } from './listener-config.ts';
+import { createListener, listenerStubText, type Listener, type ListenerMode } from './listener.ts';
+import {
+  decideTier,
+  buildListenerRequest,
+  type GateDecision,
+  type PriorDecision,
+  type ConversationTurn,
+  type Tier,
+} from './response-hierarchy.ts';
+// The listener system prompt — imported raw from the single source of truth the
+// promptfoo harness also carries, so there is no TS copy to drift (see vite.config).
+import LISTENER_SYSTEM_PROMPT from '../../prompts/chatgpt.md?raw';
 
 const now = () => performance.now();
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -27,6 +46,12 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 // URL query retunes it for the feel-test without a code edit:
 //   ?stt=off  ·  ?sttEngine=<same-origin url>  ·  ?sttModel=<id>  ·  ?sttFallback=<id>
 const sttOptions = resolveSttOptions(location.search, location.href);
+
+// Listener LLM config — same shape as STT: self-hosted same-origin engine + a
+// small instruct model by default (a provisioned deploy responds; an
+// un-provisioned one / CI degrades to the labelled stub), retunable per run:
+//   ?llm=off  ·  ?llmEngine=<same-origin url>  ·  ?llmModel=<id>
+const listenerOptions = resolveListenerOptions(location.search, location.href);
 
 // ── detector + live state ──
 const turnKnobs: TurnKnobs = defaultTurnKnobs();
@@ -60,7 +85,36 @@ function resetTranscript(): void {
   transcriptSegments.clear();
   turnStarts = [];
   turnEnds = [];
+  turnResponses.clear();
   renderTranscript();
+}
+
+// ── listener (U5): response-hierarchy gate + on-device LLM, additive over the
+// transcript. When a turn ENDS and its transcript RESOLVES, the gate picks a tier
+// (silence / acknowledge = rules-only; reflection / question = the LLM) and the
+// listener's reply renders under that turn. Strictly downstream of the detector —
+// it reads turn boundaries + words, never alters the tested timing. ──
+interface TurnResponse {
+  turn: number;
+  userText: string; // the thinker's transcribed words (gate input + LLM history)
+  decision: GateDecision;
+  text: string; // rendered reply: ack, LLM reply, LLM stub, or '' for silence
+  mode?: ListenerMode; // set for reflection/question (webgpu | wasm | stub)
+  status: 'pending' | 'done';
+}
+const turnResponses = new Map<number, TurnResponse>();
+
+// The listener worker + model is heavy, so it is created lazily and only in mic
+// mode, then reused. Warmed on mic start so it is ready by the first completed turn.
+let listenerPromise: Promise<Listener> | null = null;
+function getListener(): Promise<Listener> {
+  if (!listenerPromise) listenerPromise = createListener(listenerOptions);
+  return listenerPromise;
+}
+function disposeListener(): void {
+  const p = listenerPromise;
+  listenerPromise = null;
+  if (p) void p.then((l) => l.close()).catch(() => {});
 }
 
 // ── knobs ──
@@ -143,11 +197,22 @@ $('mic-start').addEventListener('click', async () => {
   try {
     await audio.start();
     sourceInfo.textContent = audio.info;
+    // Warm the listener now so it is ready by the first completed turn; when it
+    // resolves, surface which mode is live (webgpu | wasm | stub) next to STT.
+    // Guard against a stop / mode-switch that happened while it was loading.
+    void getListener().then((l) => {
+      if (mode === 'mic' && listenerPromise) sourceInfo.textContent = `${audio.info} + listener (${l.mode})`;
+    });
   } catch (err) {
     sourceInfo.textContent = `mic failed: ${(err as Error).message} — staying in simulation`;
   }
 });
-$('mic-stop').addEventListener('click', () => void audio.stop().then(() => (sourceInfo.textContent = audio.info)));
+$('mic-stop').addEventListener('click', () =>
+  void audio.stop().then(() => {
+    disposeListener();
+    sourceInfo.textContent = audio.info;
+  }),
+);
 
 // ── mode switch ──
 $('mode').querySelectorAll('button').forEach((btn) => {
@@ -157,6 +222,7 @@ $('mode').querySelectorAll('button').forEach((btn) => {
 async function switchMode(next: 'sim' | 'mic'): Promise<void> {
   if (next === mode) return;
   await audio.stop();
+  disposeListener(); // free the LLM worker when leaving mic; recreated lazily on next mic start
   mode = next;
   audio = next === 'mic' ? new MicAudioSource({ now, vadKnobs, sttOptions }) : new SimAudioSource(now);
   wireAudio(audio);
@@ -231,6 +297,9 @@ function renderTranscript(): void {
     turnEnds,
   });
 
+  // U5: run the response-hierarchy gate + listener for any newly-completed turn.
+  maybeRespond(groups);
+
   if (groups.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'tx-empty';
@@ -286,9 +355,120 @@ function renderTranscript(): void {
       open.textContent = '▏open…';
       turnEl.appendChild(open);
     }
+
+    // U5: the listener's reply for this turn (once the gate has decided it).
+    const resp = turnResponses.get(g.turn);
+    if (resp) turnEl.appendChild(renderResponse(resp));
+
     transcriptEl.appendChild(turnEl);
   }
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+// Kick off the gate + listener for any turn that has just ended AND whose
+// transcript has fully resolved. The gate decision is synchronous (renders at
+// once); a reflection/question additionally calls the LLM, which resolves later
+// and re-renders. Idempotent — a turn already handled is skipped — so it is safe
+// to call on every render.
+function maybeRespond(groups: TurnTranscript[]): void {
+  if (mode !== 'mic') return;
+  for (const g of groups) {
+    if (!g.end || turnResponses.has(g.turn)) continue;
+    if (g.segments.some((s) => s.pending)) continue; // wait for STT to resolve first
+
+    // Real words only: a stub placeholder ("⟨speech 1.4s …⟩") is not transcription,
+    // so it must not read as a substantive turn. All-stub/empty ⇒ '' ⇒ silence.
+    const userText = g.segments
+      .filter((s) => !s.pending && s.mode !== 'stub')
+      .map((s) => s.text)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const priorDecisions: PriorDecision[] = [...turnResponses.values()]
+      .filter((r) => r.turn < g.turn)
+      .sort((a, b) => a.turn - b.turn)
+      .map((r) => ({ turn: r.turn, tier: r.decision.tier }));
+
+    const decision = decideTier({ turn: g.turn, text: userText, endReason: g.end.reason }, priorDecisions);
+    const entry: TurnResponse = {
+      turn: g.turn,
+      userText,
+      decision,
+      text: decision.ackText ?? '',
+      status: decision.callModel ? 'pending' : 'done',
+    };
+    turnResponses.set(g.turn, entry);
+
+    if (decision.callModel) {
+      const request = buildListenerRequest({
+        systemPrompt: LISTENER_SYSTEM_PROMPT,
+        tier: decision.tier,
+        currentTurnText: userText,
+        history: conversationHistory(g.turn),
+      });
+      void getListener()
+        .then((l) => l.respond(request))
+        .then((res) => {
+          entry.text = res.text;
+          entry.mode = res.mode;
+          entry.status = 'done';
+          renderTranscript();
+        })
+        .catch(() => {
+          entry.text = listenerStubText(decision.tier);
+          entry.mode = 'stub';
+          entry.status = 'done';
+          renderTranscript();
+        });
+    }
+  }
+}
+
+// Prior turns as an alternating thinker/listener history for the LLM. Silent turns
+// contribute nothing (their empty reply text is dropped downstream).
+function conversationHistory(beforeTurn: number): ConversationTurn[] {
+  const turns: ConversationTurn[] = [];
+  for (const r of [...turnResponses.values()].filter((x) => x.turn < beforeTurn).sort((a, b) => a.turn - b.turn)) {
+    turns.push({ speaker: 'thinker', text: r.userText });
+    if (r.text) turns.push({ speaker: 'listener', text: r.text });
+  }
+  return turns;
+}
+
+// Render one turn's listener reply: a faint "held" marker for silence, a tier chip
+// plus the backchannel for acknowledge, or the tier chip plus the LLM reply (or its
+// labelled stub / a pending ellipsis) for reflection/question.
+function renderResponse(r: TurnResponse): HTMLElement {
+  const el = document.createElement('div');
+  el.className = `tx-response ${r.decision.tier}`;
+  el.title = r.decision.reason + (r.mode ? ` · ${r.mode}` : '');
+
+  if (r.decision.tier === 'silence') {
+    el.classList.add('held');
+    el.textContent = '· held ·';
+    return el;
+  }
+
+  el.appendChild(tierChip(r.decision.tier));
+  const body = document.createElement('span');
+  body.className = 'tx-response-body';
+  if (r.decision.callModel && r.status === 'pending') {
+    body.classList.add('pending');
+    body.textContent = '…';
+  } else {
+    if (r.mode === 'stub') body.classList.add('stub');
+    body.textContent = r.text || '∅';
+  }
+  el.appendChild(body);
+  return el;
+}
+
+function tierChip(tier: Tier): HTMLElement {
+  const chip = document.createElement('span');
+  chip.className = `tx-tier ${tier}`;
+  chip.textContent = tier;
+  return chip;
 }
 
 // ── stage rendering ──
