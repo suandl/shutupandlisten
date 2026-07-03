@@ -74,6 +74,17 @@ export class MicAudioSource implements AudioSource {
     const { MicVAD } = await import('@ricky0123/vad-web');
     this.smartTurn = await createSmartTurn({ modelUrl: this.modelUrl });
 
+    // Browser APM (noiseSuppression + echoCancellation + autoGainControl) is the
+    // cheapest café-noise lever — and it is ALREADY engaged. vad-web 0.0.24's
+    // getUserMedia forces all three on by default, and its
+    // `additionalAudioConstraints` type deliberately Omits exactly those keys
+    // (real-time-vad.d.ts), so there is nothing to pass here to "enable" them:
+    // they are on for every mic capture (this MicVAD is the only mic path).
+    // Hence the increment-1 lever is the Silero thresholds below, live-tunable
+    // via vadKnobs (seeded from ?vad* URL knobs). If light background music still
+    // leaks past the browser APM, that is the trigger for the denoise stage
+    // (increment 2, su-n8x) — which will need its OWN MediaStream via MicVAD's
+    // `stream` option to sit a filter ahead of (or instead of) this default APM.
     this.vad = await MicVAD.new({
       positiveSpeechThreshold: this.vadKnobs.positiveSpeechThreshold,
       negativeSpeechThreshold: this.vadKnobs.negativeSpeechThreshold,
