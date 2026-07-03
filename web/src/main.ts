@@ -7,7 +7,7 @@ import { TurnDetector, type InputEvent, type OutputEvent, type TurnKnobs } from 
 import {
   TURN_KNOBS,
   VAD_KNOBS,
-  DEFAULT_VAD_KNOBS,
+  resolveVadKnobs,
   defaultTurnKnobs,
   type KnobSpec,
   type VadKnobs,
@@ -72,7 +72,13 @@ const ttsOptions = resolveTtsOptions(location.search, location.href);
 
 // ── detector + live state ──
 const turnKnobs: TurnKnobs = defaultTurnKnobs();
-const vadKnobs: VadKnobs = { ...DEFAULT_VAD_KNOBS };
+// VAD segmentation knobs (Silero via @ricky0123/vad-web). The browser APM
+// (noiseSuppression/echoCancellation/autoGainControl) is already forced on by
+// vad-web's getUserMedia (see vad.ts), so the increment-1 café lever is the
+// Silero on/off thresholds + redemption frames — live-tunable via UI sliders AND
+// seeded from ?vad* URL knobs so a noisy room can be felt-out without a rebuild:
+//   ?vadPositiveSpeechThreshold=<0.1..0.9> · ?vadNegativeSpeechThreshold=<0.1..0.9> · ?vadRedemptionFrames=<1..40>
+const vadKnobs: VadKnobs = resolveVadKnobs(location.search);
 const detector = new TurnDetector(turnKnobs, handleOut);
 
 let audio: AudioSource = new SimAudioSource(now);
@@ -227,23 +233,34 @@ renderKnobs($('turn-knobs'), TURN_KNOBS, (key, value) => {
   detector.setKnobs({ [key]: value } as Partial<TurnKnobs>);
   refreshStage();
 });
-renderKnobs($('vad-knobs'), VAD_KNOBS, (key, value) => {
-  (vadKnobs as unknown as Record<string, number>)[key] = value as number;
-});
+renderKnobs(
+  $('vad-knobs'),
+  VAD_KNOBS,
+  (key, value) => {
+    (vadKnobs as unknown as Record<string, number>)[key] = value as number;
+  },
+  // Seed the sliders from the ?vad*-resolved values (not the static spec
+  // defaults) so the URL overrides are visible and further-tunable.
+  vadKnobs as unknown as Record<string, number | boolean>,
+);
 
 function renderKnobs(
   container: HTMLElement,
   specs: KnobSpec[],
   onChange: (key: string, value: number | boolean) => void,
+  initial?: Record<string, number | boolean>,
 ): void {
   for (const spec of specs) {
+    // Initial rendered value: a per-key override (e.g. ?vad*-resolved knobs)
+    // when supplied, else the static spec default.
+    const initialValue = initial?.[spec.key] ?? spec.default;
     const wrap = document.createElement('div');
     wrap.className = spec.kind === 'toggle' ? 'knob toggle' : 'knob';
     if (spec.kind === 'toggle') {
       const id = `k-${spec.key}`;
       wrap.innerHTML =
         `<label for="${id}"><span>${spec.label}</span>` +
-        `<input type="checkbox" id="${id}" ${spec.default ? 'checked' : ''} /></label>` +
+        `<input type="checkbox" id="${id}" ${initialValue ? 'checked' : ''} /></label>` +
         `<div class="help">${spec.help}</div>`;
       const input = wrap.querySelector('input') as HTMLInputElement;
       input.addEventListener('change', () => onChange(spec.key, input.checked));
@@ -252,9 +269,9 @@ function renderKnobs(
       const fmt = (v: number) => `${v}${spec.unit ? ' ' + spec.unit : ''}`;
       wrap.innerHTML =
         `<label for="${id}"><span>${spec.label}</span><span class="val" id="${id}-v">${fmt(
-          spec.default as number,
+          initialValue as number,
         )}</span></label>` +
-        `<input type="range" id="${id}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${spec.default}" />` +
+        `<input type="range" id="${id}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${initialValue}" />` +
         `<div class="help">${spec.help}</div>`;
       const input = wrap.querySelector('input') as HTMLInputElement;
       const valEl = wrap.querySelector('.val') as HTMLElement;
