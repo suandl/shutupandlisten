@@ -128,3 +128,40 @@ export const VAD_KNOBS: KnobSpec[] = [
 export function defaultTurnKnobs(): TurnKnobs {
   return { ...DEFAULT_KNOBS };
 }
+
+/** URL query-param name for a VAD knob: `positiveSpeechThreshold` → `vadPositiveSpeechThreshold`. */
+export function vadKnobParam(key: string): string {
+  return 'vad' + key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+/**
+ * Resolve the live VAD knobs from a URL query string, layered over the vad-web
+ * defaults. This is the increment-1 café lever: the browser APM
+ * (noiseSuppression/echoCancellation/autoGainControl) is ALREADY forced on by
+ * @ricky0123/vad-web's getUserMedia (see vad.ts), so the remaining zero-rebuild
+ * tuning surface is Silero's speech on/off thresholds + redemption frames —
+ * exposed here as `?vad*` knobs so the operator can feel-tune a noisy room live:
+ *
+ *   ?vadPositiveSpeechThreshold=<0.1..0.9>  Silero P(speech) to OPEN a segment (raise to reject music)
+ *   ?vadNegativeSpeechThreshold=<0.1..0.9>  P below which speech is considered stopped
+ *   ?vadRedemptionFrames=<1..40>            sub-threshold frames tolerated before speech-end
+ *
+ * Each value is clamped to its knob's [min,max]; an absent, blank, non-numeric,
+ * or non-finite value keeps the default (mirrors the STT/LLM/TTS resolvers'
+ * fall-back-to-default rule). Only the three UI-exposed VAD_KNOBS are read —
+ * minSpeechFrames is not a UI knob and stays at its default. Pure: `search` is
+ * the page's `location.search`, passed in so this is testable headlessly.
+ */
+export function resolveVadKnobs(search: string): VadKnobs {
+  const q = new URLSearchParams(search);
+  const knobs = { ...DEFAULT_VAD_KNOBS } as unknown as Record<string, number>;
+  for (const spec of VAD_KNOBS) {
+    if (spec.kind !== 'range' || spec.min == null || spec.max == null) continue;
+    const raw = q.get(vadKnobParam(spec.key));
+    if (raw == null || raw.trim() === '') continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) continue;
+    knobs[spec.key] = Math.min(spec.max, Math.max(spec.min, n));
+  }
+  return knobs as unknown as VadKnobs;
+}
