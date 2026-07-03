@@ -26,7 +26,7 @@
 // the same-origin `?llmEngine=` / `?llmModel=` overrides without a code edit —
 // exactly as STT's Moonshine export was for U4.
 
-import type { ChatMessage, ListenerRequest, Tier } from './response-hierarchy.ts';
+import type { ListenerRequest, Tier } from './response-hierarchy.ts';
 
 export type { ListenerRequest } from './response-hierarchy.ts';
 
@@ -247,7 +247,3 @@ function initWorker(
 function defaultWorker(): WorkerLike {
   return new Worker(new URL('./listener.worker.ts', import.meta.url), { type: 'module' }) as unknown as WorkerLike;
 }
-
-// Re-export for callers assembling requests.
-export type { ChatMessage } from './response-hierarchy.ts';
-export type ListenerChatMessage = ChatMessage;

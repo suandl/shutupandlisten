@@ -199,8 +199,9 @@ $('mic-start').addEventListener('click', async () => {
     sourceInfo.textContent = audio.info;
     // Warm the listener now so it is ready by the first completed turn; when it
     // resolves, surface which mode is live (webgpu | wasm | stub) next to STT.
+    // Guard against a stop / mode-switch that happened while it was loading.
     void getListener().then((l) => {
-      sourceInfo.textContent = `${audio.info} + listener (${l.mode})`;
+      if (mode === 'mic' && listenerPromise) sourceInfo.textContent = `${audio.info} + listener (${l.mode})`;
     });
   } catch (err) {
     sourceInfo.textContent = `mic failed: ${(err as Error).message} — staying in simulation`;
