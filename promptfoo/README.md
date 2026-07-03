@@ -71,6 +71,30 @@ runtime they each need are documented in
 [`docs/findings/on-device-text-quality.md`](../docs/findings/on-device-text-quality.md);
 filter the whole on-device family with `--filter-providers ollama`.
 
+## CI (evals on PRs)
+
+`.github/workflows/promptfoo.yml` runs the evals on pull requests and
+posts a per-provider × scenario × judge score summary as a PR comment,
+so probing-depth / restraint / variety regressions surface in review.
+The full machine-readable report (`results.json` + `results.html`) is
+uploaded as a workflow artifact.
+
+- **Trigger:** PRs that touch `prompts/**` or `promptfoo/**`. Because
+  each cell makes paid API calls, the eval job is **gated** — it runs
+  only when a maintainer adds the `run-evals` label to the PR (or via a
+  manual **Run workflow** dispatch). Push a new commit after labeling
+  and it re-runs.
+- **Providers:** the two cloud providers only
+  (`openai-gpt-4o`, `anthropic-claude-haiku-4-5`); the on-device
+  `ollama:*` providers are skipped because the runner has no Ollama.
+- **Secret:** set one repository secret, `OP_SERVICE_ACCOUNT_TOKEN` — a
+  1Password [service-account](https://developer.1password.com/docs/service-accounts/)
+  token with read access to the `shutupandlisten` vault (the same
+  `op://` references in `.env.op`). Keys are injected at use-time by
+  `scripts/eval-keys.sh`; no raw `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
+  is ever stored in GitHub. Fork PRs get no secrets, so evals only run
+  on same-repo branches.
+
 ## View results
 
 ```sh
