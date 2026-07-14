@@ -22,7 +22,9 @@
 // the same `/models/` tree and the identical from_pretrained probing, are covered too.
 
 import { existsSync } from 'node:fs';
-import { join, normalize } from 'node:path';
+import { join, normalize, resolve } from 'node:path';
+
+import type { Plugin } from 'vite';
 
 /**
  * URL prefixes for the provisioned, same-origin asset trees served from public/ →
@@ -55,9 +57,11 @@ type NextFn = (err?: unknown) => void;
  * `index.html`. Requests for existing assets, and every non-asset route (the SPA's
  * own client routes), fall through untouched via `next()`.
  *
- * @param serveDirs filesystem roots the assets are served from — publicDir in dev,
- *                  the build outDir under `vite preview`. A file present under ANY of
- *                  them is treated as served.
+ * @param serveDirs the filesystem roots the RUNNING server serves at the request URL —
+ *                  and ONLY those (see serveDirsFor). A file present under any of them
+ *                  is treated as served, so listing a root this mode does NOT serve
+ *                  would suppress the 404 while Vite still can't find the file, handing
+ *                  back index.html — the very trap this guard exists to close.
  * @param fileExists existence probe, injectable for tests (defaults to fs.existsSync).
  */
 export function assetFallbackGuard(
@@ -86,5 +90,61 @@ export function assetFallbackGuard(
     res.statusCode = 404;
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.end(`404 Not Found: ${pathname}`);
+  };
+}
+
+/** The two server modes that serve the provisioned trees, each from a different root. */
+type ServeMode = 'dev' | 'preview';
+
+/** Minimal structural view of the resolved Vite config fields the plugin reads. */
+interface ServeConfig {
+  root: string;
+  /** Absolute path, or '' when publicDir is disabled. */
+  publicDir: string;
+  build: { outDir: string };
+}
+
+/**
+ * The roots `mode` actually serves at a provisioned-asset URL — the whole point being
+ * that dev and preview serve DIFFERENT roots, so the guard must be handed one or the
+ * other, never both (su-5k1p):
+ *
+ *   - dev serves `<root>/public` at `/`; it does not serve dist/. An asset left in a
+ *     stale dist/ is NOT reachable.
+ *   - `vite preview` serves the built `<root>/dist`; it does not serve public/ (the
+ *     build copies public/ into dist/). An asset provisioned AFTER the last build is
+ *     in public/ but NOT reachable.
+ *
+ * Hand the guard both roots and either case above suppresses the 404 for a file the
+ * running server cannot actually serve — Vite's SPA fallback then answers it with
+ * `200 index.html` and transformers.js is back to JSON.parse()ing HTML.
+ *
+ * (The provisioned trees live only under public/ → dist/ — they are the gitignored
+ * `public/<root>/` dirs — so those are the only roots in play.)
+ */
+export function serveDirsFor(mode: ServeMode, config: ServeConfig): string[] {
+  if (mode === 'preview') return [resolve(config.root, config.build.outDir)];
+  return config.publicDir ? [config.publicDir] : []; // publicDir disabled → dev serves none
+}
+
+/**
+ * Vite plugin: answer a MISSING provisioned asset with a real 404 instead of the SPA
+ * index.html fallback, in both the dev server and `vite preview`.
+ *
+ * @param fileExists existence probe, injectable for tests (defaults to fs.existsSync).
+ */
+export function provisionedAsset404(
+  fileExists: (path: string) => boolean = existsSync,
+): Plugin {
+  return {
+    name: 'provisioned-asset-404',
+    // Direct `.use()` (not a returned post-hook) installs BEFORE Vite's internal
+    // middlewares, so we intercept the request ahead of the SPA html fallback.
+    configureServer(server) {
+      server.middlewares.use(assetFallbackGuard(serveDirsFor('dev', server.config), fileExists));
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(assetFallbackGuard(serveDirsFor('preview', server.config), fileExists));
+    },
   };
 }

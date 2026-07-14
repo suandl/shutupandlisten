@@ -14,7 +14,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { assetFallbackGuard, isProvisionedAssetPath, PROVISIONED_ASSET_ROOTS } from './asset-fallback.ts';
+import {
+  assetFallbackGuard,
+  isProvisionedAssetPath,
+  provisionedAsset404,
+  PROVISIONED_ASSET_ROOTS,
+  serveDirsFor,
+} from './asset-fallback.ts';
 
 const WEB_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -64,11 +70,85 @@ test('an EXISTING provisioned asset falls through to the static middleware', () 
   assert.equal(res.ended, false, 'the guard must not answer the response for a present file');
 });
 
-test('an asset present in ANY serve dir (publicDir OR outDir) is served', () => {
-  const onDisk = join('/dist', 'tts/manifest.json');
-  const guard = assetFallbackGuard(['/public', '/dist'], (p) => p === onDisk);
-  const { nexted } = run(guard, fakeReq('/tts/manifest.json'));
-  assert.equal(nexted, true);
+// --- mode-specific serve roots (su-5k1p) -------------------------------------------
+//
+// Dev and preview serve DIFFERENT roots: the dev server serves <root>/public at `/`,
+// while `vite preview` serves the built <root>/dist. The first cut of the plugin passed
+// BOTH roots to BOTH hooks; since the guard treats a file present in any listed root as
+// served, an asset sitting in the root the running mode does NOT serve suppressed the
+// 404 — and Vite answered the still-unreachable asset with the SPA index.html, reviving
+// the exact JSON.parse(HTML) failure this module exists to kill.
+//
+// Both misses below are ordinary, not contrived: dev hits it with a stale dist/ from an
+// earlier `vite build`, and preview hits it whenever an asset is provisioned AFTER the
+// last build. These drive the plugin's REAL hooks (not a hand-built dir list), because
+// the defect was in the wiring — a combined list would regress them.
+
+const FAKE_CONFIG = { root: '/proj', publicDir: '/proj/public', build: { outDir: 'dist' } };
+const ASSET_URL = '/tts/mms-tts-eng/generation_config.json';
+const IN_PUBLIC = join('/proj/public', 'tts/mms-tts-eng/generation_config.json');
+const IN_DIST = join('/proj/dist', 'tts/mms-tts-eng/generation_config.json');
+
+type Middleware = ReturnType<typeof assetFallbackGuard>;
+interface FakeServer {
+  config: typeof FAKE_CONFIG;
+  middlewares: { use(fn: Middleware): void };
+}
+
+/** Install the plugin's guard for ONE server mode over a fake on-disk layout, then run
+ *  a request through the middleware Vite itself would have been handed. */
+function runMode(mode: 'dev' | 'preview', onDisk: string[], url = ASSET_URL) {
+  const plugin = provisionedAsset404((path) => onDisk.includes(path));
+  const hook: unknown = mode === 'dev' ? plugin.configureServer : plugin.configurePreviewServer;
+  // A Vite hook is either the function or an { handler } object; ours are functions.
+  const raw = typeof hook === 'function' ? hook : (hook as { handler?: unknown } | undefined)?.handler;
+  assert.equal(typeof raw, 'function', `${mode}: the plugin must install a guard for this mode`);
+
+  let middleware: Middleware | undefined;
+  (raw as (server: FakeServer) => void)({
+    config: FAKE_CONFIG,
+    middlewares: {
+      use(fn: Middleware) {
+        middleware = fn;
+      },
+    },
+  });
+  assert.ok(middleware, `${mode}: the plugin must install the guard middleware`);
+  return run(middleware, fakeReq(url));
+}
+
+test('dev: an asset present ONLY in the unserved dist/ still 404s (stale build)', () => {
+  const { res, nexted } = runMode('dev', [IN_DIST]);
+  assert.equal(nexted, false, 'dev serves public/, not dist/ — a dist-only file must not suppress the 404');
+  assert.equal(res.statusCode, 404);
+  assert.match(res.headers['content-type'] ?? '', /text\/plain/, 'a real 404, not the 200 text/html fallback');
+});
+
+test('dev: an asset present in the served public/ falls through to Vite', () => {
+  const { res, nexted } = runMode('dev', [IN_PUBLIC]);
+  assert.equal(nexted, true, 'dev serves public/ — a real provisioned asset must be served normally');
+  assert.equal(res.ended, false);
+});
+
+test('preview: an asset present ONLY in the unserved public/ still 404s (provisioned after the build)', () => {
+  const { res, nexted } = runMode('preview', [IN_PUBLIC]);
+  assert.equal(nexted, false, 'preview serves dist/, not public/ — a public-only file must not suppress the 404');
+  assert.equal(res.statusCode, 404);
+  assert.match(res.headers['content-type'] ?? '', /text\/plain/, 'a real 404, not the 200 text/html fallback');
+});
+
+test('preview: an asset present in the served dist/ falls through to Vite', () => {
+  const { res, nexted } = runMode('preview', [IN_DIST]);
+  assert.equal(nexted, true, 'preview serves dist/ — a built asset must be served normally');
+  assert.equal(res.ended, false);
+});
+
+test('serveDirsFor hands each mode only the root it serves', () => {
+  assert.deepEqual(serveDirsFor('dev', FAKE_CONFIG), ['/proj/public'], 'dev serves publicDir');
+  assert.deepEqual(serveDirsFor('preview', FAKE_CONFIG), [resolve('/proj', 'dist')], 'preview serves the outDir');
+  // publicDir disabled → dev serves no provisioned root at all, so every asset URL is a
+  // miss. An empty list is right; falling back to dist/ here is what caused the bug.
+  assert.deepEqual(serveDirsFor('dev', { ...FAKE_CONFIG, publicDir: '' }), []);
 });
 
 test('every provisioned engine/model root is guarded; SPA routes are left alone', () => {
