@@ -1,5 +1,13 @@
 import { defineConfig } from 'vite';
 
+import { provisionedAsset404 } from './src/asset-fallback.ts';
+
+// provisionedAsset404: answer a MISSING same-origin model/engine asset with a real 404
+// instead of Vite's SPA index.html fallback — transformers.js JSON.parse()s that HTML,
+// throws, and the TTS pipeline silently degrades to its stub. The dev server and
+// `vite preview` serve different roots, so each hook guards only the root its own mode
+// serves. Full story in src/asset-fallback.ts (su-lou.7, su-5k1p).
+
 // Rung 1 in-browser harness. A static page — `vite build` emits to dist/ and the
 // result is serveable with no backend (matches the plan's "static page, no
 // server").
@@ -24,6 +32,7 @@ import { defineConfig } from 'vite';
 // and sets `ort.env.wasm.wasmPaths` to a CDN at runtime (see real-time-vad.ts).
 // Pre-bundling the JS leaves those runtime fetches untouched.
 export default defineConfig({
+  plugins: [provisionedAsset404()],
   build: { target: 'es2022', outDir: 'dist' },
   worker: { format: 'es' },
   optimizeDeps: { include: ['@ricky0123/vad-web'] },

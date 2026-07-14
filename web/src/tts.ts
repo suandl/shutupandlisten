@@ -60,6 +60,12 @@ export interface SpeakerOptions {
    *  download + compile is far slower than a per-call synthesis, so it gets its
    *  own, longer budget. */
   initTimeoutMs?: number;
+  /** Where a load/handshake FAILURE is reported before degrading to the stub tone.
+   *  Defaults to `console.warn`. The degrade used to be silent — the worker posts a
+   *  `reason` (e.g. a model asset 404ing) but the adapter dropped it, so an
+   *  un-provisioned or mis-served voice "worked" as a mystery tone (su-lou.7). This
+   *  names the failure. Injectable so tests can assert it and stay quiet. */
+  onDiagnostic?: (message: string) => void;
 }
 
 export interface Speaker {
@@ -138,6 +144,15 @@ function makeStub(): Speaker {
 }
 
 /**
+ * Report a load/handshake failure (then the caller degrades to the placeholder
+ * tone). Routed to `opts.onDiagnostic` when provided, else `console.warn`, so a
+ * failed voice names itself in the console instead of silently toning (su-lou.7).
+ */
+function ttsDiag(opts: SpeakerOptions, reason: string): void {
+  (opts.onDiagnostic ?? ((m: string) => console.warn(m)))(`[tts] ${reason} — using the placeholder tone`);
+}
+
+/**
  * Create a speaker. With a model configured (or an injected worker) it spins up the
  * TTS worker and, only if the worker reports it loaded a model, returns a
  * worker-backed speaker; on any failure — no model, worker spawn error, init
@@ -152,6 +167,7 @@ export async function createSpeaker(opts: SpeakerOptions = {}): Promise<Speaker>
   try {
     worker = opts.createWorker ? opts.createWorker() : defaultWorker();
   } catch {
+    ttsDiag(opts, 'voice worker failed to start');
     return makeStub();
   }
 
@@ -241,27 +257,37 @@ function initWorker(
   return new Promise<SpeakerMode | null>((resolve) => {
     let settled = false;
     const onMessage = (ev: { data?: unknown }): void => {
-      const msg = ev.data as { type?: string; mode?: string } | undefined;
+      const msg = ev.data as { type?: string; mode?: string; reason?: string } | undefined;
       if (!msg) return;
-      if (msg.type === 'ready') done(msg.mode === 'webgpu' || msg.mode === 'wasm' ? msg.mode : null);
-      else if (msg.type === 'error') done(null);
+      if (msg.type === 'ready') {
+        const mode = msg.mode === 'webgpu' || msg.mode === 'wasm' ? msg.mode : null;
+        done(mode, mode ? undefined : `voice reported an unusable device mode (${String(msg.mode)})`);
+      } else if (msg.type === 'error') {
+        // The worker DOES post a reason ('no model loaded', 'engine import failed',
+        // …); surfacing it is the whole diagnosability fix — a model asset that 404s
+        // no longer degrades silently.
+        done(null, `voice unavailable: ${typeof msg.reason === 'string' ? msg.reason : 'unknown reason'}`);
+      }
     };
-    const onError = (): void => done(null);
-    const done = (m: SpeakerMode | null): void => {
+    const onError = (): void => done(null, 'voice worker errored during init');
+    // A degrade (m === null) names itself via ttsDiag exactly once; a healthy load
+    // (m set) stays quiet. The `settled` guard means only the first outcome reports.
+    const done = (m: SpeakerMode | null, reason?: string): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       worker.removeEventListener('message', onMessage);
       worker.removeEventListener('error', onError);
+      if (m === null && reason) ttsDiag(opts, reason);
       resolve(m);
     };
-    const timer = setTimeout(() => done(null), timeoutMs);
+    const timer = setTimeout(() => done(null, `voice load timed out after ${timeoutMs}ms`), timeoutMs);
     worker.addEventListener('message', onMessage);
     worker.addEventListener('error', onError);
     try {
       worker.postMessage({ type: 'init', engineUrl: opts.engineUrl, model: opts.model });
     } catch {
-      done(null);
+      done(null, 'voice worker did not accept init');
     }
   });
 }

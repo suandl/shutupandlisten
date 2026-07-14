@@ -101,16 +101,32 @@ test('webgpu handshake mode is accepted', async () => {
   assert.equal(s.mode, 'webgpu');
 });
 
-test('init error → degrade to stub and terminate the worker', async () => {
+test('init error → degrade to stub, terminate the worker, and SURFACE the reason (su-lou.7)', async () => {
   const w = new FakeWorker();
   w.onInit = () => queueMicrotask(() => w.emit('message', { type: 'error', reason: 'no model loaded' }));
+  const diagnostics: string[] = [];
 
-  const s = await createSpeaker({ createWorker: () => w, model: 'x' });
+  const s = await createSpeaker({ createWorker: () => w, model: 'x', onDiagnostic: (m) => diagnostics.push(m) });
   assert.equal(s.mode, 'stub');
   assert.equal(w.terminated, true);
+  // The worker's reason used to be swallowed (silent degrade → mystery tone); it must
+  // now reach the diagnostic sink so a 404ing model asset names itself.
+  assert.ok(
+    diagnostics.some((m) => m.includes('no model loaded')),
+    `the worker reason must be surfaced; got ${JSON.stringify(diagnostics)}`,
+  );
   const r = await s.synthesize('reflection');
   assert.equal(r.mode, 'stub');
   assert.ok(r.audio.length > 0);
+});
+
+test('a healthy handshake reports NO diagnostic (only failures are surfaced)', async () => {
+  const w = new FakeWorker();
+  w.onInit = () => queueMicrotask(() => w.emit('message', { type: 'ready', mode: 'wasm' }));
+  const diagnostics: string[] = [];
+  const s = await createSpeaker({ createWorker: () => w, model: 'x', onDiagnostic: (m) => diagnostics.push(m) });
+  assert.equal(s.mode, 'wasm');
+  assert.deepEqual(diagnostics, [], 'a successful load must stay quiet');
 });
 
 test('a per-call worker error degrades just that reply to the placeholder tone', async () => {
@@ -150,19 +166,24 @@ test('a silent worker times out per call → stub tone', async () => {
   assert.ok(r.audio.length > 0);
 });
 
-test('init timeout → stub (model load never reports ready)', async () => {
+test('init timeout → stub, and the timeout names itself', async () => {
   const w = new FakeWorker();
   // onInit intentionally unset: no ready/error ever arrives.
-  const s = await createSpeaker({ createWorker: () => w, model: 'x', initTimeoutMs: 30 });
+  const diagnostics: string[] = [];
+  const s = await createSpeaker({ createWorker: () => w, model: 'x', initTimeoutMs: 30, onDiagnostic: (m) => diagnostics.push(m) });
   assert.equal(s.mode, 'stub');
+  assert.ok(diagnostics.some((m) => /timed out/.test(m)), `a load timeout must name itself; got ${JSON.stringify(diagnostics)}`);
 });
 
-test('a worker factory that throws → stub', async () => {
+test('a worker factory that throws → stub, naming the spawn failure', async () => {
+  const diagnostics: string[] = [];
   const s = await createSpeaker({
     createWorker: () => {
       throw new Error('spawn failed');
     },
     model: 'x',
+    onDiagnostic: (m) => diagnostics.push(m),
   });
   assert.equal(s.mode, 'stub');
+  assert.ok(diagnostics.some((m) => /failed to start/.test(m)), `a spawn failure must name itself; got ${JSON.stringify(diagnostics)}`);
 });
