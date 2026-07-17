@@ -36,9 +36,14 @@ export default defineConfig({
   build: { target: 'es2022', outDir: 'dist' },
   worker: { format: 'es' },
   optimizeDeps: { include: ['@ricky0123/vad-web'] },
-  // main.ts imports the listener system prompt from ../../prompts/chatgpt.md?raw
-  // (single source of truth, no TS copy to drift). The dev server restricts file
-  // serving to the project root by default; allow the parent so that raw import
-  // resolves. Vite build inlines the string, so this only affects `vite dev`.
-  server: { fs: { allow: ['..'] } },
+  // Pinned to :5173 with strictPort so the PR-level demo-capture engine has a
+  // STABLE entrypoint (su-lou.4.1): `npm run dev` always serves there or fails
+  // fast rather than silently hopping to :5174 and stranding the capture script.
+  //
+  // fs.allow: main.ts imports the listener system prompt from
+  // ../../prompts/chatgpt.md?raw (single source of truth, no TS copy to drift). The
+  // dev server restricts file serving to the project root by default; allow the
+  // parent so that raw import resolves. Vite build inlines the string, so fs.allow
+  // only affects `vite dev`.
+  server: { port: 5173, strictPort: true, fs: { allow: ['..'] } },
 });

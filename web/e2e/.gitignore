@@ -1,0 +1,3 @@
+# Per-run capture working dirs: proof screenshots + manifest.json + issues.json.
+# Only the assembled MP4 under demos/ is committed; these intermediates are not.
+.captures/

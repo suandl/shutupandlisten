@@ -12,7 +12,12 @@
 // renders the returned view model. It is strictly additive: it reads the detector's
 // output, never alters the InputEvent stream or the tested timing.
 
-export type TranscriberMode = 'moonshine' | 'whisper' | 'stub';
+// 'sim' — scripted demo words from the simulator (su-lou.4.1), NOT a real STT run.
+// Distinct from 'stub' (an unlabelled/absent-model placeholder): a 'sim' segment
+// carries genuine, deterministic words the response-hierarchy gate treats as real
+// speech, so the mic-less demo loop can escalate. 'stub' words are excluded from
+// gate input; 'sim' words are not.
+export type TranscriberMode = 'moonshine' | 'whisper' | 'stub' | 'sim';
 
 /** One transcribed VAD speech segment (the same Float32Array handed to smart-turn). */
 export interface TranscriptSegment {
