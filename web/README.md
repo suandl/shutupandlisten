@@ -364,3 +364,28 @@ transcription read-back, reply *quality*, and the spoken back-and-forth are
 validated there, not in CI — CI pins the gate ROUTING and the loop-latency math,
 which are model-independent). Rating a real warmed session is where the epic's
 decision-ready verdict (U8) gets its evidence.
+
+## The works-check (pre-operator gate)
+
+```
+npm run works-check        # exit 0 pass · 100 regression (names the stage) · other = infra
+```
+
+The layer the node suite cannot be (su-lou.8: 25/25 green while a real browser
+degraded three stages): a standalone, headless proof that the pure-WASM voice
+stages a deploy would ship actually **work**. It builds a probe-only entry
+(`probe.html` → `src/probe.ts`, never part of the production build), serves it
+with `vite preview` on pinned `:4650`, drives a headless Chromium through the
+REAL `createTranscriber`/`createSpeaker` adapters with the app's own config
+resolvers, and asserts each stage (1) loads its real backend — moonshine/whisper
+for STT, `wasm` for TTS, never a labelled stub — and (2) survives a smoke-run
+with non-empty output: a transcript of `test/fixtures/utterance.wav`, audible
+synthesized samples. Load-assert alone is not enough — a stage can load green
+and still degrade per call, so the smoke-run is asserted separately.
+
+Prereqs: `npm run provision:stt` + `provision:tts`, and a Playwright browser
+(`npx playwright install chromium-headless-shell`). Missing prereqs exit as
+**infra** with the remedy named — never confusable with a code regression.
+Forensics land in `.works-check/report.json` (probe report, verdict, browser
+console tail). Exit codes are the contract the refinery-side gate consumes;
+scripts/works-verdict.mjs owns the rules and is unit-tested in `npm test`.
