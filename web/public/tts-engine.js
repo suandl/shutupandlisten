@@ -18,7 +18,7 @@
 //
 // Pinned engine: @huggingface/transformers 3.8.1 (the SAME version STT + the LLM
 // pin; its dist self-contains the matching ort-wasm-simd-threaded.jsep.{mjs,wasm}).
-import { pipeline as runPipeline, env } from './tts/transformers/transformers.min.js';
+import { AutoModelForTextToWaveform, AutoTokenizer, env } from './tts/transformers/transformers.min.js';
 
 // Resolve model weights from our origin and never from the hub. localModelPath is
 // the SAME ./models/ tree STT + the LLM use — a model id resolves under it identically.
@@ -32,11 +32,32 @@ if (env.backends?.onnx?.wasm) {
   env.backends.onnx.wasm.wasmPaths = new URL('./tts/transformers/', import.meta.url).href;
 }
 
-// Default synthesis to CPU/WASM + quantized (q8) weights — the smallest, GPU-free
+// Component construction, NOT the transformers.js pipeline() factory (su-lou.8).
+// The 3.8.1 factory probes the OPTIONAL preprocessor_config.json during
+// construction; mms-tts-eng (VITS) has none upstream, so under our
+// allowRemoteModels=false posture the clean 404 becomes a fatal throw and the
+// voice silently stubbed. Fabricating the file is worse: a typed stub makes the
+// pipeline dispatch on processor PRESENCE and fetch an absent speecht5 vocoder at
+// synthesis time. Building the components directly skips the probe entirely and
+// mirrors what the factory's VITS path (_call_text_to_waveform) does anyway:
+// tokenize, run the model, read the waveform + the config's sampling_rate.
+//
+// Default synthesis is CPU/WASM + quantized (q8) weights — the smallest, GPU-free
 // variant, what provision-tts.mjs fetches. The worker may override per call. When a
 // future TTS model supports WebGPU, `device: 'webgpu'` from the worker overrides this.
-export function pipeline(task, model, options = {}) {
-  return runPipeline(task, model, { device: 'wasm', dtype: 'q8', ...options });
+export async function pipeline(task, model, options = {}) {
+  if (task !== 'text-to-speech') throw new Error(`unsupported task: ${task} (this engine only speaks)`);
+  const tokenizer = await AutoTokenizer.from_pretrained(model);
+  const tts = await AutoModelForTextToWaveform.from_pretrained(model, { device: 'wasm', dtype: 'q8', ...options });
+  const samplingRate = tts.config?.sampling_rate;
+  if (!(samplingRate > 0)) throw new Error(`model config carries no sampling_rate (${model})`);
+  return async (text) => {
+    const inputs = tokenizer(text, { padding: true, truncation: true });
+    const { waveform } = await tts(inputs);
+    const audio = waveform?.data instanceof Float32Array ? waveform.data : Float32Array.from(waveform?.data ?? []);
+    if (audio.length === 0) throw new Error('model returned an empty waveform');
+    return { audio, sampling_rate: samplingRate };
+  };
 }
 
 export { env };

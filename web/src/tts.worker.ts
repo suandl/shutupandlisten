@@ -99,16 +99,22 @@ async function handleInit(msg: InitMessage): Promise<void> {
     { mode: 'wasm', opts: { device: 'wasm' } },
     { mode: 'webgpu', opts: { device: 'webgpu' } },
   ];
+  const failures: string[] = [];
   for (const c of candidates) {
     try {
       synthesizer = await engine.pipeline('text-to-speech', msg.model, c.opts);
       ctx.postMessage({ type: 'ready', mode: c.mode });
       return;
-    } catch {
-      // try the next device
+    } catch (e) {
+      // Keep the throw — the next device may still load — but never DROP it: a
+      // swallowed construction error is exactly how su-lou.8's root cause (a
+      // fatal preprocessor_config.json probe) hid behind a bare 'no model
+      // loaded' for weeks. The serialized causes ride the error reason into the
+      // adapter's onDiagnostic line, where the works-check (and a human) read them.
+      failures.push(`${c.mode}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  ctx.postMessage({ type: 'error', reason: 'no model loaded' });
+  ctx.postMessage({ type: 'error', reason: `no model loaded (${failures.join('; ')})` });
 }
 
 async function handleSynthesize(msg: SynthesizeMessage): Promise<void> {
