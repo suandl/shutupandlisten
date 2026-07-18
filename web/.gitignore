@@ -3,6 +3,10 @@ dist/
 *.log
 .vite/
 
+# works-check scratch output (su-ljrb.6): its own probe build + hardlinked
+# provisioned assets + report.json. Never committed; wiped/rebuilt per run.
+.works-check/
+
 # Self-hosted on-device model assets — provisioned at build/deploy by
 # `npm run provision:stt` (STT: transformers.js engine + ONNX Runtime wasm +
 # Moonshine/Whisper weights), `npm run provision:llm` (U5 listener: engine +

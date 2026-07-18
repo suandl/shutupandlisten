@@ -8,15 +8,16 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test 'src/**/*.test.ts' 'e2e/**/*.test.ts'",
-    "test:watch": "node --test --watch 'src/**/*.test.ts' 'e2e/**/*.test.ts'",
+    "test": "node --test 'src/**/*.test.ts' 'e2e/**/*.test.ts' 'scripts/**/*.test.mjs'",
+    "test:watch": "node --test --watch 'src/**/*.test.ts' 'e2e/**/*.test.ts' 'scripts/**/*.test.mjs'",
     "provision:stt": "node scripts/provision-stt.mjs",
     "provision:llm": "node scripts/provision-llm.mjs",
     "provision:tts": "node scripts/provision-tts.mjs",
     "provision:denoise": "node scripts/provision-denoise.mjs",
     "measure": "node src/measure.ts",
     "demo:capture": "node e2e/capture.ts",
-    "demo:u6": "node e2e/capture.ts e2e/demos/u6-warmed-loop.md"
+    "demo:u6": "node e2e/capture.ts e2e/demos/u6-warmed-loop.md",
+    "works-check": "node scripts/works-check.mjs"
   },
   "dependencies": {
     "@ricky0123/vad-web": "^0.0.24",
