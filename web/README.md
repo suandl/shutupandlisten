@@ -70,6 +70,9 @@ npm run provision:llm  # build/deploy step: fetch the self-hosted LLM engine +
                        # small instruct-model weights into public/ so the listener replies
 npm run provision:tts  # build/deploy step: fetch the self-hosted TTS engine +
                        # small voice-model weights into public/ so the companion speaks
+
+npm run demo:u6        # record a narrated MP4 that PROVES the U6 warmed loop, driven
+                       # against deterministic sim mode (see e2e/README.md)
 ```
 
 `npm test` runs under Node's built-in test runner via native TypeScript
@@ -93,7 +96,11 @@ Two modes (top bar):
 - **Simulation** (default) — play a scripted utterance (thinking pause, trailing
   conjunction, clean finish, barge-in) or **Free run**, then drag the knobs. The
   same script ends the turn mid-thought below the floor and holds above it — the
-  fastest way to see what the patience window does. No mic or download needed.
+  fastest way to see what the patience window does. No mic or download needed. The
+  **U6 warmed loop (demo)** script goes further: it carries scripted transcripts, so
+  it drives the *whole* loop (transcript → gate → listener → voice → per-stage
+  metrics) mic-lessly — the deterministic substrate the demo-capture engine records
+  (`?demo=u6-warmed-loop`; see [`e2e/README.md`](e2e/README.md)).
 - **Microphone** — real Silero VAD + smart-turn on your voice, for the operator
   feel-test. Models load on first start. STT is **on by default**: on a
   provisioned deploy (see `npm run provision:stt` above) real speech is

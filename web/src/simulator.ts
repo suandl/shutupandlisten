@@ -10,10 +10,14 @@
 
 import type { InputEvent, Verdict } from './turn-detection.ts';
 import type { AudioSource } from './vad.ts';
+import type { TranscriptSegment } from './transcript.ts';
 
 type RelEvent =
   | { t: number; type: 'speech-start' }
-  | { t: number; type: 'speech-end' }
+  // A speech-end MAY carry scripted transcription `text` — the words the mic path
+  // would have produced for this segment. Present only in loop-driving DEMO_SCRIPTS;
+  // the classic timing scripts omit it (pure detector timing, no transcript).
+  | { t: number; type: 'speech-end'; text?: string }
   | { t: number; type: 'eou'; verdict: Verdict };
 
 export interface SimScript {
@@ -21,6 +25,13 @@ export interface SimScript {
   label: string;
   description: string;
   events: RelEvent[];
+  /**
+   * True when the script carries scripted transcripts and is meant to drive the
+   * FULL warmed loop (transcript → gate → LLM → TTS → loop-metrics) deterministically
+   * in sim mode — the mic-less demo substrate (su-lou.4.1). The classic timing
+   * scripts leave it unset and exercise only the detector, exactly as before.
+   */
+  drivesLoop?: boolean;
 }
 
 // Demo scripts mirror the spec scenarios but are knob-reactive: with the live
@@ -81,11 +92,65 @@ export const SIM_SCRIPTS: SimScript[] = [
   },
 ];
 
+// ── Loop-driving demo scenarios (su-lou.4.1) ──
+//
+// Unlike the timing scripts above (detector only), these carry scripted `text` on
+// each speech-end — the words the mic path's STT would have produced — so playing
+// one drives the FULL warmed loop deterministically WITHOUT a microphone or any
+// model: transcript → response-hierarchy gate → on-device LLM → on-device TTS →
+// per-stage loop-metrics. This is the mic-less demo substrate the PR-level capture
+// engine records; real models degrade to the labelled stub / placeholder tone
+// (su-lou.8), which is exactly why sim mode — not live mic — is the deterministic
+// substrate. Timing is spaced so each turn's stubbed response finishes (floor 2s +
+// response 1.5s) before the next utterance begins, so no unintended barge-in fires.
+
+/** How long after a scripted speech-end the sim "transcription" resolves (a beat, like real STT). */
+const SIM_STT_MS = 150;
+
+export const DEMO_SCRIPTS: SimScript[] = [
+  {
+    name: 'u6-warmed-loop',
+    label: 'U6 warmed loop (demo)',
+    drivesLoop: true,
+    description:
+      'Three thinking-out-loud turns that drive the whole loop mic-lessly: a substantive turn earns a reflection, a short aside earns a minimal acknowledgment, and a direct question earns one brief question — each transcribed, gated, replied, and spoken, with per-stage latency measured.',
+    events: [
+      // Turn 1 — a substantive finished thought → response-hierarchy escalates to a reflection (LLM).
+      { t: 0, type: 'speech-start' },
+      {
+        t: 3200,
+        type: 'speech-end',
+        text: "I keep circling the same migration plan and I can't tell if the incremental path is actually safer or just slower",
+      },
+      { t: 3260, type: 'eou', verdict: 'complete' },
+      // Turn 2 — a short finished aside → minimal acknowledgment (rules-only backchannel, still spoken).
+      { t: 8000, type: 'speech-start' },
+      { t: 9200, type: 'speech-end', text: 'yeah, that makes sense' },
+      { t: 9260, type: 'eou', verdict: 'complete' },
+      // Turn 3 — a direct question → one brief follow-up question (LLM), answered in kind.
+      { t: 14000, type: 'speech-start' },
+      { t: 16000, type: 'speech-end', text: "do you think I'm overcomplicating this?" },
+      { t: 16060, type: 'eou', verdict: 'complete' },
+    ],
+  },
+];
+
+/** Look up a loop-driving demo scenario by `name` (for the ?demo= URL entrypoint). */
+export function findDemoScript(name: string): SimScript | undefined {
+  return DEMO_SCRIPTS.find((s) => s.name === name);
+}
+
 export class SimAudioSource implements AudioSource {
   readonly kind = 'sim' as const;
   onEvent: (e: InputEvent) => void = () => {};
+  // Additive scripted-transcript channel — populated only by DEMO_SCRIPTS (which
+  // carry speech-end `text`); the timing scripts never call it. Wired by main.ts
+  // exactly like the mic source's onTranscript.
+  onTranscript: (seg: TranscriptSegment) => void = () => {};
 
   private readonly now: () => number;
+  private segmentId = 0;
+  private segStartT = 0;
   // ReturnType<typeof setTimeout> so the same code types cleanly whether the DOM
   // (number) or Node (@types/node Timeout, pulled in transitively) lib is active.
   private timers: ReturnType<typeof setTimeout>[] = [];
@@ -142,10 +207,37 @@ export class SimAudioSource implements AudioSource {
     for (const ev of events) {
       this.timers.push(
         setTimeout(() => {
-          this.onEvent({ ...ev, t: this.now() } as InputEvent);
+          const t = this.now();
+          if (ev.type === 'speech-start') {
+            this.segStartT = t; // remember where this utterance began, for transcript alignment
+            this.onEvent({ t, type: 'speech-start' });
+          } else if (ev.type === 'speech-end') {
+            this.onEvent({ t, type: 'speech-end' });
+            // A scripted speech-end drives the transcript channel too (demo loop).
+            if (ev.text !== undefined) this.emitTranscript(ev.text, this.segStartT, t);
+          } else {
+            this.onEvent({ t, type: 'eou', verdict: ev.verdict });
+          }
         }, ev.t),
       );
     }
+  }
+
+  /**
+   * Emit one scripted segment on the transcript channel the way the mic path does:
+   * a `pending` placeholder at speech-end, then the resolved words a beat later
+   * (SIM_STT_MS), so the warmed loop's turn-end → transcript leg is exercised and
+   * the gate has genuine words to escalate on. `sim` mode marks these as scripted
+   * (not a labelled STT stub), so response-hierarchy reads them as real speech.
+   */
+  private emitTranscript(text: string, startT: number, endT: number): void {
+    const id = this.segmentId++;
+    this.onTranscript({ id, startT, endT, text: '', mode: 'sim', pending: true });
+    this.timers.push(
+      setTimeout(() => {
+        this.onTranscript({ id, startT, endT, text, mode: 'sim', pending: false });
+      }, SIM_STT_MS),
+    );
   }
 
   private clear(): void {

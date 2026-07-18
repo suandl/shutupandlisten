@@ -8,19 +8,23 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test 'src/**/*.test.ts'",
-    "test:watch": "node --test --watch 'src/**/*.test.ts'",
+    "test": "node --test 'src/**/*.test.ts' 'e2e/**/*.test.ts'",
+    "test:watch": "node --test --watch 'src/**/*.test.ts' 'e2e/**/*.test.ts'",
     "provision:stt": "node scripts/provision-stt.mjs",
     "provision:llm": "node scripts/provision-llm.mjs",
     "provision:tts": "node scripts/provision-tts.mjs",
     "provision:denoise": "node scripts/provision-denoise.mjs",
-    "measure": "node src/measure.ts"
+    "measure": "node src/measure.ts",
+    "demo:capture": "node e2e/capture.ts",
+    "demo:u6": "node e2e/capture.ts e2e/demos/u6-warmed-loop.md"
   },
   "dependencies": {
     "@ricky0123/vad-web": "^0.0.24",
     "onnxruntime-web": "^1.20.1"
   },
   "devDependencies": {
+    "ffmpeg-static": "^5.3.0",
+    "playwright": "^1.61.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }

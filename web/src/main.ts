@@ -13,7 +13,7 @@ import {
   type VadKnobs,
 } from './knobs.ts';
 import { MicAudioSource, type AudioSource } from './vad.ts';
-import { SimAudioSource, SIM_SCRIPTS } from './simulator.ts';
+import { SimAudioSource, SIM_SCRIPTS, DEMO_SCRIPTS, findDemoScript, type SimScript } from './simulator.ts';
 import { resolveSttOptions } from './stt-config.ts';
 import { resolveDenoiseOptions } from './denoise-config.ts';
 import {
@@ -84,6 +84,16 @@ const detector = new TurnDetector(turnKnobs, handleOut);
 let audio: AudioSource = new SimAudioSource(now);
 let mode: 'sim' | 'mic' = 'sim';
 let audioCtx: AudioContext | null = null;
+
+// Whether the full warmed loop (transcript → gate → LLM → TTS → loop-metrics) is
+// live. True in mic mode, or in sim mode while a loop-driving DEMO_SCRIPT plays —
+// the mic-less demo substrate (su-lou.4.1). The classic timing scripts leave it
+// off, so their transcript/loop panels keep the "appears in the live loop" hint
+// and the tested timing path is untouched.
+let simLoopActive = false;
+function loopActive(): boolean {
+  return mode === 'mic' || simLoopActive;
+}
 
 wireAudio(audio);
 
@@ -210,7 +220,7 @@ function refreshSourceInfo(): void {
  * from the reply-ready paths without double-voicing on re-render.
  */
 function speakResponse(entry: TurnResponse): void {
-  if (mode !== 'mic' || entry.spoken) return;
+  if (!loopActive() || entry.spoken) return;
   const text = entry.text.trim();
   if (!text || entry.decision.tier === 'silence') return; // silence stays silent
   entry.spoken = true;
@@ -286,15 +296,25 @@ function renderKnobs(
 }
 
 // ── simulation controls ──
+// A loop-driving DEMO_SCRIPT starts from a clean transcript/metrics slate (so its
+// turns read 1..N and the loop panels light up); a classic timing script clears any
+// prior demo loop state and reverts the panels to their hint. Either way this is the
+// single entry the ?demo= URL and the buttons share.
+function playSimScript(script: SimScript): void {
+  if (mode !== 'sim') return;
+  ensureAudioCtx();
+  simLoopActive = Boolean(script.drivesLoop);
+  resetTranscript();
+  (audio as SimAudioSource).play(script);
+  refreshSourceInfo();
+}
+
 const simControls = $('sim-controls');
-for (const script of SIM_SCRIPTS) {
+for (const script of [...SIM_SCRIPTS, ...DEMO_SCRIPTS]) {
   const b = document.createElement('button');
   b.textContent = script.label;
   b.title = script.description;
-  b.addEventListener('click', () => {
-    ensureAudioCtx();
-    (audio as SimAudioSource).play(script);
-  });
+  b.addEventListener('click', () => playSimScript(script));
   simControls.appendChild(b);
 }
 {
@@ -302,6 +322,8 @@ for (const script of SIM_SCRIPTS) {
   free.textContent = 'Free run';
   free.addEventListener('click', () => {
     ensureAudioCtx();
+    simLoopActive = false; // free-run cycles the timing scripts — no warmed loop
+    resetTranscript();
     (audio as SimAudioSource).startFreeRun();
   });
   const stop = document.createElement('button');
@@ -355,6 +377,7 @@ $('mode').querySelectorAll('button').forEach((btn) => {
 
 async function switchMode(next: 'sim' | 'mic'): Promise<void> {
   if (next === mode) return;
+  simLoopActive = false; // leaving sim drops any demo loop; mic mode drives the loop by mode
   await audio.stop();
   disposeListener(); // free the LLM worker when leaving mic; recreated lazily on next mic start
   disposeSpeaker(); // free the TTS worker + stop any playback; recreated lazily on next mic start
@@ -427,10 +450,11 @@ function handleOut(e: OutputEvent): void {
 function renderTranscript(): void {
   transcriptEl.replaceChildren();
 
-  if (mode !== 'mic') {
+  if (!loopActive()) {
     const hint = document.createElement('div');
     hint.className = 'tx-empty';
-    hint.textContent = 'Transcript appears in microphone mode (the simulator drives events with no audio to transcribe).';
+    hint.textContent =
+      'Transcript appears in microphone mode or the U6 warmed-loop demo (the timing scripts drive events with no audio to transcribe).';
     transcriptEl.appendChild(hint);
     return;
   }
@@ -515,7 +539,7 @@ function renderTranscript(): void {
 // and re-renders. Idempotent — a turn already handled is skipped — so it is safe
 // to call on every render.
 function maybeRespond(groups: TurnTranscript[]): void {
-  if (mode !== 'mic') return;
+  if (!loopActive()) return;
   for (const g of groups) {
     if (!g.end || turnResponses.has(g.turn)) continue;
     if (g.segments.some((s) => s.pending)) continue; // wait for STT to resolve first
@@ -636,10 +660,10 @@ function tierChip(tier: Tier): HTMLElement {
 function renderMetrics(): void {
   metricsEl.replaceChildren();
 
-  if (mode !== 'mic') {
+  if (!loopActive()) {
     const hint = document.createElement('div');
     hint.className = 'tx-empty';
-    hint.textContent = 'Loop latency appears in microphone mode, once a turn has been spoken.';
+    hint.textContent = 'Loop latency appears in microphone mode or the U6 warmed-loop demo, once a turn has been spoken.';
     metricsEl.appendChild(hint);
     return;
   }
@@ -755,3 +779,24 @@ refreshStage();
 renderTranscript();
 renderMetrics();
 sourceInfo.textContent = audio.info;
+
+// ── ?demo= entrypoint (su-lou.4.1): the stable, deterministic URL the PR-level
+// capture engine points at. In sim mode (the default) it auto-runs the named
+// loop-driving scenario a tick after load, so a capture script only navigates and
+// waits — no clicking. Composes with the existing knob params, e.g.
+// ?demo=u6-warmed-loop&llm=off&tts=off to force the fast, deterministic stub
+// substrate (the real models degrade to the same stub/tone anyway — su-lou.8). ──
+{
+  const demoName = new URLSearchParams(location.search).get('demo');
+  if (demoName && mode === 'sim') {
+    const script = findDemoScript(demoName);
+    if (script) {
+      // A beat after load so the tick loop + first render are live before it plays.
+      setTimeout(() => playSimScript(script), 250);
+    } else {
+      console.warn(
+        `Ignoring ?demo=${demoName}: no such demo scenario. Known: ${DEMO_SCRIPTS.map((s) => s.name).join(', ')}.`,
+      );
+    }
+  }
+}
