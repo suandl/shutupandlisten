@@ -18,9 +18,10 @@
 // browser: `npx playwright install chromium-headless-shell` (or `--with-deps` on a
 // bare host); the engine fails with that exact hint if it's absent.
 //
-// Exit code: non-zero if any step's proof failed — a committed demo is a regression
-// test, not just a recording — but the video/manifest/issues are still written so
-// the failure is visible in the frames.
+// Exit code: non-zero if any step's proof failed. Demos exist to communicate to
+// HUMANS (they are not regression gates), so a broken proof must never be published
+// silently: the video/manifest/issues are still written and the captures dir is
+// kept so the failure is inspectable.
 
 import { chromium } from 'playwright';
 import type { Browser, Page } from 'playwright';
@@ -51,13 +52,18 @@ function parseArgs(argv: string[]): Options {
   const args = argv.slice(2);
   let scriptPath = '';
   const opts: Options = { scriptPath: '', baseUrl: null, outputPath: null, noNarrate: false, keep: false };
+  const takeValue = (flag: string, v: string | undefined): string => {
+    if (!v || v.startsWith('-')) throw new Error(`${flag} requires a value`);
+    return v;
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--base-url') opts.baseUrl = args[++i];
-    else if (a === '--output' || a === '-o') opts.outputPath = args[++i];
+    if (a === '--base-url') opts.baseUrl = takeValue(a, args[++i]);
+    else if (a === '--output' || a === '-o') opts.outputPath = takeValue(a, args[++i]);
     else if (a === '--no-narrate') opts.noNarrate = true;
     else if (a === '--keep') opts.keep = true;
-    else if (!a.startsWith('-')) scriptPath = a;
+    else if (a.startsWith('-')) throw new Error(`unknown flag: ${a}`);
+    else scriptPath = a;
   }
   if (!scriptPath) {
     throw new Error('usage: node e2e/capture.ts <demo-script.md> [--base-url URL] [--output FILE.mp4] [--no-narrate] [--keep]');
@@ -70,7 +76,7 @@ function parseArgs(argv: string[]): Options {
 async function serverUp(url: string): Promise<boolean> {
   try {
     const res = await fetch(url, { method: 'GET' });
-    return res.ok || res.status === 200;
+    return res.ok;
   } catch {
     return false;
   }
@@ -87,12 +93,12 @@ async function waitForServer(url: string, timeoutMs: number): Promise<boolean> {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** Spawn `npm run dev` (pinned :5173) and resolve once it serves. Returns the child so it can be torn down. */
-async function startDevServer(port: number, log: (m: string) => void): Promise<ChildProcess> {
+/** Spawn `npm run dev` (pinned :5173) and resolve once it serves. Returns the child to tear down, or null when reusing a server this run does not own. */
+async function startDevServer(port: number, log: (m: string) => void): Promise<ChildProcess | null> {
   const base = `http://localhost:${port}/`;
   if (await serverUp(base)) {
     log(`server: reusing what is already serving on :${port}`);
-    return { kill: () => true } as unknown as ChildProcess; // nothing we own to tear down
+    return null;
   }
   log(`server: starting \`npm run dev\` on :${port}…`);
   const child = spawn('npm', ['run', 'dev'], { cwd: WEB_DIR, stdio: 'ignore', detached: true });
@@ -151,9 +157,14 @@ async function checkAssertion(page: Page, a: Assertion): Promise<boolean> {
       case 'visible':
         return await page.locator(a.selector as string).first().isVisible();
       case 'hidden': {
-        const c = await page.locator(a.selector as string).count();
-        if (c === 0) return true;
-        return !(await page.locator(a.selector as string).first().isVisible());
+        // Hidden means NO match is visible — `hidden .x` must not pass just because
+        // the first .x is hidden while a later one is showing.
+        const loc = page.locator(a.selector as string);
+        const c = await loc.count();
+        for (let i = 0; i < c; i++) {
+          if (await loc.nth(i).isVisible()) return false;
+        }
+        return true;
       }
       case 'count': {
         const c = await page.locator(a.selector as string).count();
@@ -368,6 +379,15 @@ async function main(): Promise<void> {
   const base = opts.baseUrl ?? `http://localhost:${DEFAULT_PORT}`;
   let server: ChildProcess | null = null;
   let browser: Browser | null = null;
+  // Tear a spawned dev server down even on Ctrl-C — the detached child would
+  // otherwise outlive an interrupted run and squat on :5173 (Playwright reaps its
+  // own browser on process exit).
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(sig, () => {
+      if (server) stopDevServer(server);
+      process.exit(sig === 'SIGINT' ? 130 : 143);
+    });
+  }
   try {
     if (!opts.baseUrl) server = await startDevServer(DEFAULT_PORT, log);
     else log(`server: using --base-url ${base}`);
@@ -407,10 +427,15 @@ async function main(): Promise<void> {
     const result = await assembleVideo({ capturesDir, outputPath, noNarrate: opts.noNarrate, log });
     log('');
     log(`✅ ${result.narrated ? 'narrated' : 'silent'} demo → ${path.relative(WEB_DIR, result.outputPath)}`);
-    log(`   frames + manifest: ${path.relative(WEB_DIR, capturesDir)}`);
-    if (failures > 0) log(`   ⚠️  ${failures} step(s) failed their proof — see issues.json`);
+    if (failures > 0) {
+      log(`   ⚠️  ${failures} step(s) failed their proof — issues.json + frames kept: ${path.relative(WEB_DIR, capturesDir)}`);
+    } else if (opts.keep) {
+      log(`   frames + manifest: ${path.relative(WEB_DIR, capturesDir)}`);
+    }
 
-    if (!opts.keep) rmSync(capturesDir, { recursive: true, force: true });
+    // A failed run keeps its working dir so issues.json + the proof frames are
+    // inspectable; only a clean pass (without --keep) cleans up after itself.
+    if (!opts.keep && failures === 0) rmSync(capturesDir, { recursive: true, force: true });
     process.exitCode = failures > 0 ? 1 : 0;
   } finally {
     if (browser) await browser.close().catch(() => {});

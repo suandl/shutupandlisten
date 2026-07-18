@@ -6,8 +6,9 @@
 // demo-capture (`_Prove:_` / `_Fail if:_` — "prove the feature WORKS, not just show
 // the screen"), made rigorous: instead of an LLM judging a natural-language proof,
 // each `_Prove:_` carries a selector/text/eval assertion the engine literally checks
-// against the live page, and records pass/fail. That makes a committed demo a
-// reproducible regression, not a screen tour.
+// against the live page, and records pass/fail. Demos exist to communicate to humans
+// (they are not regression gates); the checks are there so a demo shows VERIFIED
+// behaviour, not a screen tour.
 //
 // PURE — no Playwright, no ffmpeg, no I/O. Parsing is a `(markdown) -> Demo` function
 // in the same discipline as turn-detection.ts / transcript.ts, so the grammar is
@@ -21,12 +22,12 @@
 //   <free prose>               (becomes the cover subtitle / description)
 //   ## Steps
 //   1. **<narration>**         (numbered item; bold = the burned-in caption)
-//      `<action>`              (0+ backtick directives: goto/wait/waitFor/waitForText/click)
+//      `<action>`              (0+ backtick directives: goto/wait/waitFor/waitForText/click/scroll)
 //      <free prose>            (step description; ignored by the driver)
 //      _Prove:_ <prose> `<assertion>`
 //      _Fail if:_ <prose> `<assertion>`   (both optional; assertion optional)
 //
-// Actions:     goto <path> · wait <ms> · waitFor <selector> · waitForText <selector> ~ <substr> · click <selector>
+// Actions:     goto <path> · wait <ms> · waitFor <selector> · waitForText <selector> ~ <substr> · click <selector> · scroll <selector>
 // Assertions:  visible <sel> · hidden <sel> · count <sel> <op> <n> · text <sel> ~ <matcher> · eval <js>
 //   <op> ∈ >= > == <= <   ·   <matcher> = /regex/ or "substring" or bare substring
 

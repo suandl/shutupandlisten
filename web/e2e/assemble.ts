@@ -17,7 +17,7 @@
 // max(base, clip + 0.5s) so speech is never clipped.
 
 import ffmpegPath from 'ffmpeg-static';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -56,7 +56,7 @@ export interface AssembleResult {
 const FF = ffmpegPath as unknown as string;
 
 function run(args: string[]): string {
-  // stdio captured; ffmpeg writes progress to stderr, so fold it in for probing.
+  // stdio captured so ffmpeg's stderr chatter stays out of the run output.
   return execFileSync(FF, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) ?? '';
 }
 
@@ -78,17 +78,18 @@ function writeConcat(listPath: string, frames: { abs: string; duration: number }
   writeFileSync(listPath, lines.join('\n') + '\n');
 }
 
-/** Probe a media file's duration (seconds) from ffmpeg's stderr banner. 0 if unknown. */
-function probeDuration(file: string): number {
-  let out = '';
-  try {
-    out = execFileSync(FF, ['-i', file, '-hide_banner', '-f', 'null', '-'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch (e) {
-    out = (e as { stderr?: string }).stderr ?? '';
-  }
+/**
+ * Probe a media file's duration (seconds) from ffmpeg's `Duration:` banner. 0 if
+ * unknown. ffmpeg prints the banner to STDERR and `-f null -` exits 0, so this uses
+ * spawnSync (which exposes stderr on success) — execFileSync returns stdout only,
+ * which is empty here. Exported for the unit test that pins exactly that.
+ */
+export function probeDuration(file: string): number {
+  const res = spawnSync(FF, ['-i', file, '-hide_banner', '-f', 'null', '-'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const out = `${res.stderr ?? ''}${res.stdout ?? ''}`;
   const m = out.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
   if (!m) return 0;
   return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(`0.${m[4]}`);

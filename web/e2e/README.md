@@ -2,8 +2,9 @@
 
 Point the engine at a markdown demo script and it produces a narrated MP4 that
 **proves** a PR's behaviour — driven deterministically against the harness's sim
-mode. Not a screen tour: every step carries a `_Prove:_` assertion the engine checks
-against the live DOM, so a committed demo doubles as a regression test.
+mode. Demos are for **human communication** — showing a teammate what a PR does — not
+regression gates. The `_Prove:_` assertion each step carries against the live DOM is
+there so what a demo shows is verified behaviour, not a screen tour.
 
 First cut of su-lou.4 (parent), self-contained in this repo. Directional inspiration
 from the suspended signal-loom rig's `demo-capture` skill; built from scratch to fit
@@ -27,8 +28,10 @@ Output lands at `e2e/demos/<script-name>.mp4` (silent) — or `<name>-narrated.m
 narration is enabled (below). Flags: `--output <file.mp4>`, `--no-narrate`, `--keep`
 (keep the `.captures/<run>/` frames + `manifest.json` + `issues.json`).
 
-**Exit code is non-zero if any step's proof fails** — the video, manifest, and
-`issues.json` are still written so the failure is visible in the frames.
+**Exit code is non-zero if any step's proof fails** — the video is still written and
+the `.captures/<run>/` dir (frames + `manifest.json` + `issues.json`) is kept even
+without `--keep`, so a broken demo is never published silently and the failure is
+inspectable.
 
 ## Prerequisites
 
