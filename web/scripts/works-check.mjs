@@ -114,7 +114,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function serverUp(url) {
   try {
-    return (await fetch(url, { method: 'GET' })).ok;
+    // Bounded probe: without the abort, something else squatting the pinned port
+    // and never answering would hang this fetch — and with it the whole up-loop,
+    // sailing past SERVER_UP_TIMEOUT_MS (found live, not hypothetically).
+    return (await fetch(url, { method: 'GET', signal: AbortSignal.timeout(2000) })).ok;
   } catch {
     return false;
   }
