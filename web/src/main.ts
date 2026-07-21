@@ -116,6 +116,10 @@ let turnStarts: TurnStartMark[] = [];
 let turnEnds: TurnEndMark[] = [];
 
 function resetTranscript(): void {
+  // An evaluation left hanging would keep the detector parked in `deciding`, so
+  // the next script/session would resume that stale turn instead of opening a
+  // fresh one. Decline it: `silence` re-arms to listening at no cost.
+  answerEvaluation('silence');
   transcriptSegments.clear();
   turnStarts = [];
   turnEnds = [];
@@ -417,6 +421,31 @@ function wireAudio(src: AudioSource): void {
   };
 }
 
+// ── the decision loop (the un-collapsed `Deciding` state) ──
+//
+// The detector no longer commits to responding when the patience window closes:
+// it emits `evaluate` and waits for a verdict. This harness is what answers.
+// Which answer, and how soon, depends on what is actually wired up:
+//   - timing-only (the classic sim scripts, no transcript and no gate): answer
+//     `speak` at once, so the stubbed response park behaves exactly as it did
+//     when `Deciding` was collapsed into `responding`;
+//   - warmed loop (mic, or a loop-driving demo): the response-hierarchy gate
+//     answers, and only when the evidence it needs has landed — the transcript
+//     resolving IS the trigger (see maybeRespond), never a timer.
+// An evaluation the harness never answers would park the detector in `deciding`,
+// so every path out of here must end in exactly one answer.
+let awaitingVerdictForTurn: number | null = null;
+
+/** Answer the outstanding evaluation, if there is one. Safe to call unconditionally. */
+function answerEvaluation(outcome: 'speak' | 'silence'): void {
+  if (awaitingVerdictForTurn === null) return;
+  awaitingVerdictForTurn = null;
+  // Re-entrant when called from handleOut (inside detector.input); the detector
+  // queues such an event and applies it as soon as the current one settles.
+  detector.input({ t: now(), type: 'decision', outcome });
+  refreshStage();
+}
+
 // ── output handling ──
 function handleOut(e: OutputEvent): void {
   logOutput(e);
@@ -428,11 +457,19 @@ function handleOut(e: OutputEvent): void {
     // reply still playing (covers a TTS clip that outlasts the responding window).
     stopSpeech();
     renderTranscript();
-  } else if (e.type === 'turn-end') {
-    turnEnds.push({ turn: e.turn, t: e.t, reason: e.reason });
-    // Stage 1 of the warmed-loop metric: the detector ended this turn.
-    loopMetrics.mark(e.turn, 'turn-end', e.t);
-    renderTranscript();
+  } else if (e.type === 'evaluate') {
+    // The patience window closed. THIS is where the transcript's turn-end marker
+    // and the loop metric's first stage belong — the moment the detector read the
+    // pause as an end-of-thought — whether or not the companion goes on to speak.
+    // A superseding re-evaluation of the same turn re-uses the first mark: the
+    // patience deadline is where the window closed, and it has not moved.
+    if (!turnEnds.some((m) => m.turn === e.turn)) {
+      turnEnds.push({ turn: e.turn, t: e.t, reason: e.reason });
+      loopMetrics.mark(e.turn, 'turn-end', e.t);
+    }
+    awaitingVerdictForTurn = e.turn;
+    if (loopActive()) renderTranscript(); // → maybeRespond answers once the transcript resolves
+    else answerEvaluation('speak'); // timing-only: the stubbed response, exactly as before
   }
   if (e.type === 'response-start') {
     respondInd.dataset.on = 'true';
@@ -538,10 +575,22 @@ function renderTranscript(): void {
 // once); a reflection/question additionally calls the LLM, which resolves later
 // and re-renders. Idempotent — a turn already handled is skipped — so it is safe
 // to call on every render.
+//
+// It is also what answers the detector's outstanding `evaluate`: the gate's tier
+// IS the verdict (`silence` declines the floor; every speaking tier takes it).
+// Waiting here for the transcript to resolve is the evidence-driven trigger — the
+// gate is asked when its input exists, not on a clock.
 function maybeRespond(groups: TurnTranscript[]): void {
   if (!loopActive()) return;
   for (const g of groups) {
-    if (!g.end || turnResponses.has(g.turn)) continue;
+    if (!g.end) continue;
+    if (turnResponses.has(g.turn)) {
+      // Already gated. A re-evaluation of this turn (fresh evidence) still needs
+      // an answer, and the decision has not changed — replay it rather than
+      // re-running the gate, or the detector waits on a verdict that never comes.
+      answerFor(g.turn, turnResponses.get(g.turn)?.decision.tier);
+      continue;
+    }
     if (g.segments.some((s) => s.pending)) continue; // wait for STT to resolve first
 
     // Real words only: a stub placeholder ("⟨speech 1.4s …⟩") is not transcription,
@@ -570,6 +619,12 @@ function maybeRespond(groups: TurnTranscript[]): void {
       status: decision.callModel ? 'pending' : 'done',
     };
     turnResponses.set(g.turn, entry);
+
+    // The verdict, back to the detector: `silence` re-arms it to listening with
+    // no response park; a speaking tier takes the floor. The reply text is still
+    // being generated at this point for reflection/question — the decision to
+    // SPEAK is what the detector is waiting on, not the words.
+    answerFor(g.turn, decision.tier);
 
     if (decision.callModel) {
       const request = buildListenerRequest({
@@ -606,6 +661,12 @@ function maybeRespond(groups: TurnTranscript[]): void {
     }
     renderMetrics();
   }
+}
+
+/** Feed the gate's tier back as the detector's verdict, if it is what is awaited. */
+function answerFor(turn: number, tier: Tier | undefined): void {
+  if (!tier || awaitingVerdictForTurn !== turn) return;
+  answerEvaluation(tier === 'silence' ? 'silence' : 'speak');
 }
 
 // Prior turns as an alternating thinker/listener history for the LLM. Silent turns
@@ -735,7 +796,12 @@ function refreshStage(): void {
     }`;
   } else {
     patienceFill.style.width = '0%';
-    patienceCap.textContent = snap.state === 'responding' ? 'responding…' : 'patience window idle';
+    patienceCap.textContent =
+      snap.state === 'responding'
+        ? 'responding…'
+        : snap.state === 'deciding'
+          ? 'patience window closed — deciding whether to speak…'
+          : 'patience window idle';
   }
 }
 
@@ -762,7 +828,8 @@ function logInput(e: InputEvent): void {
 }
 function logOutput(e: OutputEvent): void {
   const reason = 'reason' in e ? ` (${e.reason})` : '';
-  append(e.type, `${fmtT(e.t)}  → ${e.type} turn ${e.turn}${reason}`);
+  const trigger = e.type === 'evaluate' ? ` [${e.trigger}]` : '';
+  append(e.type, `${fmtT(e.t)}  → ${e.type} turn ${e.turn}${reason}${trigger}`);
 }
 
 // ── WebAudio context for TTS playback, created lazily on the first user gesture

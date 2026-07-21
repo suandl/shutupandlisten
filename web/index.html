@@ -47,6 +47,7 @@
       .badge[data-state="listening"] { color: var(--muted); }
       .badge[data-state="speaking"] { color: var(--speak); border-color: var(--speak); }
       .badge[data-state="pending"] { color: var(--pending); border-color: var(--pending); }
+      .badge[data-state="deciding"] { color: var(--accent); border-color: var(--accent); }
       .badge[data-state="responding"] { color: var(--respond); border-color: var(--respond); }
 
       .meta { display: flex; gap: 22px; color: var(--muted); font-size: 13px; }
@@ -80,6 +81,7 @@
       .log { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 280px; overflow-y: auto; }
       .log div { white-space: pre; border-bottom: 1px solid #1b1f27; padding: 2px 0; }
       .log .turn-end { color: var(--accent); }
+      .log .evaluate { color: var(--accent); opacity: 0.75; }
       .log .turn-start { color: var(--speak); }
       .log .barge-in { color: var(--warn); }
       .log .response-start, .log .response-end { color: var(--respond); }

@@ -11,6 +11,7 @@
   "events": [
     { "t": 0, "type": "speech-start" },
     { "t": 2000, "type": "speech-end" },
+    { "t": 4000, "type": "decision", "outcome": "speak" },
     { "t": 4500, "type": "speech-start" },
     { "t": 6000, "type": "tick" }
   ],
@@ -22,6 +23,7 @@
     ],
     "emit": [
       { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 4000, "type": "evaluate", "turn": 1, "reason": "floor", "trigger": "deadline" },
       { "t": 4000, "type": "turn-end", "turn": 1, "reason": "floor" },
       { "t": 4000, "type": "response-start", "turn": 1 },
       { "t": 4500, "type": "barge-in", "turn": 1 },

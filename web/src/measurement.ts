@@ -13,14 +13,22 @@
 // Scoring. Each labeled vector carries ground-truth `trueTurnBoundaries` — the
 // times a real completed thought ended (where the detector SHOULD fire, after
 // patience). We replay the vector through two arms (combined: useSmartTurn=true;
-// baseline: useSmartTurn=false) and match emitted turn-ends to boundaries within
-// a per-vector tolerance (floor + extension + grace — a detection inside the
-// patience window plus a little is on-time):
-//   - false cutoff       — a turn-end with no boundary in tolerance (ended
+// baseline: useSmartTurn=false) and match the detector's END-OF-THOUGHT signal to
+// boundaries within a per-vector tolerance (floor + extension + grace — a
+// detection inside the patience window plus a little is on-time):
+//   - false cutoff       — a detection with no boundary in tolerance (fired
 //                           mid-thought: the cardinal sin).
-//   - false continuation — a boundary with no turn-end in tolerance (stayed
+//   - false continuation — a boundary with no detection in tolerance (stayed
 //                           silent when the thought was done).
 // The asymmetric cost is reflected by weighting cutoffs above continuations.
+//
+// That end-of-thought signal is the `evaluate` event, not `turn-end`: since
+// `Deciding` was un-collapsed, the patience window closing ASKS whether to speak,
+// and the turn only ends if the host answers `speak`. What scenario 6 measures is
+// the ENDPOINTING — did the detector notice the thought ended, and when — which is
+// exactly the evaluate edge. Whether the companion then chose to speak is the
+// response-hierarchy gate's business, measured elsewhere; that is why the labeled
+// vectors carry no `decision` events and score exactly as they always have.
 
 import { TurnDetector, type InputEvent, type TurnKnobs } from './turn-detection.ts';
 
@@ -42,7 +50,8 @@ export const MATCH_GRACE_MS = 1500;
 
 export interface ArmResult {
   arm: Arm;
-  turnEnds: number[];
+  /** The times the detector signalled end-of-thought (the `evaluate` edge). */
+  detections: number[];
   falseCutoffs: number;
   falseContinuations: number;
   truePositives: number;
@@ -87,13 +96,15 @@ function toleranceFor(vector: LabeledVector): number {
   return k.silenceFloorMs + k.incompleteExtensionMs + MATCH_GRACE_MS;
 }
 
-/** Replay one arm and collect the times at which a turn ended. */
-function turnEndTimes(vector: LabeledVector, useSmartTurn: boolean): number[] {
+/** Replay one arm and collect the times the detector signalled end-of-thought. */
+function detectionTimes(vector: LabeledVector, useSmartTurn: boolean): number[] {
   const det = new TurnDetector({ ...vector.knobs, useSmartTurn });
   const ends: number[] = [];
   for (const ev of vector.events) {
     for (const out of det.input(ev)) {
-      if (out.type === 'turn-end') ends.push(out.t);
+      // Count the deadline evaluation only: an `evidence`-triggered re-evaluation
+      // is the same detected boundary being re-examined, not a second detection.
+      if (out.type === 'evaluate' && out.trigger === 'deadline') ends.push(out.t);
     }
   }
   return ends;
@@ -101,7 +112,7 @@ function turnEndTimes(vector: LabeledVector, useSmartTurn: boolean): number[] {
 
 export function scoreArm(vector: LabeledVector, arm: Arm): ArmResult {
   const tolerance = toleranceFor(vector);
-  const ends = turnEndTimes(vector, arm === 'combined').slice().sort((a, b) => a - b);
+  const ends = detectionTimes(vector, arm === 'combined').slice().sort((a, b) => a - b);
   const boundaries = vector.trueTurnBoundaries
     .map((b) => b.t)
     .slice()
@@ -111,8 +122,8 @@ export function scoreArm(vector: LabeledVector, arm: Arm): ArmResult {
   const latencies: number[] = [];
   let falseCutoffs = 0;
 
-  // Greedy earliest-match: each turn-end claims the earliest unused boundary it
-  // lands within [B, B + tolerance]; an unmatched turn-end is a false cutoff.
+  // Greedy earliest-match: each detection claims the earliest unused boundary it
+  // lands within [B, B + tolerance]; an unmatched detection is a false cutoff.
   for (const te of ends) {
     let matched = -1;
     for (let i = 0; i < boundaries.length; i++) {
@@ -137,7 +148,7 @@ export function scoreArm(vector: LabeledVector, arm: Arm): ArmResult {
 
   return {
     arm,
-    turnEnds: ends,
+    detections: ends,
     falseCutoffs,
     falseContinuations,
     truePositives,

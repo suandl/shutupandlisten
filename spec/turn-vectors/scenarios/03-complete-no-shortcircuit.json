@@ -1,6 +1,6 @@
 {
   "name": "03-complete-no-shortcircuit",
-  "description": "A 'complete' EOU signal during a sub-floor pause does NOT short-circuit the floor. The turn ends at the floor (4000), never at the verdict time (2100).",
+  "description": "A 'complete' EOU signal during a sub-floor pause does NOT short-circuit the floor. The patience window closes at the floor (4000), never at the verdict time (2100), and the turn ends there once the host answers 'speak'.",
   "knobs": {
     "silenceFloorMs": 2000,
     "incompleteExtensionMs": 4000,
@@ -12,6 +12,7 @@
     { "t": 0, "type": "speech-start" },
     { "t": 2000, "type": "speech-end" },
     { "t": 2100, "type": "eou", "verdict": "complete" },
+    { "t": 4000, "type": "decision", "outcome": "speak" },
     { "t": 6000, "type": "tick" }
   ],
   "expected": {
@@ -22,6 +23,7 @@
     ],
     "emit": [
       { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 4000, "type": "evaluate", "turn": 1, "reason": "floor", "trigger": "deadline" },
       { "t": 4000, "type": "turn-end", "turn": 1, "reason": "floor" },
       { "t": 4000, "type": "response-start", "turn": 1 },
       { "t": 5500, "type": "response-end", "turn": 1, "reason": "completed" }

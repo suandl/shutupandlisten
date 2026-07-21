@@ -1,6 +1,6 @@
 {
   "name": "02-floor-elapsed-one-end",
-  "description": "Silence past the floor with no 'incomplete' EOU signal emits exactly one end-of-turn, at the floor.",
+  "description": "Silence past the floor with no 'incomplete' EOU signal closes the patience window exactly once, at the floor: one evaluate. The host answers 'speak', so that one evaluation becomes exactly one end-of-turn, at the floor.",
   "knobs": {
     "silenceFloorMs": 2000,
     "incompleteExtensionMs": 4000,
@@ -11,6 +11,7 @@
   "events": [
     { "t": 0, "type": "speech-start" },
     { "t": 2000, "type": "speech-end" },
+    { "t": 4000, "type": "decision", "outcome": "speak" },
     { "t": 8000, "type": "tick" }
   ],
   "expected": {
@@ -21,6 +22,7 @@
     ],
     "emit": [
       { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 4000, "type": "evaluate", "turn": 1, "reason": "floor", "trigger": "deadline" },
       { "t": 4000, "type": "turn-end", "turn": 1, "reason": "floor" },
       { "t": 4000, "type": "response-start", "turn": 1 },
       { "t": 5500, "type": "response-end", "turn": 1, "reason": "completed" }
