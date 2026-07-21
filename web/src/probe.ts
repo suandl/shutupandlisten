@@ -16,7 +16,7 @@
 //
 // The LISTENER stage (su-lou.9) is split in two because its halves cost four orders
 // of magnitude apart: a per-rung weight-availability check that always runs, and an
-// opt-in load+generate. See runListenerAssets / runListener for why each is shaped
+// opt-in load+generate. See runListenerAssets / loadListener for why each is shaped
 // that way. Denoise and smart-turn stay unguarded here, deliberately: denoise is an
 // AudioWorklet over a live mic MediaStream (no mic, no Web Audio graph, headless),
 // and smart-turn has no provisioned model AT ALL — no caller sets its modelUrl, so
@@ -43,7 +43,7 @@ export interface ProbeFixture {
   sampleRate: number;
 }
 
-/** What `run` is asked to do. The listener's deep check is opt-in — see runListener. */
+/** What `run` is asked to do. The listener's deep check is opt-in — see loadListener. */
 export interface ProbeOptions {
   /** Load the listener model and generate, not just check its weights are served. */
   withListener?: boolean;
@@ -264,7 +264,7 @@ async function runListenerAssets(engineUrl: string | undefined, model: string | 
  * always runs, this runs when asked, and works-check.mjs prints loudly which of the
  * two it did (a silently-skipped check reads as a passed one).
  */
-async function runListener(): Promise<ListenerStageReport> {
+async function baseListenerReport(): Promise<ListenerStageReport> {
   const opts = resolveListenerOptions(location.search, location.href);
   const report: ListenerStageReport = {
     loadMode: null,
@@ -316,7 +316,7 @@ async function loadListener(report: ListenerStageReport): Promise<ListenerStageR
  * would contend and distort the load-time numbers the report carries).
  */
 async function run(fixture: ProbeFixture, options: ProbeOptions = {}): Promise<ProbeReport> {
-  const listener = await runListener();
+  const listener = await baseListenerReport();
   const report: ProbeReport = {
     version: 1,
     stt: await runStt(fixture),

@@ -29,7 +29,11 @@ const ctx = globalThis as unknown as {
   postMessage(message: unknown): void;
   addEventListener(type: 'message', listener: (ev: { data: unknown }) => void): void;
   location?: { href: string };
-  navigator?: { gpu?: { requestAdapter(): Promise<{ features: { has(f: string): boolean } } | null> } };
+  navigator?: {
+    gpu?: {
+      requestAdapter(options?: { powerPreference?: string }): Promise<{ features: { has(f: string): boolean } } | null>;
+    };
+  };
 };
 
 interface ChatMessage {
@@ -157,7 +161,15 @@ async function hasWebGpuFeature(feature: string): Promise<boolean> {
     const gpu = ctx.navigator?.gpu;
     if (!gpu) return null;
     try {
-      return (await gpu.requestAdapter())?.features ?? null;
+      // Request with the same options the real session will use: transformers.js
+      // 3.8.1 pins ORT's env.webgpu.powerPreference to 'high-performance', and ORT
+      // passes that to its own requestAdapter call. On multi-adapter hardware a bare
+      // requestAdapter() can return a DIFFERENT adapter (e.g. the integrated one)
+      // than ORT gets, and the feature check would guard the wrong device. Adapter
+      // identity still isn't spec-guaranteed for identical options, but this is the
+      // best available proxy: ORT's adapter instance is created inside the engine
+      // and unreachable from here.
+      return (await gpu.requestAdapter({ powerPreference: 'high-performance' }))?.features ?? null;
     } catch {
       return null;
     }

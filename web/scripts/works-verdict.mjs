@@ -170,10 +170,18 @@ function evaluateListener(listener, failures) {
       const where = `${a?.rung ?? '?'} weights ${a?.url ?? '?'}`;
       if (a?.error) {
         failures.push({ stage: 'listener', reason: `${where}: request failed (${a.error})` });
-      } else if (a?.status !== 200) {
+      } else if (a?.status === 404) {
         failures.push({
           stage: 'listener',
           reason: `${where}: HTTP ${a?.status} — the ladder wants a quantization the deploy does not serve (R2)`,
+        });
+      } else if (a?.status !== 200) {
+        // A 404 is provisioner/ladder drift (diagnosed above); any other non-200
+        // (500, 503, …) is the server misbehaving, not a missing file — don't
+        // claim a deploy gap the status does not evidence.
+        failures.push({
+          stage: 'listener',
+          reason: `${where}: HTTP ${a?.status} — unexpected status for a weight asset (R2)`,
         });
       } else if (/^text\/html/i.test(a?.contentType ?? '')) {
         failures.push({
