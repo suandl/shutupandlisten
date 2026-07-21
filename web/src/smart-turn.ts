@@ -81,8 +81,10 @@ const SAMPLE_RATE = 16000;
 
 /**
  * A verdict that lands after the turn was already decided is worthless, so a wedged
- * session degrades this call rather than hanging the promise chain. Generous next to
- * the ~12ms the model actually takes: this catches a stall, not a slow machine.
+ * session degrades this call rather than hanging the promise chain. Roughly 7x the
+ * ~270ms a warmed verdict measures in headless Chromium (front-end + inference; the
+ * model card's ~12ms is a native-CPU figure, not a wasm one), so this catches a
+ * stall, not a slow machine.
  */
 const DEFAULT_TIMEOUT_MS = 2000;
 
