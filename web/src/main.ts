@@ -158,10 +158,14 @@ interface TurnResponse {
 }
 const turnResponses = new Map<number, TurnResponse>();
 
-// When the companion last stopped holding the floor (performance.now() ms), or null
-// if it has not spoken this session. Feeds `EvalContext.msSinceWeLastSpoke`, the
-// restraint/spacing signal the gate could not previously see; the stage-1 policy
-// carries it without reading it (su-lou.10.3).
+// When the companion last RELEASED THE FLOOR (performance.now() ms), or null if it
+// has not spoken this session. Set from the detector's response-end / barge-in — the
+// moment its response window closed or was cut — NOT from when the TTS audio actually
+// finished (a clip can out- or under-run that window). Floor release is the right
+// boundary for a restraint/spacing signal: it is when the companion handed the
+// conversational turn back, which is what "don't crowd them" spaces against. Feeds
+// `EvalContext.msSinceWeLastSpoke`; the stage-1 policy carries it without reading it
+// (su-lou.10.3).
 let lastListenerSpeechEndT: number | null = null;
 
 // The listener worker + model is heavy, so it is created lazily and only in mic
@@ -669,7 +673,9 @@ function maybeRespond(groups: TurnTranscript[]): void {
       .map((r) => ({ turn: r.turn, tier: r.decision.tier }));
 
     // How long the pause had run when the detector evaluated it: last speech-end in
-    // this turn → where the patience window closed. 0 when nothing was transcribed.
+    // this turn → where the patience window closed. 0 only when the turn has NO
+    // segments at all; an untranscribed stub placeholder still carries a real
+    // speech-end, so its presence yields a genuine time here.
     const lastSpeechEndT = g.segments.reduce((m, s) => Math.max(m, s.endT), 0);
 
     // Stage 2+3: the transcript resolved (we have userText) and the gate decides.
@@ -682,7 +688,10 @@ function maybeRespond(groups: TurnTranscript[]): void {
       // threads smart-turn's real P(complete) through here instead — the widened
       // contract is what lets that be a one-line change (su-lou.10.3).
       completionProb: completionProbFromTurnEnd(g.end.reason),
-      msSinceSpeechEnd: lastSpeechEndT > 0 ? Math.max(0, g.end.t - lastSpeechEndT) : 0,
+      // No segments ⇒ no speech-end to measure from: NaN, the "no measurement"
+      // sentinel (never a real 0-length pause), read the fail-safe way a non-finite
+      // completionProb is — see the field doc in response-hierarchy.ts.
+      msSinceSpeechEnd: lastSpeechEndT > 0 ? Math.max(0, g.end.t - lastSpeechEndT) : NaN,
       msSinceWeLastSpoke:
         lastListenerSpeechEndT === null ? Infinity : Math.max(0, g.end.t - lastListenerSpeechEndT),
       priorDecisions,

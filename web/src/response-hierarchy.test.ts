@@ -167,6 +167,9 @@ test('the carried timing signals do not influence the stage-1 policy', () => {
     { msSinceSpeechEnd: 250, msSinceWeLastSpoke: 500 },
     { msSinceSpeechEnd: 60_000, msSinceWeLastSpoke: Infinity },
     { msSinceSpeechEnd: Infinity, msSinceWeLastSpoke: 1 },
+    // NaN is a value main.ts actually sends: the "no speech-end to measure from"
+    // sentinel (see EvalContext.msSinceSpeechEnd) — it must be as inert as any number.
+    { msSinceSpeechEnd: NaN, msSinceWeLastSpoke: 3000 },
   ];
   const history: PriorDecision[] = [{ turn: 1, tier: 'reflection' }];
   for (const text of ['', SHORT, SUBSTANTIVE, 'and then…', 'does that make sense?']) {

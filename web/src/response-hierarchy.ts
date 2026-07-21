@@ -88,10 +88,22 @@ export const DEFAULT_QUESTION_COOLDOWN_TURNS = 2;
 
 /**
  * `EvalContext.completionProb` at/above this reads as a finished thought; below it
- * the EOU classifier called the pause INCOMPLETE and rule 2 holds silence. Mirrors
- * the detector's own knob (turn-detection.ts `DEFAULT_KNOBS.completionThreshold`) —
- * the same comparison that used to be collapsed into the `extended` turn-end reason
- * before the gate ever saw it. Higher ⇒ more patient.
+ * the EOU classifier called the pause INCOMPLETE and rule 2 holds silence. Higher ⇒
+ * more patient. Mirrors the detector's own knob (turn-detection.ts
+ * `DEFAULT_KNOBS.completionThreshold`) — the same comparison that used to be
+ * collapsed into the `extended` turn-end reason before the gate ever saw it.
+ *
+ * STAGE-2 DRIFT HAZARD (two knobs, one probability). Today the bridge feeds the gate
+ * a synthetic 0/1 (`completionProbFromTurnEnd`), so this value is inert for any
+ * threshold in (0, 1] and cannot disagree with the detector. When stage 2 threads the
+ * classifier's REAL score to both, these become two independently-overridable knobs
+ * thresholding the SAME probability: let them diverge and the detector can call a
+ * pause `extended` while the gate reads it complete (or the reverse). Sharing this
+ * default constant across the modules would NOT close that gap — runtime configs
+ * still drift — and would couple this deliberately standalone gate to the detector
+ * (this module imports nothing; see header). The question stage 2 must actually
+ * settle is whether the two should collapse into ONE knob; that is left to stage 2,
+ * not pre-judged here.
  */
 export const DEFAULT_COMPLETION_THRESHOLD = 0.5;
 
@@ -164,12 +176,21 @@ export interface EvalContext {
    * safe reading of "no EOU evidence" is to stay quiet.
    */
   completionProb: number;
-  /** How long this pause has run (ms since speech end). Carried; unread in stage 1. */
+  /**
+   * How long this pause has run (ms since the last speech-end in the turn). `NaN`
+   * when the turn had no speech-end to measure from (no segments at all) — the "no
+   * measurement" sentinel, kept distinct from a real 0-length pause, and to be read
+   * the same fail-safe way a non-finite `completionProb` is (above): no evidence ⇒
+   * grant no license. Carried; unread in stage 1.
+   */
   msSinceSpeechEnd: number;
   /**
-   * How long since the COMPANION last spoke (ms), `Infinity` if it never has. The
-   * restraint/spacing signal the gate could not previously see at all. Carried;
-   * unread in stage 1.
+   * How long since the companion last RELEASED THE FLOOR (ms), `Infinity` if it never
+   * has. This is the detector's response-window close / barge-in — the moment it
+   * handed the conversational turn back — NOT when its TTS audio literally stopped
+   * (a clip can out- or under-run that window). That floor boundary is the meaningful
+   * one for a restraint/spacing signal, not a stand-in for audio end. The signal the
+   * gate could not previously see at all. Carried; unread in stage 1.
    */
   msSinceWeLastSpoke: number;
   /** The history the escalate-slowly policy reads. */
