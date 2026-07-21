@@ -6,9 +6,12 @@
 // with `vite preview`, drive a headless Chromium through the adapter-import probe
 // page (src/probe.ts), assert each stage loads its REAL backend — not a labelled
 // stub — and smoke-run each on the committed speech fixture for non-empty output.
+//
 // The su-lou.8 lesson, mechanized: the node test suite was 25/25 green while a
 // real browser degraded 3 of 5 stages, because nothing loaded the real provisioned
 // pipeline; this command is the "operator stops being the integration test" gate.
+//
+// Usage: npm run works-check [-- --with-listener] [--port N] [--timeout MS]
 //
 // Exit codes (origin KTD4 — see scripts/works-verdict.mjs, which owns the rules):
 //   0   pass · 100  real regression (summary names the stage) · anything else
@@ -21,10 +24,31 @@
 // the base config's provisionedAsset404 guard active (missing optional model
 // files must 404 clean, the contract the TTS load path depends on — su-lou.7).
 //
-// Prerequisite: provisioned assets (`npm run provision:stt` + `provision:tts`)
-// and a Playwright browser (`npx playwright install chromium-headless-shell`).
-// Both are checked up front and reported as INFRA with the remedy, never as a
-// regression — "not provisioned" and "broken" must not be confusable.
+// The LISTENER stage (su-lou.9) is checked in two tiers, because its halves cost
+// four orders of magnitude apart:
+//
+//   always            every rung of the listener's device ladder must have its
+//                     weight file SERVED (HEAD per rung — see probe.ts's
+//                     runListenerAssets). Milliseconds, and it is the only listener
+//                     assertion that covers the `webgpu/q4f16` rung an OPERATOR runs
+//                     — this browser exposes no WebGPU adapter with `shader-f16`, so
+//                     it can never load that rung, only prove the deploy serves it.
+//   --with-listener   additionally load the model and generate a reply. 1.69G onto
+//                     the WASM heap, ~4min single-threaded. Opt-in because a gate that
+//                     costs minutes is a gate people stop running — the bead's own
+//                     warning — and every run prints WHICH tier it did, so a skipped
+//                     check never reads like a passed one.
+//
+// Deliberately still unguarded: denoise (an AudioWorklet over a live mic
+// MediaStream — no mic and no audio graph in this browser) and smart-turn (no
+// provisioned model exists at all; nothing sets its modelUrl, so 'heuristic' is the
+// designed state, not a degrade).
+//
+// Prerequisite: provisioned assets (`npm run provision:stt` + `provision:tts` +
+// `provision:llm`) and a Playwright browser (`npx playwright install
+// chromium-headless-shell`). Both are checked up front and reported as INFRA with
+// the remedy, never as a regression — "not provisioned" and "broken" must not be
+// confusable.
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync, linkSync, copyFileSync } from 'node:fs';
@@ -33,6 +57,7 @@ import { fileURLToPath } from 'node:url';
 
 import { chromium } from 'playwright';
 
+import { DEFAULT_LLM_MODEL } from '../src/listener.ts';
 import { DEFAULT_MOONSHINE_MODEL, DEFAULT_WHISPER_MODEL } from '../src/stt.ts';
 import { DEFAULT_TTS_MODEL } from '../src/tts.ts';
 import { WORKS_CHECK_PORT, WORKS_CHECK_OUT_DIR } from '../vite.works-check.config.ts';
@@ -52,6 +77,15 @@ const PROBE_READY_TIMEOUT_MS = 20000;
  *  model is a regression, and this deadline only catches a dead page, which is
  *  infra. Worst healthy run in the su-ljrb.1 spike was ~15s; 240s is pure slack. */
 const PROBE_RUN_TIMEOUT_MS = 240000;
+/** Watchdog for `--with-listener`. The listener adds a 1.69G weight load onto the
+ *  WASM heap, single-threaded because `vite preview` sends no COOP/COEP and so the
+ *  page never gets SharedArrayBuffer — measured at 228s to load on an 8-core host
+ *  (the same model loads in ~52s served cross-origin-isolated). It gets its own
+ *  deadline rather than eating the slack the other stages rely on, sized above the
+ *  probe's own init+generate budgets (420s + 240s) so THOSE fire first: a wedged
+ *  model must read as a REGRESSION naming the stage, never as this watchdog's
+ *  unclassifiable infra timeout. */
+const LISTENER_RUN_TIMEOUT_MS = 900000;
 /** Cap on the retained browser-console ring. Only the last 100 lines are ever
  *  persisted or tailed, so a chatty model load must not grow the buffer for the
  *  whole run — hold a little headroom over what's written and drop the rest. */
@@ -63,6 +97,11 @@ const REQUIRED_ASSETS = [
   { rel: `public/models/${DEFAULT_MOONSHINE_MODEL}`, remedy: 'npm run provision:stt' },
   { rel: 'public/tts/transformers/transformers.min.js', remedy: 'npm run provision:tts' },
   { rel: `public/models/${DEFAULT_TTS_MODEL}`, remedy: 'npm run provision:tts' },
+  // The listener tree is REQUIRED even for a weights-only run: absent, the check
+  // cannot tell "the ladder asks for a variant nobody ships" (a regression) from
+  // "nobody ran provision:llm" (infra), and those must never be confusable.
+  { rel: 'public/llm/transformers/transformers.min.js', remedy: 'npm run provision:llm' },
+  { rel: `public/models/${DEFAULT_LLM_MODEL}`, remedy: 'npm run provision:llm' },
 ];
 
 /** public/ subtrees materialized (hardlinked) into the served outDir. The whisper
@@ -71,17 +110,20 @@ const REQUIRED_ASSETS = [
 const SERVED_ASSETS = [
   { rel: 'stt-engine.js', required: true },
   { rel: 'tts-engine.js', required: true },
+  { rel: 'llm-engine.js', required: true },
   { rel: 'stt', required: true },
   { rel: 'tts', required: true },
+  { rel: 'llm', required: true },
   { rel: `models/${DEFAULT_MOONSHINE_MODEL}`, required: true },
   { rel: `models/${DEFAULT_WHISPER_MODEL}`, required: false },
   { rel: `models/${DEFAULT_TTS_MODEL}`, required: true },
+  { rel: `models/${DEFAULT_LLM_MODEL}`, required: true },
 ];
 
 const log = (m) => console.log(m);
 
 function parseArgs(argv) {
-  const opts = { port: WORKS_CHECK_PORT, timeoutMs: PROBE_RUN_TIMEOUT_MS };
+  const opts = { port: WORKS_CHECK_PORT, timeoutMs: null, withListener: false };
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -92,9 +134,11 @@ function parseArgs(argv) {
     };
     if (a === '--port') opts.port = Number(value(a));
     else if (a === '--timeout') opts.timeoutMs = Number(value(a));
-    else throw new Error(`unknown flag: ${a} (usage: works-check [--port N] [--timeout MS])`);
+    else if (a === '--with-listener') opts.withListener = true;
+    else throw new Error(`unknown flag: ${a} (usage: works-check [--port N] [--timeout MS] [--with-listener])`);
   }
   if (!Number.isInteger(opts.port) || opts.port <= 0) throw new Error('--port must be a positive integer');
+  if (opts.timeoutMs === null) opts.timeoutMs = opts.withListener ? LISTENER_RUN_TIMEOUT_MS : PROBE_RUN_TIMEOUT_MS;
   if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs <= 0) throw new Error('--timeout must be positive ms');
   return opts;
 }
@@ -294,12 +338,16 @@ async function main() {
       ]);
     }
 
-    log('works-check: probe ready — loading stages + smoke-running (this loads real models; expect ~15-30s)…');
+    log(
+      opts.withListener
+        ? 'works-check: probe ready — loading stages + smoke-running, INCLUDING the 1.69G listener model (expect several minutes)…'
+        : 'works-check: probe ready — loading stages + smoke-running (this loads real models; expect ~15-30s)…',
+    );
     let report;
     let watchdog;
     try {
       report = await Promise.race([
-        page.evaluate((f) => window.__worksCheck.run(f), fixture),
+        page.evaluate(({ f, o }) => window.__worksCheck.run(f, o), { f: fixture, o: { withListener: opts.withListener } }),
         new Promise((_, reject) => {
           watchdog = setTimeout(() => reject(new Error(`probe run exceeded ${opts.timeoutMs}ms`)), opts.timeoutMs);
         }),
@@ -327,10 +375,26 @@ async function main() {
     // main().catch, and reclassify that loud failure as a retryable EXIT_INFRA.
     const stt = report?.stt ?? {};
     const tts = report?.tts ?? {};
+    const listener = report?.listener ?? {};
     log('');
     log(`  stt: load=${stt.loadMode} (${stt.loadMs}ms) smoke=${stt.smoke ? `${stt.smoke.mode} "${(stt.smoke.text ?? '').slice(0, 60)}" (${stt.smoke.ms}ms)` : 'none'}`);
     log(`  tts: load=${tts.loadMode} (${tts.loadMs}ms) smoke=${tts.smoke ? `${tts.smoke.mode} ${tts.smoke.samples} samples @${tts.smoke.sampleRate}Hz rms=${tts.smoke.rms} (${tts.smoke.ms}ms)` : 'none'}`);
     for (const d of tts.diagnostics ?? []) log(`       ${d}`);
+    // Print every rung's weight status, loaded or not: it is the only line that says
+    // anything about the webgpu rung this headless browser can never execute.
+    for (const a of listener.assets ?? []) {
+      log(`  listener weights ${a.rung}: ${a.error ? `request failed (${a.error})` : `HTTP ${a.status} ${a.contentType}${a.bytes === null ? '' : ` ${a.bytes}B`}`}`);
+    }
+    if (listener.loaded) {
+      // The isolation flag is printed next to the load time because it IS the
+      // explanation for it: no SharedArrayBuffer → ORT runs WASM on one thread.
+      log(`  listener: load=${listener.loadMode}${listener.dtype ? `/${listener.dtype}` : ''} (${listener.loadMs}ms, ${listener.crossOriginIsolated ? 'threaded' : 'single-threaded — page not cross-origin isolated'}) smoke=${listener.smoke ? `${listener.smoke.mode} "${(listener.smoke.text ?? '').slice(0, 60)}" (${listener.smoke.ms}ms)` : 'none'}`);
+    } else {
+      // Loud, every run: a check that quietly did not happen is the one people
+      // mistake for a check that passed.
+      log('  listener: model NOT loaded — weights-only. Re-run with `--with-listener` to load it and generate.');
+    }
+    for (const d of listener.diagnostics ?? []) log(`       ${d}`);
     log('');
     log(summarizeVerdict(verdict));
     log(`  full report: ${path.relative(WEB_DIR, reportPath)}`);

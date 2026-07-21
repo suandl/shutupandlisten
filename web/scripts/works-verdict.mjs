@@ -2,8 +2,9 @@
 //
 // The probe page (src/probe.ts) reports FACTS (modes, texts, sample counts); this
 // module decides what they MEAN, per the plan's requirements: each stage must
-// report its REAL backend, not a stub (origin R2 for STT, R3 for TTS), and each
-// must survive a smoke-run with non-empty output — liveness, not accuracy (R4).
+// report its REAL backend, not a stub (origin R2 for STT, R3 for TTS, and the
+// LISTENER since su-lou.9), and each must survive a smoke-run with non-empty
+// output — liveness, not accuracy (R4).
 // Split from the driver so the rules are unit-testable without a browser
 // (works-verdict.test.mjs), and so the exit-0 path is covered even while the gate
 // is expected red on main (su-lou.8's TTS stub is open by design until its fix
@@ -32,9 +33,35 @@ const REAL_STT_MODES = new Set(['moonshine', 'whisper']);
  *  the plan's scope assumption broke — fail loudly and revisit, don't green. */
 const REAL_TTS_MODE = 'wasm';
 
+/** Adapter modes that count as a REAL listener backend. Unlike TTS this accepts
+ *  BOTH: the gate's headless browser exposes no WebGPU adapter with `shader-f16`,
+ *  so it lands on the wasm rung, while an operator running the same check on a GPU
+ *  box lands on webgpu — and both are honest live backends. 'stub' is the degrade. */
+const REAL_LISTENER_MODES = new Set(['webgpu', 'wasm']);
+
 /**
- * @typedef {{ stage: 'stt' | 'tts', reason: string }} Failure
- * @typedef {{ pass: boolean, failures: Failure[] }} Verdict
+ * Is this reply real text, or a live-looking backend emitting noise?
+ *
+ * su-lou.9 measured a listener that loaded on WebGPU, reported mode 'webgpu',
+ * threw nothing, and generated `"!!!!!!!!!!!!"` — the adapter had no `shader-f16`
+ * so its f16 compute pipelines were all invalid. Every check the other stages use
+ * passes on that: real backend, non-empty output. So the listener's liveness rule
+ * additionally asks for CHARACTERS a language model produces — at least one letter,
+ * and at least two distinct alphanumerics, which the degenerate runs (a single
+ * punctuation mark or letter repeated to the token limit) cannot clear. Still
+ * liveness, not accuracy: it says nothing about whether the reply is any good.
+ */
+export function isDegenerateText(text) {
+  if (typeof text !== 'string') return true;
+  const t = text.trim();
+  if (t === '') return true;
+  if (!/[A-Za-z]/.test(t)) return true;
+  return new Set(t.toLowerCase().replace(/[^a-z0-9]/g, '')).size < 2;
+}
+
+/**
+ * @typedef {{ stage: 'stt' | 'tts' | 'listener', reason: string }} Failure
+ * @typedef {{ pass: boolean, failures: Failure[], scope: string }} Verdict
  */
 
 /**
@@ -98,7 +125,93 @@ export function evaluateReport(report) {
     }
   }
 
-  return { pass: failures.length === 0, failures };
+  evaluateListener(report?.listener, failures);
+
+  // What the run actually covered, so a PASS can never overclaim. The listener's
+  // deep half is opt-in, and "we did not load the model" must be visible in the one
+  // line most people read — a skipped check that prints like a passed one is the
+  // failure mode this whole gate exists to prevent.
+  const scope = report?.listener?.loaded
+    ? 'stt + tts + listener'
+    : 'stt + tts + listener weights (model not loaded — pass --with-listener)';
+
+  return { pass: failures.length === 0, failures, scope };
+}
+
+/**
+ * Listener rules (su-lou.9). Two tiers, matching the probe's two halves:
+ *
+ *   ALWAYS — every rung of the device ladder must have its weight file actually
+ *   SERVED. This is the only listener assertion that covers a rung the gate's
+ *   headless browser cannot execute (it has no WebGPU adapter, so `webgpu/q4f16` is
+ *   never loaded here yet is exactly what an operator runs). A 404 means the
+ *   provisioner and the ladder disagree about which quantization ships; a
+ *   `200 text/html` means the SPA fallback is back (su-lou.7) and transformers.js is
+ *   about to JSON.parse an HTML page.
+ *
+ *   WHEN LOADED (`works-check --with-listener`) — the adapter must report a real
+ *   backend and generate real text, with the extra degeneracy rule above.
+ *
+ * @param {unknown} listener @param {Failure[]} failures
+ */
+function evaluateListener(listener, failures) {
+  if (!listener || typeof listener !== 'object') {
+    failures.push({ stage: 'listener', reason: 'probe returned no listener report' });
+    return;
+  }
+
+  const assets = Array.isArray(listener.assets) ? listener.assets : null;
+  if (!assets || assets.length === 0) {
+    // Never treat "no rungs checked" as "no problems found": an empty list is the
+    // shape a probe bug produces, and it must read as a failing stage.
+    failures.push({ stage: 'listener', reason: 'probe checked no listener weight assets (R2)' });
+  } else {
+    for (const a of assets) {
+      const where = `${a?.rung ?? '?'} weights ${a?.url ?? '?'}`;
+      if (a?.error) {
+        failures.push({ stage: 'listener', reason: `${where}: request failed (${a.error})` });
+      } else if (a?.status !== 200) {
+        failures.push({
+          stage: 'listener',
+          reason: `${where}: HTTP ${a?.status} — the ladder wants a quantization the deploy does not serve (R2)`,
+        });
+      } else if (/^text\/html/i.test(a?.contentType ?? '')) {
+        failures.push({
+          stage: 'listener',
+          reason: `${where}: served as '${a.contentType}' — SPA fallback, not the model file (su-lou.7)`,
+        });
+      } else if (a?.bytes !== null && !(a?.bytes > 0)) {
+        failures.push({ stage: 'listener', reason: `${where}: served 0 bytes` });
+      }
+    }
+  }
+
+  if (listener.error) {
+    failures.push({ stage: 'listener', reason: `probe error: ${listener.error}` });
+    return;
+  }
+  // The deep half is opt-in; when it did not run there is no backend to judge. The
+  // driver prints that it was skipped — silence here must not read as a pass.
+  if (!listener.loaded) return;
+
+  // The adapter's onDiagnostic lines name WHY the listener degraded — the su-lou.9
+  // diagnosability fix. Fold them in so the one-line verdict carries the root cause.
+  const diag = Array.isArray(listener.diagnostics) && listener.diagnostics.length > 0 ? ` — ${listener.diagnostics.join(' | ')}` : '';
+  if (!REAL_LISTENER_MODES.has(listener.loadMode)) {
+    failures.push({ stage: 'listener', reason: `loaded mode '${listener.loadMode}' is not a real LLM backend (R2)${diag}` });
+  }
+  if (!listener.smoke) {
+    failures.push({ stage: 'listener', reason: 'smoke-run never produced a reply' });
+    return;
+  }
+  if (!REAL_LISTENER_MODES.has(listener.smoke.mode)) {
+    failures.push({ stage: 'listener', reason: `smoke-run degraded to '${listener.smoke.mode}' (R4)${diag}` });
+  } else if (isDegenerateText(listener.smoke.text)) {
+    failures.push({
+      stage: 'listener',
+      reason: `smoke-run reply is not language: ${JSON.stringify(String(listener.smoke.text ?? '').slice(0, 40))} (R4)${diag}`,
+    });
+  }
 }
 
 /** @param {Verdict} verdict @returns {number} */
@@ -113,7 +226,7 @@ export function exitCodeFor(verdict) {
  * @param {Verdict} verdict @returns {string}
  */
 export function summarizeVerdict(verdict) {
-  if (verdict.pass) return 'WORKS-CHECK PASS: stt + tts report real backends and non-empty smoke output';
+  if (verdict.pass) return `WORKS-CHECK PASS: ${verdict.scope ?? 'stt + tts'} — real backends, non-empty smoke output`;
   const byStage = new Map();
   for (const f of verdict.failures) {
     if (!byStage.has(f.stage)) byStage.set(f.stage, []);

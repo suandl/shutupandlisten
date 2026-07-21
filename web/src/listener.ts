@@ -63,10 +63,25 @@ export interface ListenerOptions {
    *  download + compile is far slower than a per-call generation, so it gets its
    *  own, longer budget. */
   initTimeoutMs?: number;
+  /** Where a load/handshake outcome is reported — a FAILURE before degrading to the
+   *  labelled stub, and the rungs a SUCCESSFUL load skipped on its way down the
+   *  ladder. Defaults to `console.warn`. The degrade used to be silent: the worker
+   *  posts a `reason` and the adapter dropped it, so a listener that never loaded
+   *  looked identical to one that was never provisioned — which is how su-lou.9
+   *  reached an operator feel-test with no evidence beyond "LLM not loaded" (and a
+   *  root-cause guess that turned out to be wrong). The TTS stage learned this in
+   *  su-lou.7; this is the same fix for the listener. Injectable so tests can assert
+   *  it and stay quiet. */
+  onDiagnostic?: (message: string) => void;
 }
 
 export interface Listener {
   readonly mode: ListenerMode;
+  /** Weight variant the live rung loaded ('q4f16' | 'q4'); undefined in stub mode.
+   *  Two rungs report mode 'webgpu' and they are NOT interchangeable — q4f16 is fp16
+   *  compute and q4 is fp32 — so "which backend is live" is only half-answered by
+   *  `mode`. The works-check and the Stage readout print both. */
+  readonly dtype?: string;
   /** Produce a reflection/question for a substantive turn. NEVER throws — degrades to a labelled stub. */
   respond(req: ListenerRequest): Promise<ListenerResult>;
   /** Release the worker, if any. */
@@ -74,7 +89,20 @@ export interface Listener {
 }
 
 const DEFAULT_TIMEOUT_MS = 30000;
-const DEFAULT_INIT_TIMEOUT_MS = 120000;
+/**
+ * Ms to wait for the model to LOAD. 120s used to be the budget, and on the WASM rung
+ * that guaranteed a stub: measured 228s to load `model_q4.onnx` (1.69G) in the
+ * su-lou.9 works-check run — because the page is NOT cross-origin isolated
+ * (`vite preview` sends no COOP/COEP, so `SharedArrayBuffer` is unavailable) and ORT
+ * therefore runs the WASM backend SINGLE-THREADED on an 8-core host. The same model
+ * loads in ~52s when served with those headers. So the old budget was not "the model
+ * is wedged", it was "we hung up before it finished" — and the caller saw the same
+ * labelled stub either way. Cross-origin isolation is the real fix and it is not a
+ * drive-by: `@ricky0123/vad-web` fetches its worklet and Silero weights from a CDN,
+ * and COEP `require-corp` would break the mic path outright (see vite.config.ts).
+ * Until those are self-hosted, wait long enough for the slow rung to actually land.
+ */
+const DEFAULT_INIT_TIMEOUT_MS = 300000;
 
 // ── Default self-hosted listener config — the U5 wiring ──
 //
@@ -117,6 +145,15 @@ function makeStub(): Listener {
 }
 
 /**
+ * Report a load/handshake outcome. Routed to `opts.onDiagnostic` when provided, else
+ * `console.warn`, so a listener that fails to load names the reason instead of
+ * silently stubbing (su-lou.9, the listener half of su-lou.7's TTS fix).
+ */
+function listenerDiag(opts: ListenerOptions, message: string): void {
+  (opts.onDiagnostic ?? ((m: string) => console.warn(m)))(`[listener] ${message}`);
+}
+
+/**
  * Create a listener. With a model configured (or an injected worker) it spins up
  * the listener worker and, only if the worker reports it loaded a model, returns a
  * worker-backed listener; on any failure — no model, worker spawn error, init
@@ -131,12 +168,13 @@ export async function createListener(opts: ListenerOptions = {}): Promise<Listen
   try {
     worker = opts.createWorker ? opts.createWorker() : defaultWorker();
   } catch {
+    listenerDiag(opts, 'listener worker failed to start — using the labelled stub');
     return makeStub();
   }
 
   const initTimeoutMs = opts.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS;
-  const mode = await initWorker(worker, opts, initTimeoutMs);
-  if (mode === null) {
+  const loaded = await initWorker(worker, opts, initTimeoutMs);
+  if (loaded === null) {
     try {
       worker.terminate();
     } catch {
@@ -144,6 +182,7 @@ export async function createListener(opts: ListenerOptions = {}): Promise<Listen
     }
     return makeStub();
   }
+  const { mode, dtype } = loaded;
 
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let nextId = 0;
@@ -169,6 +208,7 @@ export async function createListener(opts: ListenerOptions = {}): Promise<Listen
 
   return {
     mode,
+    dtype,
     respond(req: ListenerRequest): Promise<ListenerResult> {
       return new Promise<ListenerResult>((resolve) => {
         const id = nextId++;
@@ -201,39 +241,70 @@ export async function createListener(opts: ListenerOptions = {}): Promise<Listen
   };
 }
 
+/** What a successful handshake yields: the live device rung and its weight variant. */
+interface LoadedBackend {
+  mode: 'webgpu' | 'wasm';
+  dtype?: string;
+}
+
 /**
  * Run the worker's init handshake. Posts an `init` and waits for `ready` (with a
- * device mode) or fails closed on `error`, a malformed reply, or timeout.
+ * device mode) or fails closed on `error`, a malformed reply, or timeout. Every
+ * outcome — including a SUCCESSFUL load that had to skip a rung — is reported
+ * through `listenerDiag`, so the live backend is never a mystery.
  */
 function initWorker(
   worker: WorkerLike,
   opts: ListenerOptions,
   timeoutMs: number,
-): Promise<ListenerMode | null> {
-  return new Promise<ListenerMode | null>((resolve) => {
+): Promise<LoadedBackend | null> {
+  return new Promise<LoadedBackend | null>((resolve) => {
     let settled = false;
     const onMessage = (ev: { data?: unknown }): void => {
-      const msg = ev.data as { type?: string; mode?: string } | undefined;
+      const msg = ev.data as { type?: string; mode?: string; dtype?: string; reason?: string; notes?: unknown } | undefined;
       if (!msg) return;
-      if (msg.type === 'ready') done(msg.mode === 'webgpu' || msg.mode === 'wasm' ? msg.mode : null);
-      else if (msg.type === 'error') done(null);
+      if (msg.type === 'ready') {
+        const mode = msg.mode === 'webgpu' || msg.mode === 'wasm' ? msg.mode : null;
+        if (!mode) {
+          done(null, `listener reported an unusable device mode (${String(msg.mode)}) — using the labelled stub`);
+          return;
+        }
+        // A load that succeeded on a LOWER rung still carries news: the rungs above
+        // it lost, and why. Reported even on success — "webgpu" alone hides whether
+        // the fast fp16 variant or the fp32 fallback is live (su-lou.9).
+        const notes = Array.isArray(msg.notes) ? msg.notes.filter((n): n is string => typeof n === 'string') : [];
+        if (notes.length > 0) {
+          listenerDiag(opts, `loaded ${mode}${msg.dtype ? `/${msg.dtype}` : ''} after skipping: ${notes.join('; ')}`);
+        }
+        done({ mode, dtype: typeof msg.dtype === 'string' ? msg.dtype : undefined });
+      } else if (msg.type === 'error') {
+        // The worker DOES post a reason ('no model loaded (webgpu/q4f16: …)',
+        // 'engine import failed', …); surfacing it is the whole diagnosability fix.
+        done(null, `listener unavailable: ${typeof msg.reason === 'string' ? msg.reason : 'unknown reason'} — using the labelled stub`);
+      }
     };
-    const onError = (): void => done(null);
-    const done = (m: ListenerMode | null): void => {
+    const onError = (): void => done(null, 'listener worker errored during init — using the labelled stub');
+    // A degrade (b === null) names itself exactly once; the `settled` guard means
+    // only the first outcome reports.
+    const done = (b: LoadedBackend | null, reason?: string): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       worker.removeEventListener('message', onMessage);
       worker.removeEventListener('error', onError);
-      resolve(m);
+      if (b === null && reason) listenerDiag(opts, reason);
+      resolve(b);
     };
-    const timer = setTimeout(() => done(null), timeoutMs);
+    const timer = setTimeout(
+      () => done(null, `listener load timed out after ${timeoutMs}ms — using the labelled stub`),
+      timeoutMs,
+    );
     worker.addEventListener('message', onMessage);
     worker.addEventListener('error', onError);
     try {
       worker.postMessage({ type: 'init', engineUrl: opts.engineUrl, model: opts.model });
     } catch {
-      done(null);
+      done(null, 'listener worker did not accept init — using the labelled stub');
     }
   });
 }

@@ -205,10 +205,16 @@ const loopMetrics = new LoopMetrics();
 
 // Live device modes, shown next to the source once each adapter resolves.
 let liveListenerMode: ListenerMode | null = null;
+// ...and WHICH weights that mode loaded. Both listener rungs can report 'webgpu',
+// and they are not the same thing — q4f16 is fp16 compute, q4 is fp32 — so a
+// readout of "listener (webgpu)" alone hid which one a feel-test was actually
+// rating (su-lou.9). The reason a rung was skipped goes to the console via the
+// adapter's onDiagnostic.
+let liveListenerDtype: string | null = null;
 let liveSpeakerMode: SpeakerMode | null = null;
 function refreshSourceInfo(): void {
   const parts = [audio.info];
-  if (liveListenerMode) parts.push(`listener (${liveListenerMode})`);
+  if (liveListenerMode) parts.push(`listener (${liveListenerMode}${liveListenerDtype ? `/${liveListenerDtype}` : ''})`);
   if (liveSpeakerMode) parts.push(`tts (${liveSpeakerMode})`);
   sourceInfo.textContent = parts.join(' + ');
 }
@@ -347,6 +353,7 @@ $('mic-start').addEventListener('click', async () => {
     void getListener().then((l) => {
       if (mode === 'mic' && listenerPromise) {
         liveListenerMode = l.mode;
+        liveListenerDtype = l.dtype ?? null;
         refreshSourceInfo();
       }
     });
@@ -365,6 +372,7 @@ $('mic-stop').addEventListener('click', () =>
     disposeListener();
     disposeSpeaker();
     liveListenerMode = null;
+    liveListenerDtype = null;
     liveSpeakerMode = null;
     sourceInfo.textContent = audio.info;
   }),
@@ -382,6 +390,7 @@ async function switchMode(next: 'sim' | 'mic'): Promise<void> {
   disposeListener(); // free the LLM worker when leaving mic; recreated lazily on next mic start
   disposeSpeaker(); // free the TTS worker + stop any playback; recreated lazily on next mic start
   liveListenerMode = null;
+  liveListenerDtype = null;
   liveSpeakerMode = null;
   mode = next;
   audio = next === 'mic' ? new MicAudioSource({ now, vadKnobs, sttOptions, denoiseOptions }) : new SimAudioSource(now);

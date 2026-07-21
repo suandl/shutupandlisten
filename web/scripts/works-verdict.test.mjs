@@ -14,7 +14,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { EXIT_PASS, EXIT_REGRESSION, evaluateReport, exitCodeFor, summarizeVerdict } from './works-verdict.mjs';
+import { EXIT_PASS, EXIT_REGRESSION, evaluateReport, exitCodeFor, isDegenerateText, summarizeVerdict } from './works-verdict.mjs';
+
+/** Both listener rungs served, as a provisioned deploy answers: a small GRAPH file
+ *  per rung plus the external `_data` sibling that holds the actual weights. */
+function servedWeights() {
+  return [
+    { rung: 'webgpu/q4f16', url: '/models/m/onnx/model_q4f16.onnx', status: 200, contentType: 'application/octet-stream', bytes: 149790, error: null },
+    { rung: 'webgpu/q4f16 weights', url: '/models/m/onnx/model_q4f16.onnx_data', status: 200, contentType: 'application/octet-stream', bytes: 1089605632, error: null },
+    { rung: 'wasm/q4', url: '/models/m/onnx/model_q4.onnx', status: 200, contentType: 'application/octet-stream', bytes: 149112, error: null },
+    { rung: 'wasm/q4 weights', url: '/models/m/onnx/model_q4.onnx_data', status: 200, contentType: 'application/octet-stream', bytes: 1692672000, error: null },
+  ];
+}
 
 /** A fully-healthy report; tests override fields per scenario. */
 function healthyReport(overrides = {}) {
@@ -35,6 +46,34 @@ function healthyReport(overrides = {}) {
       error: null,
       ...(overrides.tts ?? {}),
     },
+    // Default = the cheap half only, which is what a plain `npm run works-check`
+    // produces: weights asserted, model never loaded.
+    listener: {
+      loadMode: null,
+      dtype: null,
+      loadMs: 0,
+      diagnostics: [],
+      smoke: null,
+      assets: servedWeights(),
+      loaded: false,
+      error: null,
+      ...(overrides.listener ?? {}),
+    },
+  };
+}
+
+/** A report from `works-check --with-listener` — the deep half ran and is healthy. */
+function loadedListener(overrides = {}) {
+  return {
+    loadMode: 'wasm',
+    dtype: 'q4',
+    loadMs: 45000,
+    diagnostics: [],
+    smoke: { mode: 'wasm', text: 'That sounds exhausting. What keeps pulling you back to it?', ms: 9000 },
+    assets: servedWeights(),
+    loaded: true,
+    error: null,
+    ...overrides,
   };
 }
 
@@ -136,11 +175,11 @@ test('a probe-level stage error is a named failure, never a pass', () => {
   assert.match(verdict.failures[0].reason, /probe error: createTranscriber threw/);
 });
 
-test('a malformed report fails both stages rather than silently passing', () => {
+test('a malformed report fails every stage rather than silently passing', () => {
   for (const bad of [null, undefined, {}, { version: 1 }]) {
     const verdict = evaluateReport(bad);
     assert.equal(verdict.pass, false);
-    assert.deepEqual(failedStages(verdict).sort(), ['stt', 'tts']);
+    assert.deepEqual(failedStages(verdict).sort(), ['listener', 'stt', 'tts']);
   }
 });
 
@@ -148,4 +187,101 @@ test('a missing smoke result fails the stage', () => {
   const verdict = evaluateReport(healthyReport({ stt: { smoke: null }, tts: { smoke: null } }));
   assert.equal(verdict.pass, false);
   assert.deepEqual(failedStages(verdict).sort(), ['stt', 'tts']);
+});
+
+// ── listener (su-lou.9) ──
+
+test('weights-only run passes and its summary says the model was NOT loaded', () => {
+  const verdict = evaluateReport(healthyReport());
+  assert.equal(verdict.pass, true);
+  const summary = summarizeVerdict(verdict);
+  assert.match(summary, /^WORKS-CHECK PASS/);
+  // The overclaim guard: a cheap run must never read as "the listener works".
+  assert.match(summary, /model not loaded/);
+  assert.match(summary, /--with-listener/);
+});
+
+test('a loaded listener passes and the summary drops the not-loaded caveat', () => {
+  const verdict = evaluateReport(healthyReport({ listener: loadedListener() }));
+  assert.equal(verdict.pass, true);
+  assert.equal(exitCodeFor(verdict), EXIT_PASS);
+  assert.doesNotMatch(summarizeVerdict(verdict), /not loaded/);
+});
+
+test('a rung whose weights 404 is a regression — the ladder wants what nobody ships', () => {
+  const assets = servedWeights();
+  assets[0] = { ...assets[0], status: 404, contentType: 'text/plain' };
+  const verdict = evaluateReport(healthyReport({ listener: { assets } }));
+  assert.equal(verdict.pass, false);
+  assert.deepEqual(failedStages(verdict), ['listener']);
+  assert.match(verdict.failures[0].reason, /webgpu\/q4f16 weights .* HTTP 404/);
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+});
+
+test('a graph served with its external weights MISSING is a regression', () => {
+  // The interrupted-provisioning shape: `model_q4.onnx` (149KB of graph) is on disk
+  // and its 1.69G `_data` sibling is not. Checking only the .onnx would green this.
+  const assets = servedWeights();
+  assets[3] = { ...assets[3], status: 404, contentType: 'text/plain', bytes: null };
+  const verdict = evaluateReport(healthyReport({ listener: { assets } }));
+  assert.equal(verdict.pass, false);
+  assert.deepEqual(failedStages(verdict), ['listener']);
+  assert.match(verdict.failures[0].reason, /wasm\/q4 weights .*model_q4\.onnx_data: HTTP 404/);
+});
+
+test('weights answered by the SPA fallback (200 text/html) fail, not pass — su-lou.7', () => {
+  const assets = servedWeights();
+  assets[1] = { ...assets[1], contentType: 'text/html; charset=utf-8', bytes: 610 };
+  const verdict = evaluateReport(healthyReport({ listener: { assets } }));
+  assert.equal(verdict.pass, false);
+  assert.match(verdict.failures[0].reason, /SPA fallback/);
+});
+
+test('an empty asset list fails — "checked nothing" must not read as "found nothing"', () => {
+  const verdict = evaluateReport(healthyReport({ listener: { assets: [] } }));
+  assert.equal(verdict.pass, false);
+  assert.match(verdict.failures[0].reason, /checked no listener weight assets/);
+});
+
+test('a stubbed listener load is a regression carrying the adapter diagnosis', () => {
+  const verdict = evaluateReport(
+    healthyReport({
+      listener: loadedListener({
+        loadMode: 'stub',
+        dtype: null,
+        smoke: { mode: 'stub', text: '⟨listener: reflection — LLM not loaded⟩', ms: 1 },
+        diagnostics: ["[listener] listener unavailable: no model loaded (webgpu/q4f16: skipped — no WebGPU adapter with 'shader-f16'; wasm/q4: out of memory) — using the labelled stub"],
+      }),
+    }),
+  );
+  assert.equal(verdict.pass, false);
+  assert.deepEqual(failedStages(verdict), ['listener']);
+  const summary = summarizeVerdict(verdict);
+  assert.match(summary, /^WORKS-CHECK REGRESSION: listener /);
+  // The whole point of the diagnosability fix: the gate line names the cause.
+  assert.match(summary, /shader-f16/);
+});
+
+test('the su-lou.9 false-green — real backend, non-empty, but not language — fails', () => {
+  const verdict = evaluateReport(
+    healthyReport({
+      listener: loadedListener({
+        loadMode: 'webgpu',
+        dtype: 'q4f16',
+        smoke: { mode: 'webgpu', text: '!!!!!!!!!!!!', ms: 29000 },
+      }),
+    }),
+  );
+  assert.equal(verdict.pass, false);
+  assert.deepEqual(failedStages(verdict), ['listener']);
+  assert.match(verdict.failures[0].reason, /not language/);
+});
+
+test('isDegenerateText separates noise from short real replies', () => {
+  for (const bad of ['', '   ', '!!!!!!!!!!!!', '............', 'aaaaaaaa', '1111', null, undefined]) {
+    assert.equal(isDegenerateText(bad), true, `expected degenerate: ${JSON.stringify(bad)}`);
+  }
+  for (const good of ['Hi', 'Ok.', 'I see.', 'That sounds exhausting. What keeps pulling you back?']) {
+    assert.equal(isDegenerateText(good), false, `expected real text: ${JSON.stringify(good)}`);
+  }
 });

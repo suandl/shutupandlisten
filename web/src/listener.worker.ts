@@ -11,11 +11,17 @@
 // forced false. A missing/failed engine or model reports a clean handshake outcome
 // rather than throwing, so the adapter degrades to the stub instead of wedging.
 //
+// A rung of the device ladder that loses — because the adapter cannot run its
+// weights, or because the engine threw building the session — is never dropped on
+// the floor: its reason rides the handshake back to listener.ts, which reports it
+// (su-lou.9). A degrade that cannot say why is a degrade nobody can fix.
+//
 // Browser-only (it talks to a real engine + Worker scope), so it is not exercised
 // by the node test suite; the testable seams (handshake, per-call fallback, stub)
-// live in listener.ts.
+// live in listener.ts, and the ladder itself in listener-backends.ts.
 
 import { sanitizeEngineUrl } from './engine-url.ts';
+import { LISTENER_CANDIDATES, listenerCandidateLabel as label } from './listener-backends.ts';
 
 // Structural view of the dedicated-worker global — avoids the DOM/WebWorker lib
 // clash that referencing `self`'s typed shape would cause under this tsconfig.
@@ -23,6 +29,7 @@ const ctx = globalThis as unknown as {
   postMessage(message: unknown): void;
   addEventListener(type: 'message', listener: (ev: { data: unknown }) => void): void;
   location?: { href: string };
+  navigator?: { gpu?: { requestAdapter(): Promise<{ features: { has(f: string): boolean } } | null> } };
 };
 
 interface ChatMessage {
@@ -95,22 +102,71 @@ async function handleInit(msg: InitMessage): Promise<void> {
     /* ignore — non-fatal */
   }
 
-  // GPU first (the point of U5), then a WASM fallback for a machine with no
-  // WebGPU adapter. The first that loads wins; its device is the reported mode.
-  const candidates: Array<{ mode: 'webgpu' | 'wasm'; opts: Record<string, unknown> }> = [
-    { mode: 'webgpu', opts: { device: 'webgpu' } },
-    { mode: 'wasm', opts: { device: 'wasm', dtype: 'q4' } },
-  ];
-  for (const c of candidates) {
+  // Walk the device/weight ladder (listener-backends.ts owns its shape and the
+  // measurements behind it): GPU first — the point of U5 — then the WASM floor for a
+  // machine with no usable GPU rung. The first rung that loads wins and its device is
+  // the reported mode. Every rung that LOSES records why, so a listener that ends up
+  // on the slow rung — or on no rung at all — can say what happened.
+  const failures: string[] = [];
+  for (const c of LISTENER_CANDIDATES) {
+    // A rung whose weights need a WebGPU feature this adapter lacks must be SKIPPED,
+    // not attempted: on an adapter without `shader-f16` the q4f16 session builds and
+    // generates without ever throwing — it just emits invalid f16 compute pipelines
+    // and returns garbage tokens ("!!!!!!!!!!!!" in the su-lou.9 repro). A rung that
+    // fails LOUDLY falls through to the next one; a rung that "succeeds" wrongly
+    // ends the ladder and ships nonsense as the companion's reply. transformers.js
+    // gates plain fp16 on this feature but not q4f16, so the check lives here.
+    if (c.requiresFeature) {
+      const supported = await hasWebGpuFeature(c.requiresFeature);
+      if (!supported) {
+        failures.push(`${label(c)}: skipped — no WebGPU adapter with '${c.requiresFeature}'`);
+        continue;
+      }
+    }
     try {
-      generator = await engine.pipeline('text-generation', msg.model, c.opts);
-      ctx.postMessage({ type: 'ready', mode: c.mode });
+      generator = await engine.pipeline('text-generation', msg.model, { device: c.device, dtype: c.dtype });
+      // `notes` carries the rungs this load skipped past. A successful load is not
+      // automatically the FAST one — webgpu/q4f16 and wasm/q4 differ by ~10x — so
+      // the adapter surfaces which rung is really live (su-lou.9).
+      ctx.postMessage({ type: 'ready', mode: c.device, dtype: c.dtype, notes: failures });
       return;
-    } catch {
-      // try the next device
+    } catch (e) {
+      // Keep the throw — the next device may still load — but never DROP it: a
+      // swallowed construction error is exactly how su-lou.9's real cause stayed
+      // invisible through an operator feel-test, leaving nothing to debug but
+      // "LLM not loaded". The serialized causes ride the error reason into the
+      // adapter's onDiagnostic line, where the works-check (and a human) read them.
+      failures.push(`${label(c)}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  ctx.postMessage({ type: 'error', reason: 'no model loaded' });
+  ctx.postMessage({ type: 'error', reason: `no model loaded (${failures.join('; ')})` });
+}
+
+/**
+ * Does this worker's WebGPU adapter expose `feature`? Answers false for "no WebGPU
+ * at all", "no adapter", and "requestAdapter threw" alike — every one of those means
+ * the rung cannot run here, and the caller only needs the one bit.
+ *
+ * `navigator.gpu` IS available in a dedicated worker, so the ladder can check its own
+ * precondition without help from the main thread. Memoized: adapter capabilities do
+ * not change within a worker's life, and requestAdapter is not free.
+ */
+let webGpuFeatures: Promise<{ has(f: string): boolean } | null> | null = null;
+async function hasWebGpuFeature(feature: string): Promise<boolean> {
+  webGpuFeatures ??= (async () => {
+    const gpu = ctx.navigator?.gpu;
+    if (!gpu) return null;
+    try {
+      return (await gpu.requestAdapter())?.features ?? null;
+    } catch {
+      return null;
+    }
+  })();
+  try {
+    return (await webGpuFeatures)?.has(feature) ?? false;
+  } catch {
+    return false;
+  }
 }
 
 async function handleGenerate(msg: GenerateMessage): Promise<void> {

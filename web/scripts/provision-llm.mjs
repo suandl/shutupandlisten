@@ -28,7 +28,7 @@ import { createWriteStream } from 'node:fs';
 import { pipeline as streamPipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = resolve(HERE, '..');
@@ -60,7 +60,13 @@ const HF_FILE = (repo, rf) => `https://huggingface.co/${repo}/resolve/main/${rf}
 // `.onnx_data` sibling — OR a small JSON/TXT config/tokenizer file. Skips the
 // fp32/fp16/q8/int8/bnb4 ONNX variants and heavy non-ONNX weight formats
 // (.safetensors/.bin/...), keeping the deploy lean.
-function wantRepoFile(rf) {
+//
+// Exported so the consumer side can assert against the REAL rule rather than a
+// restatement of it: src/listener-backends.ts names a dtype per device rung, and
+// every one of those rungs must be a file this function agrees to download. A rung
+// asking for a variant the provisioner skips is a deploy that 404s on the weights
+// it needs — the failure su-lou.9 was filed as (see provision-llm.test.mjs).
+export function wantRepoFile(rf) {
   if (rf.startsWith('onnx/')) return /_(q4f16|q4)\.onnx(_data)?$/.test(rf);
   return /\.(json|txt)$/i.test(rf);
 }
@@ -194,8 +200,12 @@ async function main() {
   log(`\nDone: ${files.length} file(s), ${fmtBytes(total)} total. Run \`npm run build\` to bundle into dist/.`);
 }
 
-main().catch((err) => {
-  console.error(`\nprovision-llm failed: ${err.message}`);
-  console.error('If a file 404s, the pinned version or model id may have moved — adjust the top of this script.');
-  process.exitCode = 1;
-});
+// Only provision when RUN as a command. Importing this module (the contract test
+// does, for wantRepoFile) must not kick off a multi-gigabyte download.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(`\nprovision-llm failed: ${err.message}`);
+    console.error('If a file 404s, the pinned version or model id may have moved — adjust the top of this script.');
+    process.exitCode = 1;
+  });
+}
