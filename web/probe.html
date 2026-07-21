@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>works-check probe</title>
+    <style>
+      body { margin: 0; padding: 24px; background: #0f1115; color: #e7e9ee; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      h1 { font-size: 16px; color: #6ad08a; }
+      pre { white-space: pre-wrap; word-break: break-word; }
+    </style>
+  </head>
+  <body>
+    <!--
+      The works-gate probe page (su-ljrb.6). Built ONLY by vite.works-check.config.ts
+      (its rollup input); the production build (npm run build → vite.config.ts) never
+      references it, so no probe surface ships to a deploy. Driven headlessly by
+      scripts/works-check.mjs, which calls window.__worksCheck.run(fixture).
+    -->
+    <h1>works-check probe</h1>
+    <pre id="probe-log">loading probe module…</pre>
+    <script type="module" src="/src/probe.ts"></script>
+  </body>
+</html>
