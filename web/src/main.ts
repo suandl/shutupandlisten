@@ -31,6 +31,7 @@ import { createSpeaker, type Speaker, type SpeakerMode } from './tts.ts';
 import { LoopMetrics, LOOP_LEGS, legKey } from './loop-metrics.ts';
 import {
   decideTier,
+  completionProbFromTurnEnd,
   buildListenerRequest,
   type GateDecision,
   type PriorDecision,
@@ -133,6 +134,7 @@ function resetTranscript(): void {
   turnStarts = [];
   turnEnds = [];
   turnResponses.clear();
+  lastListenerSpeechEndT = null;
   loopMetrics.reset();
   stopSpeech();
   renderTranscript();
@@ -155,6 +157,12 @@ interface TurnResponse {
   ttsMode?: SpeakerMode; // which voice spoke it (webgpu | wasm | stub tone)
 }
 const turnResponses = new Map<number, TurnResponse>();
+
+// When the companion last stopped holding the floor (performance.now() ms), or null
+// if it has not spoken this session. Feeds `EvalContext.msSinceWeLastSpoke`, the
+// restraint/spacing signal the gate could not previously see; the stage-1 policy
+// carries it without reading it (su-lou.10.3).
+let lastListenerSpeechEndT: number | null = null;
 
 // The listener worker + model is heavy, so it is created lazily and only in mic
 // mode, then reused. Warmed on mic start so it is ready by the first completed turn.
@@ -525,6 +533,9 @@ function handleOut(e: OutputEvent): void {
     respondInd.dataset.on = 'true';
   } else if (e.type === 'response-end' || e.type === 'barge-in') {
     respondInd.dataset.on = 'false';
+    // The companion just yielded the floor — completed or cut off by a barge-in.
+    // Either way this is the last moment it was speaking (see msSinceWeLastSpoke).
+    lastListenerSpeechEndT = e.t;
   }
   // Barge-in — the detector emits it on speech-start during responding — yields the
   // voice instantly, reusing the tested detector event without altering its timing.
@@ -657,9 +668,25 @@ function maybeRespond(groups: TurnTranscript[]): void {
       .sort((a, b) => a.turn - b.turn)
       .map((r) => ({ turn: r.turn, tier: r.decision.tier }));
 
+    // How long the pause had run when the detector evaluated it: last speech-end in
+    // this turn → where the patience window closed. 0 when nothing was transcribed.
+    const lastSpeechEndT = g.segments.reduce((m, s) => Math.max(m, s.endT), 0);
+
     // Stage 2+3: the transcript resolved (we have userText) and the gate decides.
     loopMetrics.mark(g.turn, 'transcript', now());
-    const decision = decideTier({ turn: g.turn, text: userText, endReason: g.end.reason }, priorDecisions);
+    const decision = decideTier({
+      utteranceIndex: g.turn,
+      utteranceTextSoFar: userText,
+      // Stage-1 bridge: TurnEndMark carries the detector's two-valued reason, not
+      // the classifier's score, so the gate gets certainty stand-ins. Stage 2
+      // threads smart-turn's real P(complete) through here instead — the widened
+      // contract is what lets that be a one-line change (su-lou.10.3).
+      completionProb: completionProbFromTurnEnd(g.end.reason),
+      msSinceSpeechEnd: lastSpeechEndT > 0 ? Math.max(0, g.end.t - lastSpeechEndT) : 0,
+      msSinceWeLastSpoke:
+        lastListenerSpeechEndT === null ? Infinity : Math.max(0, g.end.t - lastListenerSpeechEndT),
+      priorDecisions,
+    });
     loopMetrics.mark(g.turn, 'gate', now());
     const entry: TurnResponse = {
       turn: g.turn,
