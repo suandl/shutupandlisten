@@ -42,7 +42,7 @@ function healthyReport(overrides = {}) {
       loadMode: 'model',
       loadMs: 900,
       diagnostics: [],
-      smoke: { mode: 'model', completionProb: 0.7434, ms: 60 },
+      smoke: { mode: 'model', completionProb: 0.7434, ms: 60, warmMs: 55 },
       error: null,
       ...(overrides.smartTurn ?? {}),
     },

@@ -25,20 +25,25 @@ const SR = 16000;
 const segment = (ms: number): Float32Array =>
   Float32Array.from({ length: Math.round((SR * ms) / 1000) }, (_, i) => Math.sin(i / 11) * 0.4);
 
-/** Records what the adapter feeds the model and answers with a fixed output. */
-function fakeClassifier(output: number[] | (() => Promise<number[]>)) {
+/**
+ * Records what the adapter feeds the model. The FIRST run is createSmartTurn's
+ * load-time warmup, so `output` applies from the second call on and `warmup` (a
+ * healthy score by default) stands in for it.
+ */
+function fakeClassifier(output: number[] | (() => Promise<number[]>), warmup: number[] = [0.5]) {
   const seen: Float32Array[] = [];
   let closed = 0;
   const classifier: FeatureClassifier = {
     async run(features: Float32Array) {
       seen.push(features);
+      if (seen.length === 1) return warmup;
       return typeof output === 'function' ? await output() : output;
     },
     close() {
       closed++;
     },
   };
-  return { classifier, seen, closedCount: () => closed };
+  return { classifier, seen, predictCalls: () => seen.length - 1, closedCount: () => closed };
 }
 
 // ── the heuristic fallback ─────────────────────────────────────────────────────
@@ -108,21 +113,44 @@ test('a configured model reports `model` and is fed [1, 80, 800] Whisper feature
   const fake = fakeClassifier([0.87]);
   const st = await createSmartTurn({ createClassifier: async () => fake.classifier });
   assert.equal(st.mode, 'model');
+  assert.equal(fake.seen.length, 1, 'the graph is warmed once at load, before any speech');
 
   const r = await st.predict(segment(1200), SR);
   assert.equal(r.mode, 'model');
   assert.equal(r.completionProb, 0.87);
-  assert.equal(fake.seen.length, 1);
-  assert.equal(fake.seen[0].length, N_MELS * N_FRAMES, 'the model must get log-Mel features, not raw audio');
+  assert.equal(fake.predictCalls(), 1);
+  for (const features of fake.seen) {
+    assert.equal(features.length, N_MELS * N_FRAMES, 'the model must get log-Mel features, not raw audio');
+  }
 
   st.close();
   assert.equal(fake.closedCount(), 1, 'close() must release the session');
+});
+
+test('a model that loads but cannot score is a FAILED LOAD, not a `model` that degrades', async () => {
+  // The false-green su-lou.7/.8/.9 each turned out to be: the stage reports its real
+  // backend at load, then falls back on every single call. Warming the graph at load
+  // turns that into an honest `heuristic` before the first utterance.
+  const diagnostics: string[] = [];
+  for (const badWarmup of [[], [NaN]]) {
+    const fake = fakeClassifier([0.9], badWarmup);
+    const st = await createSmartTurn({
+      createClassifier: async () => fake.classifier,
+      onDiagnostic: (m) => diagnostics.push(m),
+    });
+    assert.equal(st.mode, 'heuristic');
+    assert.equal(fake.closedCount(), 1, 'a session that cannot score must be released');
+    st.close();
+  }
+  assert.equal(diagnostics.length, 2);
+  assert.match(diagnostics[0], /could not score/);
 });
 
 test('the feature window is fixed-size however long the segment is', async () => {
   const fake = fakeClassifier([0.5]);
   const st = await createSmartTurn({ createClassifier: async () => fake.classifier });
   for (const ms of [80, 2400, 30000]) await st.predict(segment(ms), SR);
+  assert.equal(fake.predictCalls(), 3);
   for (const features of fake.seen) assert.equal(features.length, N_MELS * N_FRAMES);
   st.close();
 });
@@ -166,14 +194,18 @@ test('a per-call failure degrades THAT verdict, and the result says heuristic', 
 
 test('a wedged session times out instead of holding the turn open', async () => {
   const diagnostics: string[] = [];
+  let calls = 0;
   const st = await createSmartTurn({
     timeoutMs: 20,
     createClassifier: async () => ({
-      run: () => new Promise<number[]>(() => {}), // never settles
+      // Warms fine, then wedges — a session that dies mid-session, which the
+      // load-time warmup by construction cannot catch.
+      run: () => (++calls === 1 ? Promise.resolve([0.5]) : new Promise<number[]>(() => {})),
       close() {},
     }),
     onDiagnostic: (m) => diagnostics.push(m),
   });
+  assert.equal(st.mode, 'model');
   const r = await st.predict(segment(1200), SR);
   assert.equal(r.mode, 'heuristic');
   assert.match(diagnostics[0], /timed out/);
@@ -189,7 +221,7 @@ test('audio at the wrong rate degrades loudly rather than being silently resampl
   });
   const r = await st.predict(segment(1200), 48000);
   assert.equal(r.mode, 'heuristic');
-  assert.equal(fake.seen.length, 0, 'nothing should reach the model at the wrong rate');
+  assert.equal(fake.predictCalls(), 0, 'nothing should reach the model at the wrong rate');
   assert.match(diagnostics[0], /16000Hz/);
   st.close();
 });
@@ -197,6 +229,7 @@ test('audio at the wrong rate degrades loudly rather than being silently resampl
 test('predict never throws, whatever the classifier returns', async () => {
   const outputs: Array<number[]> = [[], [NaN], [Infinity, 1]];
   for (const out of outputs) {
+    // Warms healthily, so this exercises the per-call path rather than the load one.
     const st = await createSmartTurn({
       createClassifier: async () => fakeClassifier(out).classifier,
       onDiagnostic: () => {},
@@ -221,5 +254,6 @@ test('close() on a heuristic adapter is safe, and a throwing close is swallowed'
       },
     }),
   });
+  assert.equal(st.mode, 'model');
   st.close(); // must not propagate — stop() runs this during teardown
 });

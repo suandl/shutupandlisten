@@ -342,7 +342,9 @@ async function main() {
     for (const d of tts.diagnostics ?? []) log(`       ${d}`);
     log(
       `  eou: load=${smartTurn.loadMode} (${smartTurn.loadMs}ms) smoke=${
-        smartTurn.smoke ? `${smartTurn.smoke.mode} P(complete)=${smartTurn.smoke.completionProb} (${smartTurn.smoke.ms}ms)` : 'none'
+        smartTurn.smoke
+          ? `${smartTurn.smoke.mode} P(complete)=${smartTurn.smoke.completionProb} (${smartTurn.smoke.ms}ms cold, ${smartTurn.smoke.warmMs}ms warm)`
+          : 'none'
       }`,
     );
     for (const d of smartTurn.diagnostics ?? []) log(`       ${d}`);

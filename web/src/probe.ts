@@ -54,8 +54,14 @@ export interface SmartTurnStageReport {
   loadMs: number;
   /** The adapter's onDiagnostic lines — names WHY it fell back to the heuristic. */
   diagnostics: string[];
-  /** Result of classifying the fixture; null when the smoke-run never ran. */
-  smoke: { mode: string; completionProb: number; ms: number } | null;
+  /**
+   * Result of classifying the fixture; null when the smoke-run never ran. `ms` is
+   * the whole verdict (log-Mel front-end + inference) and `warmMs` the same again on
+   * a second call — the steady-state cost a live turn actually pays, which is the
+   * number su-lou.10.5 needs to decide how far the silence floor can drop. Reported,
+   * never gated: a slow CI box is not a regression.
+   */
+  smoke: { mode: string; completionProb: number; ms: number; warmMs: number } | null;
   error: string | null;
 }
 
@@ -146,12 +152,17 @@ async function runSmartTurn(fixture: ProbeFixture): Promise<SmartTurnStageReport
     report.loadMode = smartTurn.mode;
     report.loadMs = Math.round(performance.now() - t0);
     try {
+      const samples = Float32Array.from(fixture.samples);
       const t1 = performance.now();
-      const result = await smartTurn.predict(Float32Array.from(fixture.samples), fixture.sampleRate);
+      const result = await smartTurn.predict(samples, fixture.sampleRate);
+      const ms = Math.round(performance.now() - t1);
+      const t2 = performance.now();
+      await smartTurn.predict(samples, fixture.sampleRate);
       report.smoke = {
         mode: result.mode,
         completionProb: Number(result.completionProb.toFixed(4)),
-        ms: Math.round(performance.now() - t1),
+        ms,
+        warmMs: Math.round(performance.now() - t2),
       };
     } finally {
       smartTurn.close();

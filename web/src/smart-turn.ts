@@ -59,6 +59,10 @@ export interface SmartTurnOptions {
   heuristicShortSegmentMs?: number;
   /** Per-call ms before a wedged session degrades THIS verdict to the heuristic. */
   timeoutMs?: number;
+  /** Budget for the load-time warmup run. Separate from `timeoutMs`: the first
+   *  inference compiles and specializes the graph, so it is far slower than a
+   *  steady-state call (~1s vs ~60ms in headless Chromium). */
+  initTimeoutMs?: number;
   /** Where a degrade is reported. Defaults to `console.warn`; injectable for tests. */
   onDiagnostic?: (message: string) => void;
   /** Inject the classifier (tests / custom hosting). Defaults to onnxruntime-web. */
@@ -81,6 +85,9 @@ const SAMPLE_RATE = 16000;
  * the ~12ms the model actually takes: this catches a stall, not a slow machine.
  */
 const DEFAULT_TIMEOUT_MS = 2000;
+
+/** Budget for the load-time warmup — a cold first inference, not a steady-state one. */
+const DEFAULT_INIT_TIMEOUT_MS = 30000;
 
 // ── Default self-hosted smart-turn config (`npm run provision:smart-turn`) ──
 //
@@ -155,6 +162,31 @@ export async function createSmartTurn(opts: SmartTurnOptions = {}): Promise<Smar
     classifier = await (opts.createClassifier ?? (() => ortClassifier(opts)))();
   } catch (err) {
     diag(opts, `model failed to load (${errText(err)})`);
+    return heuristic;
+  }
+
+  // Warm the graph once, here, before any speech. Two reasons, both load-bearing:
+  //
+  //   1. ORT compiles and specializes on the FIRST run — ~1s in headless Chromium
+  //      against ~60ms warm. createSmartTurn() is awaited at mic start, so that cost
+  //      belongs here and not inside the silence floor of the user's first
+  //      utterance, where it would be the very lag this unit exists to remove.
+  //   2. It makes `mode` an assertion rather than a hope. A graph that cannot
+  //      produce a usable score — wrong input shape, corrupt weights, an export
+  //      whose output this adapter can't map — is reported as a FAILED LOAD, so the
+  //      adapter never reports `model` for something that would degrade on every
+  //      call. That false-green is exactly what su-lou.7/.8/.9 each turned out to be.
+  try {
+    completionProbFrom(
+      await withTimeout(classifier.run(new Float32Array(N_MELS * N_FRAMES)), opts.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS),
+    );
+  } catch (err) {
+    try {
+      classifier.close();
+    } catch {
+      /* already gone */
+    }
+    diag(opts, `model loaded but could not score (${errText(err)})`);
     return heuristic;
   }
 
