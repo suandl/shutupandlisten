@@ -123,8 +123,9 @@ async function run(fixture: ProbeFixture): Promise<ProbeReport> {
     stt: await runStt(fixture),
     tts: await runTts(),
   };
-  // Mirror for humans: a headed/`--keep` inspection can read the page, and the
-  // console line survives in driver-captured browser logs.
+  // Mirror for humans: the page keeps the full report on screen for anyone
+  // driving the probe by hand, and the console line survives in the
+  // driver-captured browser logs.
   const pretty = JSON.stringify(report, null, 2);
   document.getElementById('probe-log')!.textContent = pretty;
   console.log(`WORKS_CHECK_REPORT ${JSON.stringify(report)}`);

@@ -42,7 +42,9 @@ interface SynthesizeMessage {
 
 /** transformers.js text-to-speech pipeline call surface (only what we use). */
 type TtsOutput = { audio?: unknown; sampling_rate?: unknown };
-type TtsPipeline = (text: string, opts?: Record<string, unknown>) => Promise<TtsOutput>;
+// One arg only: the engine closure public/tts-engine.js returns is
+// `async (text) => …`, so a declared second parameter would be silently dropped.
+type TtsPipeline = (text: string) => Promise<TtsOutput>;
 type Engine = {
   pipeline: (task: string, model: string, opts?: Record<string, unknown>) => Promise<TtsPipeline>;
   env?: Record<string, unknown>;

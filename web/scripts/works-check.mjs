@@ -27,7 +27,7 @@
 // regression — "not provisioned" and "broken" must not be confusable.
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync, linkSync, copyFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync, linkSync, copyFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -52,6 +52,10 @@ const PROBE_READY_TIMEOUT_MS = 20000;
  *  model is a regression, and this deadline only catches a dead page, which is
  *  infra. Worst healthy run in the su-ljrb.1 spike was ~15s; 240s is pure slack. */
 const PROBE_RUN_TIMEOUT_MS = 240000;
+/** Cap on the retained browser-console ring. Only the last 100 lines are ever
+ *  persisted or tailed, so a chatty model load must not grow the buffer for the
+ *  whole run — hold a little headroom over what's written and drop the rest. */
+const CONSOLE_LINES_MAX = 200;
 
 /** The provisioned trees each stage needs, with the remedy to name when absent. */
 const REQUIRED_ASSETS = [
@@ -197,6 +201,12 @@ async function main() {
   }
 
   // ── build the probe entry ──
+  // Wipe the outDir first: linkTree tolerates only EXDEV, so a pre-populated
+  // outDir makes linkSync throw EEXIST and surface as a confusing INFRA('assets').
+  // vite's emptyOutDir already does this today (the outDir sits inside the web
+  // root), but that is an implicit default the works-check config never states —
+  // state it here instead. OUT_DIR only: report.json lands in WORK_DIR above it.
+  rmSync(OUT_DIR, { recursive: true, force: true });
   log('works-check: building the probe entry (vite build)…');
   const build = await runStep('npx', ['vite', 'build', '--config', CONFIG], WEB_DIR);
   if (build.code !== 0) {
@@ -223,6 +233,10 @@ async function main() {
   let serverOut = '';
   let browser = null;
   const consoleLines = [];
+  const recordConsole = (line) => {
+    consoleLines.push(line);
+    if (consoleLines.length > CONSOLE_LINES_MAX) consoleLines.shift();
+  };
   // Tear the detached preview server down even on Ctrl-C, so an interrupted run
   // never squats on the pinned port (capture.ts's discipline — su-lou.4.1).
   for (const sig of ['SIGINT', 'SIGTERM']) {
@@ -268,8 +282,8 @@ async function main() {
       ]);
     }
     const page = await browser.newPage();
-    page.on('console', (m) => consoleLines.push(`[${m.type()}] ${m.text()}`));
-    page.on('pageerror', (e) => consoleLines.push(`[pageerror] ${e.message}`));
+    page.on('console', (m) => recordConsole(`[${m.type()}] ${m.text()}`));
+    page.on('pageerror', (e) => recordConsole(`[pageerror] ${e.message}`));
 
     try {
       await page.goto(probeUrl, { waitUntil: 'load', timeout: 15000 });
@@ -307,8 +321,12 @@ async function main() {
       JSON.stringify({ when: new Date().toISOString(), url: probeUrl, report, verdict, console: consoleLines.slice(-100) }, null, 2),
     );
 
-    const stt = report.stt ?? {};
-    const tts = report.tts ?? {};
+    // Optional-chained to match evaluateReport, which accepts a null/undefined/{}
+    // report and FAILS both stages (works-verdict.test.mjs:139 locks that in). An
+    // unguarded deref here would throw before the summary printed, land in
+    // main().catch, and reclassify that loud failure as a retryable EXIT_INFRA.
+    const stt = report?.stt ?? {};
+    const tts = report?.tts ?? {};
     log('');
     log(`  stt: load=${stt.loadMode} (${stt.loadMs}ms) smoke=${stt.smoke ? `${stt.smoke.mode} "${(stt.smoke.text ?? '').slice(0, 60)}" (${stt.smoke.ms}ms)` : 'none'}`);
     log(`  tts: load=${tts.loadMode} (${tts.loadMs}ms) smoke=${tts.smoke ? `${tts.smoke.mode} ${tts.smoke.samples} samples @${tts.smoke.sampleRate}Hz rms=${tts.smoke.rms} (${tts.smoke.ms}ms)` : 'none'}`);
