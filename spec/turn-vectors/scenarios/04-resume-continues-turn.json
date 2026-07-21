@@ -1,6 +1,6 @@
 {
   "name": "04-resume-continues-turn",
-  "description": "Speech resuming after a sub-floor pause continues the same turn: one turn-start, one turn-end (the final completed thought), same turn id throughout.",
+  "description": "Speech resuming after a sub-floor pause continues the same turn: one turn-start, one evaluate (for the final completed thought), one turn-end, same turn id throughout.",
   "knobs": {
     "silenceFloorMs": 2000,
     "incompleteExtensionMs": 4000,
@@ -14,6 +14,7 @@
     { "t": 2500, "type": "speech-start" },
     { "t": 4000, "type": "speech-end" },
     { "t": 4050, "type": "eou", "verdict": "complete" },
+    { "t": 6000, "type": "decision", "outcome": "speak" },
     { "t": 8000, "type": "tick" }
   ],
   "expected": {
@@ -24,6 +25,7 @@
     ],
     "emit": [
       { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 6000, "type": "evaluate", "turn": 1, "reason": "floor", "trigger": "deadline" },
       { "t": 6000, "type": "turn-end", "turn": 1, "reason": "floor" },
       { "t": 6000, "type": "response-start", "turn": 1 },
       { "t": 7500, "type": "response-end", "turn": 1, "reason": "completed" }

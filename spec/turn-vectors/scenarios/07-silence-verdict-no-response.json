@@ -1,0 +1,28 @@
+{
+  "name": "07-silence-verdict-no-response",
+  "description": "Un-collapsed Deciding: the patience window closes and the host answers 'silence'. The machine re-arms straight back to listening — NO turn-end, NO response-start, no response park. Same event times as 05, whose 'speak' answer parks in responding and turns the 4500 resume into a barge-in; here that resume is simply a fresh turn.",
+  "knobs": {
+    "silenceFloorMs": 2000,
+    "incompleteExtensionMs": 4000,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1500,
+    "useSmartTurn": true
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 2000, "type": "speech-end" },
+    { "t": 4000, "type": "decision", "outcome": "silence" },
+    { "t": 4500, "type": "speech-start" },
+    { "t": 6000, "type": "tick" }
+  ],
+  "expected": {
+    "turnStartCount": 2,
+    "turnEndCount": 0,
+    "turnEnds": [],
+    "emit": [
+      { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 4000, "type": "evaluate", "turn": 1, "reason": "floor", "trigger": "deadline" },
+      { "t": 4500, "type": "turn-start", "turn": 2 }
+    ]
+  }
+}

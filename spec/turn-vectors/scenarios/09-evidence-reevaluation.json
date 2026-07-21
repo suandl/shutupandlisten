@@ -1,0 +1,28 @@
+{
+  "name": "09-evidence-reevaluation",
+  "description": "Re-evaluation is EVIDENCE-driven, not clock-driven. A fresh EOU verdict arriving while the host is still deciding supersedes the outstanding evaluation (trigger 'evidence') instead of waiting for a tick or a debounce timer. The reason stays 'floor' — the deadline that opened the evaluation has already passed; only the evidence is new.",
+  "knobs": {
+    "silenceFloorMs": 2000,
+    "incompleteExtensionMs": 4000,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1500,
+    "useSmartTurn": true
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 2000, "type": "speech-end" },
+    { "t": 4100, "type": "eou", "verdict": "incomplete" },
+    { "t": 4200, "type": "decision", "outcome": "silence" },
+    { "t": 6000, "type": "tick" }
+  ],
+  "expected": {
+    "turnStartCount": 1,
+    "turnEndCount": 0,
+    "turnEnds": [],
+    "emit": [
+      { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 4000, "type": "evaluate", "turn": 1, "reason": "floor", "trigger": "deadline" },
+      { "t": 4100, "type": "evaluate", "turn": 1, "reason": "floor", "trigger": "evidence" }
+    ]
+  }
+}

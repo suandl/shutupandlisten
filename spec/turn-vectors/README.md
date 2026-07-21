@@ -43,16 +43,28 @@ The runner asserts the emitted `turn-end` events match `turnEnds` exactly (time,
 turn id, reason), plus any optional invariants. `emit`, when present, is checked
 against the full ordered output stream.
 
-These six cover the plan's scenarios 1–5 plus the asymmetric-veto hold:
+**The host's verdict is an input, so it lives in `events` too.** Since `Deciding`
+was un-collapsed (spec §4a) the patience window closing emits an `evaluate` and
+the machine waits; the turn ends only when a `{ "type": "decision", "outcome":
+"speak" | "silence" }` answers it. A vector that supplies no `decision` after the
+window closes is asserting that the machine **waits** — which is why `01`'s
+`turnEnds: []` and `09`'s both mean something.
+
+These ten cover the plan's scenarios 1–5, the asymmetric-veto hold, and the
+un-collapsed `Deciding`:
 
 | Vector | Plan scenario | Asserts |
 |--------|---------------|---------|
-| `01-subfloor-pause-preserved` | 1 | A sub-floor pause emits **no** turn-end (the cardinal-failure guard / TDD red anchor). |
-| `02-floor-elapsed-one-end` | 2 | Silence past the floor with no `incomplete` emits **exactly one** turn-end, at the floor. |
-| `03-complete-no-shortcircuit` | 3 | A `complete` verdict during a sub-floor pause does **not** end before the floor. |
+| `01-subfloor-pause-preserved` | 1 | A sub-floor pause emits **no** evaluate — so it can never end a turn (the cardinal-failure guard / TDD red anchor). |
+| `02-floor-elapsed-one-end` | 2 | Silence past the floor with no `incomplete` evaluates **exactly once**, at the floor; a `speak` verdict makes that one turn-end. |
+| `03-complete-no-shortcircuit` | 3 | A `complete` verdict during a sub-floor pause does **not** evaluate before the floor. |
 | `04-resume-continues-turn` | 4 | Speech resuming after a sub-floor pause continues the **same** turn (one turn-start, one turn-end). |
 | `05-barge-in-yields` | 5 | Speaking over a response yields **instantly** (response-end `reason: barge-in` at the interrupt, new turn). |
 | `06-incomplete-extends-floor` | (§2 veto) | An `incomplete` verdict holds the turn open to `floor + extension` (`reason: extended`); the value the EOU adds over the bare floor. |
+| `07-silence-verdict-no-response` | (§4a) | A `silence` verdict emits **no** turn-end and **no** response-start — declining the floor costs nothing. Same event times as `05`, where the `speak` answer turns the 4500 resume into a barge-in. |
+| `08-resume-while-deciding` | (§4a) | Resuming while the verdict is outstanding is a **resume, not a barge-in**: same turn, no new turn-start; a verdict arriving after it is stale and ignored. |
+| `09-evidence-reevaluation` | (§4a) | A fresh EOU verdict while deciding **supersedes** the evaluation (`trigger: evidence`) — re-evaluation is evidence-driven, not clock-driven. |
+| `10-late-decision-stamps-verdict` | (§6 note) | A `speak` verdict arriving 2500 ms after the window closed stamps `turn-end`/`response-start` at the **verdict** (6500) while `evaluate` keeps the deadline (4000) — deliberation latency is visible, not erased. |
 
 ## `labeled/` — measurement vectors (scenario 6)
 
@@ -72,12 +84,16 @@ fire after patience) and drops `expected`:
 ```
 
 The harness runs each vector through two arms — `useSmartTurn:true` (floor +
-veto) and `useSmartTurn:false` (patience-only baseline) — and scores
-`turn-end`s against `trueTurnBoundaries`:
+veto) and `useSmartTurn:false` (patience-only baseline) — and scores the
+detector's end-of-thought signal against `trueTurnBoundaries`. That signal is the
+`evaluate` edge (`trigger: deadline`), not `turn-end`: what scenario 6 measures is
+the **endpointing** — did the detector notice the thought ended, and when — which
+is why these vectors carry no `decision` events. Whether the companion then chose
+to speak is the response gate's business, measured elsewhere.
 
-- **false cutoff** — a turn-end with no true boundary within tolerance (ended
+- **false cutoff** — a detection with no true boundary within tolerance (fired
   mid-thought: the cardinal sin).
-- **false continuation** — a true boundary with no turn-end within tolerance
+- **false continuation** — a true boundary with no detection within tolerance
   (stayed silent when the thought was done).
 
 The veto must **beat the bare floor** to earn its place: no more false cutoffs
