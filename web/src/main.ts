@@ -837,6 +837,9 @@ function refreshStage(): void {
 // ── tick loop: keep wall-clock advancing so deadlines fire live ──
 setInterval(() => {
   detector.input({ t: now(), type: 'tick' });
+  // No-op today (a tick cannot abandon) — keeps the settled-state abandon check
+  // true at every detector.input feeder.
+  cancelAbandonedEvaluation();
   refreshStage();
 }, 90);
 

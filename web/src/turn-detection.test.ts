@@ -4,7 +4,7 @@
 //   node --test 'src/**/*.test.ts'
 // (also runnable under vitest; the suite uses only node:test + node:assert).
 //
-// The nine golden vectors in spec/turn-vectors/scenarios/ ARE the contract —
+// The ten golden vectors in spec/turn-vectors/scenarios/ ARE the contract —
 // this file loads each, replays it through a fresh TurnDetector, and asserts
 // the emitted output matches byte-for-byte. The named tests below restate the
 // plan's scenarios 1–5 (+ the asymmetric-veto hold) so intent stays legible,
