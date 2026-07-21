@@ -324,9 +324,8 @@ test('deciding: the baseline arm (useSmartTurn=false) never re-evaluates on a ve
 
 // The decision loop's real wiring: the host answers from inside the emit callback.
 test('deciding: a host answering from within onEmit gets one ordered, complete stream', () => {
-  let det: TurnDetector;
   const seen: OutputEvent[] = [];
-  det = new TurnDetector({ silenceFloorMs: 2000, responseDurationMs: 1500 }, (e) => {
+  const det: TurnDetector = new TurnDetector({ silenceFloorMs: 2000, responseDurationMs: 1500 }, (e) => {
     seen.push(e);
     if (e.type === 'evaluate') det.input({ t: e.t, type: 'decision', outcome: 'speak' });
   });

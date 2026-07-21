@@ -411,6 +411,11 @@ function wireAudio(src: AudioSource): void {
     }
     logInput(e);
     detector.input(e);
+    // A speech-start can abandon an outstanding evaluation — including one born
+    // in this very call, when the resume lands after the deadline (advance()
+    // evaluates, then the resume abandons it). Checked on the settled state
+    // rather than on the event type, so any future abandon path is covered too.
+    cancelAbandonedEvaluation();
     refreshStage();
   };
   // STT transcripts (mic only) — upsert by id so the pending placeholder is
@@ -444,6 +449,30 @@ function answerEvaluation(outcome: 'speak' | 'silence'): void {
   // queues such an event and applies it as soon as the current one settles.
   detector.input({ t: now(), type: 'decision', outcome });
   refreshStage();
+}
+
+/**
+ * Drop an evaluation the detector ABANDONED under us, restoring the turn to open.
+ *
+ * The thinker resuming while a verdict is outstanding abandons the evaluation and
+ * reopens the SAME turn (spec §6) — and it does so SILENTLY: unlike a barge-in,
+ * an abandonment emits no output event, so the only way to see it is that the
+ * detector is no longer `deciding` while we still believe it is. Left uncancelled,
+ * `maybeRespond` would gate that turn the moment its transcript resolved and
+ * `speakResponse` would talk over someone who is mid-sentence — with no barge-in
+ * to cut it, because the detector never took the floor.
+ *
+ * The turn's end mark and loop-metric origin go with it: the window that closed
+ * was not this turn's end, and the next (real) evaluation must be free to mark it.
+ */
+function cancelAbandonedEvaluation(): void {
+  if (awaitingVerdictForTurn === null || detector.state === 'deciding') return;
+  const turn = awaitingVerdictForTurn;
+  awaitingVerdictForTurn = null;
+  turnEnds = turnEnds.filter((m) => m.turn !== turn);
+  loopMetrics.clear(turn);
+  renderTranscript();
+  renderMetrics();
 }
 
 // ── output handling ──

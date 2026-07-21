@@ -119,6 +119,19 @@ export class LoopMetrics {
     return this.marks.get(turn)?.has(stage) ?? false;
   }
 
+  /**
+   * Forget every mark for `turn`, so its next mark starts a fresh measurement.
+   *
+   * The counterpart to first-write-wins: a turn whose patience window closed and
+   * was then ABANDONED (the thinker resumed while the verdict was outstanding —
+   * spec §6) recorded a `turn-end` for a loop iteration that never happened. Left
+   * in place it would pin that turn's origin to the abandoned window and measure
+   * the real iteration's legs from too early an instant.
+   */
+  clear(turn: number): void {
+    this.marks.delete(turn);
+  }
+
   /** One turn's latencies, or null if the turn has no recorded marks. */
   turnLatency(turn: number): TurnLatency | null {
     const m = this.marks.get(turn);
