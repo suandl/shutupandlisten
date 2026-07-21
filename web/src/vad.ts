@@ -79,10 +79,6 @@ export class MicAudioSource implements AudioSource {
     // Dynamic imports so a missing model lib / no-mic environment fails softly
     // at start() rather than breaking the whole page load.
     const { MicVAD } = await import('@ricky0123/vad-web');
-    // The EOU classifier: the real smart-turn v3 model when provisioned, else the
-    // labelled duration heuristic. Loaded BEFORE the mic so the first utterance is
-    // already classified by whatever mode `_info` ends up reporting.
-    this.smartTurn = await createSmartTurn(this.smartTurnOptions);
 
     // Browser APM (noiseSuppression + echoCancellation + autoGainControl) is the
     // cheapest café-noise lever — and it is ALREADY engaged. vad-web 0.0.24's
@@ -116,10 +112,14 @@ export class MicAudioSource implements AudioSource {
         this.onEvent({ t, type: 'speech-start' });
       },
       onSpeechEnd: (audio: Float32Array) => {
-        // Emit speech-end immediately; smart-turn resolves a beat later (≈12ms)
-        // and lands its verdict inside the silence floor, exactly as the spec
-        // assumes. STT runs on the SAME released segment, independently — it
-        // feeds the transcript display only, never the detector.
+        // Emit speech-end immediately; smart-turn resolves a beat later and lands
+        // its verdict inside the silence floor, as the spec assumes. MEASURED
+        // (su-lou.10.1, headless Chromium, warmed): ~270ms for the whole verdict —
+        // the log-Mel front-end plus inference — not the ~12ms this comment used to
+        // claim from the model card, which is a native-CPU number. Comfortable
+        // inside today's 2000ms floor; a real constraint on the 500-750ms floor
+        // su-lou.10.5 is aiming for. STT runs on the SAME released segment,
+        // independently — it feeds the transcript display only, never the detector.
         const t = this.now();
         this.onEvent({ t, type: 'speech-end' });
         void this.classify(audio);
@@ -135,6 +135,12 @@ export class MicAudioSource implements AudioSource {
     // reports "mic failed". transcribe() runs only after vad.start() (on real
     // speech), by which point this is set. (su-0hi #3)
     this.transcriber = await createTranscriber(this.sttOptions);
+    // Same reasoning, same place: the EOU classifier now downloads ~21MB (model +
+    // ONNX Runtime wasm) and warms an inference session, so a mic that never opens
+    // must not pay for it — before su-lou.10.1 this loaded first, when it was a
+    // no-op that returned the heuristic. classify() runs only after vad.start(),
+    // and MicVAD.new() emits nothing until then, so nothing can outrun this.
+    this.smartTurn = await createSmartTurn(this.smartTurnOptions);
     this.vad.start();
     this._info = `denoise (${this.denoiser.mode}) → Silero VAD + smart-turn (${this.smartTurn.mode}) + STT (${this.transcriber.mode})`;
   }

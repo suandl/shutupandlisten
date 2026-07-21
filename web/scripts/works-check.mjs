@@ -36,7 +36,7 @@ import { chromium } from 'playwright';
 
 import { DEFAULT_MOONSHINE_MODEL, DEFAULT_WHISPER_MODEL } from '../src/stt.ts';
 import { DEFAULT_TTS_MODEL } from '../src/tts.ts';
-import { DEFAULT_SMART_TURN_MODEL_URL, DEFAULT_SMART_TURN_WASM_PATH } from '../src/smart-turn.ts';
+import { DEFAULT_SMART_TURN_MODEL_URL } from '../src/smart-turn.ts';
 import { WORKS_CHECK_PORT, WORKS_CHECK_OUT_DIR } from '../vite.works-check.config.ts';
 import { parseWavPcm16 } from './wav.mjs';
 import { EXIT_INFRA, evaluateReport, exitCodeFor, summarizeVerdict } from './works-verdict.mjs';
@@ -69,7 +69,6 @@ const REQUIRED_ASSETS = [
   { rel: 'public/tts/transformers/transformers.min.js', remedy: 'npm run provision:tts' },
   { rel: `public/models/${DEFAULT_TTS_MODEL}`, remedy: 'npm run provision:tts' },
   { rel: `public${DEFAULT_SMART_TURN_MODEL_URL}`, remedy: 'npm run provision:smart-turn' },
-  { rel: `public${DEFAULT_SMART_TURN_WASM_PATH}ort-wasm-simd-threaded.wasm`, remedy: 'npm run provision:smart-turn' },
 ];
 
 /** public/ subtrees materialized (hardlinked) into the served outDir. The whisper

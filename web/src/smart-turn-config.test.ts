@@ -8,8 +8,7 @@
 // gets caught headlessly.
 //
 // The guarantees under test:
-//   1. default (no query) → the self-hosted model, resolved same-origin, with the
-//      matching ONNX Runtime wasm path
+//   1. default (no query) → the self-hosted model, resolved same-origin
 //   2. `?smartTurn=off` (and aliases) → {} → the heuristic kill-switch
 //   3. a remote `?smartTurnModel=` is rejected back to the safe default — the model
 //      is fetched and run on mic audio, so it is held to the engine-URL rule
@@ -20,7 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { resolveSmartTurnOptions } from './smart-turn-config.ts';
-import { DEFAULT_SMART_TURN_MODEL_URL, DEFAULT_SMART_TURN_WASM_PATH } from './smart-turn.ts';
+import { DEFAULT_SMART_TURN_MODEL_URL } from './smart-turn.ts';
 
 const PAGE = 'https://app.example/turn-detector/index.html';
 const DEFAULT_MODEL_RESOLVED = new URL(DEFAULT_SMART_TURN_MODEL_URL, PAGE).href;
@@ -43,14 +42,12 @@ test('default (no query) → the self-hosted model, resolved same-origin', () =>
   const opts = resolveSmartTurnOptions('', PAGE);
   assert.equal(opts.modelUrl, DEFAULT_MODEL_RESOLVED);
   assert.equal(new URL(opts.modelUrl!).origin, new URL(PAGE).origin);
-  assert.equal(opts.wasmPath, DEFAULT_SMART_TURN_WASM_PATH);
 });
 
 test('?smartTurn=off (and aliases) → no model, so the adapter uses the heuristic', () => {
   for (const v of ['off', 'heuristic', 'none', '0', 'false', 'no', 'OFF', ' Off ']) {
     const opts = resolveSmartTurnOptions(qs({ smartTurn: v }), PAGE);
     assert.equal(opts.modelUrl, undefined, `?smartTurn=${v} should not configure a model`);
-    assert.equal(opts.wasmPath, undefined, `?smartTurn=${v} should not configure a runtime`);
   }
 });
 

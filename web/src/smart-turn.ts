@@ -50,9 +50,9 @@ export interface SmartTurnOptions {
   /** URL of the smart-turn v3 ONNX model. When omitted/unreachable → heuristic. */
   modelUrl?: string;
   /**
-   * Directory holding the ONNX Runtime wasm binaries, served SAME-ORIGIN. Without
-   * it onnxruntime-web falls back to fetching them from a CDN, which would break
-   * the no-egress posture the rest of the harness holds (see stt.ts / tts.ts).
+   * Explicit URL of the ONNX Runtime wasm binary. Defaults to the asset the bundler
+   * emitted from this app's own onnxruntime-web — same-origin and version-coherent
+   * by construction — so this is only for a host that serves it from elsewhere.
    */
   wasmPath?: string;
   /** Trailing segments shorter than this read as "incomplete" in heuristic mode. */
@@ -91,14 +91,13 @@ const DEFAULT_INIT_TIMEOUT_MS = 30000;
 
 // ── Default self-hosted smart-turn config (`npm run provision:smart-turn`) ──
 //
-// Same shape as STT/LLM/TTS/denoise: assets served from the app's OWN origin, so a
-// provisioned deploy classifies out-of-the-box and an un-provisioned one degrades to
-// the labelled heuristic. Nothing is fetched cross-origin and no mic audio leaves
-// the page. The model is a bare ONNX graph (not a transformers.js pipeline), so
-// unlike the other stages it needs no engine wrapper — just onnxruntime-web, whose
-// wasm binaries are provisioned alongside it.
+// Same shape as STT/LLM/TTS/denoise: the model is served from the app's OWN origin,
+// so a provisioned deploy classifies out-of-the-box and an un-provisioned one
+// degrades to the labelled heuristic. Nothing is fetched cross-origin and no mic
+// audio leaves the page. Unlike the other stages this one needs no engine wrapper —
+// the model is a bare ONNX graph, and its runtime (onnxruntime-web) is bundled with
+// the app rather than provisioned, so only the weights are a deploy-time step.
 export const DEFAULT_SMART_TURN_MODEL_URL = '/smart-turn/smart-turn-v3.onnx';
-export const DEFAULT_SMART_TURN_WASM_PATH = '/smart-turn/ort/';
 
 /** Report a degrade, so a stage that falls back names itself (su-lou.7's lesson). */
 function diag(opts: SmartTurnOptions, reason: string): void {
@@ -227,15 +226,27 @@ export async function createSmartTurn(opts: SmartTurnOptions = {}): Promise<Smar
  * The real backend: onnxruntime-web, CPU/WASM only.
  *
  * The `/wasm` entrypoint is deliberate — the default bundle also carries the WebGPU
- * (jsep) backend, whose wasm binary is twice the size and would contend with the
- * LLM/TTS for the GPU this stage promises not to touch.
+ * (jsep) backend, whose wasm binary is twice the size (26.8MB vs 13.5MB in dist/)
+ * and would contend with the LLM/TTS for the GPU this stage promises not to touch.
  */
 async function ortClassifier(opts: SmartTurnOptions): Promise<FeatureClassifier> {
   const ort = await import('onnxruntime-web/wasm');
-  // Self-hosted wasm: without this, onnxruntime-web resolves its binaries against a
-  // CDN, and an on-device harness would start fetching cross-origin at first speech.
-  const wasmPath = opts.wasmPath ?? DEFAULT_SMART_TURN_WASM_PATH;
-  if (wasmPath) ort.env.wasm.wasmPaths = wasmPath;
+
+  // Pin the runtime binary to the one the BUNDLER emitted from the very
+  // onnxruntime-web this module imports. Same-origin by construction (so first
+  // speech never triggers a cross-origin fetch — onnxruntime-web's own fallback is
+  // a jsdelivr CDN, which would break the no-egress posture silently), and
+  // version-coherent by construction (the binary and the JS come from one install,
+  // so they cannot drift). It is also the asset Vite emits anyway, so pointing at
+  // it costs nothing: provisioning a second copy would just add ~13MB of bytes
+  // that are downloaded and never used.
+  //
+  // `?url` is Vite-only, so it is resolved HERE — inside the lazily-imported real
+  // backend — and never at module scope, where it would break `node --test`. If a
+  // non-Vite bundler leaves it unresolved, `wasmPaths` stays unset and ORT falls
+  // back to its own resolution rather than failing.
+  const wasmUrl = opts.wasmPath ?? (await bundledWasmUrl());
+  if (wasmUrl) ort.env.wasm.wasmPaths = { wasm: wasmUrl };
 
   const session = await ort.InferenceSession.create(opts.modelUrl!, { executionProviders: ['wasm'] });
   // v3 names its input `input_features`; bind by name when present and fall back to
@@ -253,6 +264,19 @@ async function ortClassifier(opts: SmartTurnOptions): Promise<FeatureClassifier>
       void session.release?.();
     },
   };
+}
+
+/**
+ * URL of the ONNX Runtime wasm binary as emitted by the bundler, or undefined when
+ * the `?url` form is unavailable (a non-Vite bundler, a bare-module runtime) — in
+ * which case the caller leaves ORT to resolve the binary itself.
+ */
+async function bundledWasmUrl(): Promise<string | undefined> {
+  try {
+    return (await import('onnxruntime-web/ort-wasm-simd-threaded.wasm?url')).default;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Reject after `ms` so one wedged call cannot hold a turn open. */

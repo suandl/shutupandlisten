@@ -13,8 +13,9 @@ dist/
 # the small instruct-model weights), `npm run provision:tts` (U6 voice: engine +
 # the small TTS-model weights), `npm run provision:denoise` (background-noise
 # increment 2: the RNNoise AudioWorklet + wasm), and
-# `npm run provision:smart-turn` (the smart-turn v3 EOU classifier + its CPU/WASM
-# ONNX Runtime). Never committed: large binaries, and the no-egress design serves
+# `npm run provision:smart-turn` (the smart-turn v3 EOU classifier weights; its
+# ONNX Runtime is bundled with the app, not provisioned). Never committed: large
+# binaries, and the no-egress design serves
 # them same-origin from public/ → dist/. Absent → the adapters use their labelled
 # stubs (the TTS adapter a placeholder tone, the denoise adapter passthrough, the
 # EOU adapter its duration heuristic). The committed public/stt-engine.js,

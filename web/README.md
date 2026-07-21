@@ -71,7 +71,7 @@ npm run provision:llm  # build/deploy step: fetch the self-hosted LLM engine +
 npm run provision:tts  # build/deploy step: fetch the self-hosted TTS engine +
                        # small voice-model weights into public/ so the companion speaks
 npm run provision:smart-turn  # build/deploy step: fetch the smart-turn v3 EOU
-                       # classifier + its CPU/WASM runtime so turn-ends are real
+                       # classifier weights so turn-ends are real, not a duration proxy
 
 npm run demo:u6        # record a narrated MP4 that PROVES the U6 warmed loop, driven
                        # against deterministic sim mode (see e2e/README.md)
@@ -198,11 +198,15 @@ audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ U
   carried all the patience alone. `npm run provision:smart-turn` now fetches
   [pipecat-ai/smart-turn-v3](https://huggingface.co/pipecat-ai/smart-turn-v3)
   (pinned to the v3.2 CPU export, 8.3MB int8, BSD-2-Clause) into
-  `public/smart-turn/` and copies the matching ONNX Runtime wasm beside it — from
-  `node_modules`, not a CDN, because Vite bundles the JS half and the two must be
-  the same version. Same no-egress posture as the other stages: model and runtime
-  are same-origin, `?smartTurnModel=` is accepted same-origin only, and
-  `?smartTurn=off` forces the heuristic so the operator can A/B them.
+  `public/smart-turn/`. Only the weights are a deploy step: the runtime
+  (`onnxruntime-web`, imported through its CPU-only `/wasm` entrypoint so the GPU
+  stays reserved for the LLM/TTS) is bundled with the app, and the adapter points
+  ONNX Runtime at that emitted binary — same-origin and version-coherent by
+  construction, with no CDN fallback to fall through to. Same no-egress posture as
+  the other stages: `?smartTurnModel=` is accepted same-origin only, and
+  `?smartTurn=off` forces the heuristic so the operator can A/B them. Switching to
+  the CPU-only entrypoint also halved what a deploy ships — dist/ carries a 13.5MB
+  runtime binary where it used to carry the 26.8MB WebGPU one.
 
   v3 is a Whisper-tiny encoder, so it does not take audio — it takes the Whisper
   log-Mel of the last 8 seconds (`[1, 80, 800]`, `src/whisper-mel.ts`). The

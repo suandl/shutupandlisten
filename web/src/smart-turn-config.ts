@@ -11,13 +11,12 @@
 //   ?smartTurn=off                    → force the heuristic (A/B the model against it)
 //   ?smartTurnModel=<same-origin url> → override the ONNX model URL
 //
-// There is deliberately no `?smartTurnWasm=`: the ONNX Runtime binaries must match
-// the bundled runtime exactly (provision-smart-turn.mjs copies them from the
-// installed onnxruntime-web for that reason), so pointing them elsewhere at runtime
-// can only break the stage.
+// There is deliberately no `?smartTurnWasm=`: the ONNX Runtime binary is the one the
+// bundler emitted from this app's own onnxruntime-web, so it already matches the
+// runtime exactly — pointing it elsewhere could only break the stage.
 
 import { sanitizeEngineUrl } from './engine-url.ts';
-import { DEFAULT_SMART_TURN_MODEL_URL, DEFAULT_SMART_TURN_WASM_PATH, type SmartTurnOptions } from './smart-turn.ts';
+import { DEFAULT_SMART_TURN_MODEL_URL, type SmartTurnOptions } from './smart-turn.ts';
 
 /** Operator kill-switch values for `?smartTurn=` that force the heuristic. Identical
  *  to the STT/LLM/TTS/denoise off-sets so the harness has one off vocabulary. */
@@ -52,5 +51,5 @@ export function resolveSmartTurnOptions(search: string, base: string): SmartTurn
     }
   }
 
-  return { modelUrl, wasmPath: DEFAULT_SMART_TURN_WASM_PATH };
+  return { modelUrl };
 }

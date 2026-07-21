@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-// Provision the self-hosted smart-turn v3 assets — run at BUILD/DEPLOY, never at app
-// runtime. Downloads the pinned end-of-utterance classifier into web/public/ and
-// copies the matching ONNX Runtime wasm next to it, where Vite copies them into
-// dist/ and the app serves them SAME-ORIGIN (src/smart-turn.ts loads both). This is
-// the deploy-time half of the no-egress design for the EOU stage: the browser never
-// fetches model or runtime cross-origin and no user audio leaves the page.
+// Provision the self-hosted smart-turn v3 model — run at BUILD/DEPLOY, never at app
+// runtime. Downloads the pinned end-of-utterance classifier into web/public/, where
+// Vite copies it into dist/ and the app serves it SAME-ORIGIN (src/smart-turn.ts
+// loads it). This is the deploy-time half of the no-egress design for the EOU stage:
+// the browser never fetches the model cross-origin and no user audio leaves the page.
+//
+// Only the WEIGHTS are provisioned. The runtime (onnxruntime-web) is bundled into
+// the app by Vite, and the adapter points ONNX Runtime at that emitted binary — so
+// it is same-origin and version-coherent by construction, with nothing here that
+// could drift out of lockstep with the lockfile.
 //
 // WHY THIS SCRIPT EXISTS (su-lou.10.1): it did not, which is why the classifier had
 // NEVER RUN — src/smart-turn.ts returned its duration heuristic on every call
@@ -13,9 +17,8 @@
 // feel-test reported.
 //
 // Layout it writes (all gitignored — see web/.gitignore):
-//   public/smart-turn/smart-turn-v3.onnx           the pinned int8 CPU export
-//   public/smart-turn/ort/ort-wasm-simd-threaded.* the CPU/WASM ONNX Runtime
-//   public/smart-turn/manifest.json                what was provisioned (provenance)
+//   public/smart-turn/smart-turn-v3.onnx   the pinned int8 CPU export
+//   public/smart-turn/manifest.json        what was provisioned (provenance)
 //
 // Absent assets are fine: the model fetch 404s (the SPA-fallback guard in
 // src/asset-fallback.ts makes sure that is a real 404 and not index.html — su-lou.7)
@@ -25,13 +28,12 @@
 //
 // Usage:
 //   node scripts/provision-smart-turn.mjs           # provision
-//   node scripts/provision-smart-turn.mjs --force   # re-download/re-copy existing files
+//   node scripts/provision-smart-turn.mjs --force   # re-download an existing file
 // Env override: SMART_TURN_MODEL_FILE (a file in the pinned HF repo, e.g.
 // smart-turn-v3.1-cpu.onnx), SMART_TURN_REPO (HF repo id).
 
-import { copyFile, mkdir, readFile, rename, stat, writeFile, rm } from 'node:fs/promises';
+import { mkdir, rename, stat, writeFile, rm } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
-import { createRequire } from 'node:module';
 import { pipeline as streamPipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { dirname, join, resolve } from 'node:path';
@@ -58,15 +60,6 @@ const UPSTREAM = 'Pipecat smart-turn v3 — https://github.com/pipecat-ai/smart-
 const MODEL_DEST = 'smart-turn-v3.onnx';
 
 const HF_FILE = (repo, rf) => `https://huggingface.co/${repo}/resolve/main/${rf}`;
-
-// ONNX Runtime wasm for the CPU/WASM backend. COPIED from the installed
-// onnxruntime-web rather than downloaded: the JS half is bundled into the app by
-// Vite, so the binaries MUST come from the same version — a CDN pin here could drift
-// out of lockstep with the lockfile and fail at first speech, in the browser, with a
-// wasm magic-number error. src/smart-turn.ts imports `onnxruntime-web/wasm` (the
-// CPU-only build — the default bundle also carries the 2x-larger WebGPU binary, and
-// this stage promises not to touch the GPU the LLM/TTS use).
-const ORT_FILES = ['ort-wasm-simd-threaded.wasm', 'ort-wasm-simd-threaded.mjs'];
 
 function parseArgs(argv) {
   const out = { force: false };
@@ -117,55 +110,13 @@ async function downloadTo(url, dest, { force }) {
   return size;
 }
 
-/** Copy a file out of node_modules (atomic, same shape as downloadTo). */
-async function copyInto(src, dest, { force }) {
-  if (!force && (await exists(dest))) {
-    return (await stat(dest)).size;
-  }
-  await mkdir(dirname(dest), { recursive: true });
-  const tmp = `${dest}.part`;
-  try {
-    await copyFile(src, tmp);
-    await rename(tmp, dest);
-  } catch (err) {
-    await rm(tmp, { force: true }).catch(() => {});
-    throw err;
-  }
-  return (await stat(dest)).size;
-}
-
-/**
- * Locate the installed onnxruntime-web binaries + version (the runtime Vite bundles).
- * Each wasm/mjs file is resolved through the package's OWN exports map — which does
- * not expose ./package.json, so the version is read off the filesystem instead.
- */
-async function ortDist() {
-  const require = createRequire(import.meta.url);
-  const paths = {};
-  for (const f of ORT_FILES) {
-    try {
-      paths[f] = require.resolve(`onnxruntime-web/${f}`, { paths: [WEB_ROOT] });
-    } catch {
-      throw new Error(`onnxruntime-web does not provide ${f} — run \`npm install\` in web/, or check the pinned version`);
-    }
-  }
-  let version = 'unknown';
-  try {
-    const pkgPath = join(dirname(dirname(paths[ORT_FILES[0]])), 'package.json');
-    version = JSON.parse(await readFile(pkgPath, 'utf8')).version;
-  } catch {
-    /* provenance only — a missing version must not fail the provision */
-  }
-  return { paths, version };
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(
       [
-        'Provision the self-hosted smart-turn v3 assets into web/public/smart-turn/',
-        '(the ONNX classifier + the matching CPU/WASM ONNX Runtime). Run at build/deploy.',
+        'Provision the self-hosted smart-turn v3 model into web/public/smart-turn/',
+        '(the ONNX end-of-utterance classifier). Run at build/deploy.',
         '',
         '  node scripts/provision-smart-turn.mjs [--force]',
         '',
@@ -177,7 +128,7 @@ async function main() {
   }
 
   const log = (m) => console.log(m);
-  log(`Provisioning smart-turn assets → ${OUT_DIR} (${REPO}/${MODEL_FILE})${args.force ? ' (--force)' : ''}`);
+  log(`Provisioning the smart-turn model → ${OUT_DIR} (${REPO}/${MODEL_FILE})${args.force ? ' (--force)' : ''}`);
 
   const files = [];
 
@@ -185,15 +136,6 @@ async function main() {
   const modelBytes = await downloadTo(HF_FILE(REPO, MODEL_FILE), modelDest, { force: args.force });
   log(`  ✓ smart-turn/${MODEL_DEST}  ${fmtBytes(modelBytes)}`);
   files.push({ file: `smart-turn/${MODEL_DEST}`, bytes: modelBytes });
-
-  const ort = await ortDist();
-  log(`runtime: onnxruntime-web@${ort.version} (CPU/WASM, copied from node_modules)`);
-  for (const f of ORT_FILES) {
-    const dest = join(OUT_DIR, 'ort', f);
-    const bytes = await copyInto(ort.paths[f], dest, { force: args.force });
-    log(`  ✓ smart-turn/ort/${f}  ${fmtBytes(bytes)}`);
-    files.push({ file: `smart-turn/ort/${f}`, bytes });
-  }
 
   // Manifest = machine-readable provenance (what/where/version), mirroring
   // public/stt/manifest.json. Lives under the gitignored public/smart-turn/.
@@ -205,7 +147,7 @@ async function main() {
     servedAs: `smart-turn/${MODEL_DEST}`,
     upstream: UPSTREAM,
     license: 'BSD-2-Clause (model weights)',
-    onnxruntimeWebVersion: ort.version,
+    runtime: 'onnxruntime-web, bundled with the app (not provisioned)',
     // The front-end contract src/whisper-mel.ts implements; recorded so a future
     // model bump that changes it is caught by reading the manifest, not by a
     // mystery drop in verdict quality.
