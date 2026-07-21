@@ -70,6 +70,8 @@ npm run provision:llm  # build/deploy step: fetch the self-hosted LLM engine +
                        # small instruct-model weights into public/ so the listener replies
 npm run provision:tts  # build/deploy step: fetch the self-hosted TTS engine +
                        # small voice-model weights into public/ so the companion speaks
+npm run provision:smart-turn  # build/deploy step: fetch the smart-turn v3 EOU
+                       # classifier weights so turn-ends are real, not a duration proxy
 
 npm run demo:u6        # record a narrated MP4 that PROVES the U6 warmed loop, driven
                        # against deterministic sim mode (see e2e/README.md)
@@ -102,11 +104,15 @@ Two modes (top bar):
   metrics) mic-lessly — the deterministic substrate the demo-capture engine records
   (`?demo=u6-warmed-loop`; see [`e2e/README.md`](e2e/README.md)).
 - **Microphone** — real Silero VAD + smart-turn on your voice, for the operator
-  feel-test. Models load on first start. STT is **on by default**: on a
-  provisioned deploy (see `npm run provision:stt` above) real speech is
-  transcribed into the **Transcript** panel (see below). With no provisioned
-  assets — or with `?stt=off` — a labelled stub keeps the layout legible. Retune
-  the engine/models per run with query params (see **Component substitutions**).
+  feel-test. Models load on first start. STT and the smart-turn EOU classifier are
+  both **on by default**: on a provisioned deploy (see `npm run provision:stt` and
+  `provision:smart-turn` above) real speech is transcribed into the **Transcript**
+  panel (see below) and real end-of-utterance verdicts drive the veto. With no
+  provisioned assets — or with `?stt=off` / `?smartTurn=off` — a labelled stub and
+  the duration heuristic keep the layout legible. The source line under the
+  controls names the live mode of every stage, e.g. `smart-turn (model)` versus
+  `smart-turn (heuristic)`. Retune the engine/models per run with query params
+  (see **Component substitutions**).
 
 The **Stage** shows the live state, a patience countdown bar (held open visibly
 when the incomplete veto is active), the current turn/verdict/arm, and the
@@ -148,8 +154,11 @@ audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ U
   code. Fully unit-tested by the golden vectors.
 - `src/vad.ts` — microphone adapter (Silero VAD via `@ricky0123/vad-web`); also
   runs smart-turn and STT on each released segment and emits transcripts.
-- `src/smart-turn.ts` — smart-turn v3 adapter (`onnxruntime-web`) + heuristic
-  fallback (see substitutions).
+- `src/smart-turn.ts` — smart-turn v3 adapter (`onnxruntime-web`, CPU/WASM) +
+  duration-heuristic fallback (see substitutions).
+- `src/whisper-mel.ts` — the classifier's input contract: a Whisper-compatible
+  log-Mel front-end (mixed-radix FFT, slaney Mel bank, 8s window), conformance-
+  tested against the canonical transformers.js implementation.
 - `src/stt.ts` / `src/stt.worker.ts` — STT adapter (Moonshine/Whisper in a
   CPU/WASM worker) + labelled stub fallback (see substitutions).
 - `src/transcript.ts` — pure turn-alignment: groups transcribed segments under
@@ -182,14 +191,36 @@ audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ U
 
 ## Component substitutions (per the plan: substitute and note)
 
-- **smart-turn v3 model** — the adapter loads the real ONNX model when a model
-  URL is configured; otherwise it degrades to a transparent **duration
-  heuristic** (short trailing segments read as "incomplete"), and the Stage shows
-  which mode is live. The asymmetric-veto *logic* is identical and fully tested
-  either way; only verdict *quality* depends on the model, which is a tuning
-  concern resolved on real audio during the feel-test. Wiring a specific
-  smart-turn v3 ONNX export (input tensor + mel front-end) is the first task of
-  that tuning pass.
+- **smart-turn v3 model** — wired real and **default-on**, served self-hosted
+  (su-lou.10.1). Until that unit this was the one stage that had never actually
+  run: no provisioner existed, so the adapter's `if (!opts.modelUrl)` guard
+  returned the **duration heuristic** on every call and the 2s silence floor
+  carried all the patience alone. `npm run provision:smart-turn` now fetches
+  [pipecat-ai/smart-turn-v3](https://huggingface.co/pipecat-ai/smart-turn-v3)
+  (pinned to the v3.2 CPU export, 8.3MB int8, BSD-2-Clause) into
+  `public/smart-turn/`. Only the weights are a deploy step: the runtime
+  (`onnxruntime-web`, imported through its CPU-only `/wasm` entrypoint so the GPU
+  stays reserved for the LLM/TTS) is bundled with the app, and the adapter points
+  ONNX Runtime at that emitted binary — same-origin and version-coherent by
+  construction, with no CDN fallback to fall through to. Same no-egress posture as
+  the other stages: `?smartTurnModel=` is accepted same-origin only, and
+  `?smartTurn=off` forces the heuristic so the operator can A/B them. Switching to
+  the CPU-only entrypoint also halved what a deploy ships — dist/ carries a 13.5MB
+  runtime binary where it used to carry the 26.8MB WebGPU one.
+
+  v3 is a Whisper-tiny encoder, so it does not take audio — it takes the Whisper
+  log-Mel of the last 8 seconds (`[1, 80, 800]`, `src/whisper-mel.ts`). The
+  adapter previously sent a nearest-neighbour resample of the raw segment, which
+  would have produced confident nonsense had it ever run; the front-end is
+  conformance-tested against transformers.js's canonical implementation rather
+  than eyeballed. The graph ends in a Sigmoid, so its output is already a
+  probability (double-sigmoiding it would squash every verdict into [0.5, 0.73]
+  and kill the completion-threshold knob).
+
+  An un-provisioned deploy still degrades to the labelled heuristic — but loudly:
+  the adapter warms the graph at load and reports `heuristic` if it cannot score,
+  so a stage claiming `model` while running the fallback cannot hide, and
+  `npm run works-check` fails on it.
 
 - **STT model (Moonshine / Whisper-small)** — wired real and **default-on**,
   served self-hosted. `src/stt.ts` runs STT in a Web Worker (`src/stt.worker.ts`,
@@ -377,12 +408,19 @@ degraded three stages): a standalone, headless proof that the pure-WASM voice
 stages a deploy would ship actually **work**. It builds a probe-only entry
 (`probe.html` → `src/probe.ts`, never part of the production build), serves it
 with `vite preview` on pinned `:4650`, drives a headless Chromium through the
-REAL `createTranscriber`/`createSpeaker` adapters with the app's own config
-resolvers, and asserts each stage (1) loads its real backend — moonshine/whisper
-for STT, `wasm` for TTS, never a labelled stub — and (2) survives a smoke-run
-with non-empty output: a transcript of `test/fixtures/utterance.wav`, audible
-synthesized samples. Load-assert alone is not enough — a stage can load green
-and still degrade per call, so the smoke-run is asserted separately.
+REAL `createTranscriber`/`createSpeaker`/`createSmartTurn` adapters with the
+app's own config resolvers, and asserts each stage (1) loads its real backend —
+moonshine/whisper for STT, `wasm` for TTS, `model` for the smart-turn EOU
+classifier, never a labelled fallback — and (2) survives a smoke-run with usable
+output: a transcript of `test/fixtures/utterance.wav`, audible synthesized
+samples, an in-range completion probability. Load-assert alone is not enough — a
+stage can load green and still degrade per call, so the smoke-run is asserted
+separately.
+
+The EOU stage asserts **liveness, not accuracy**: any probability in [0,1] greens
+it, because WHICH verdict is right is a feel-test question (su-lou.10.5). Its
+cold/warm timings are reported for that unit to use, never gated — a loaded CI
+box is not a regression.
 
 **The listener** (su-lou.9) is checked in two tiers, because its halves cost
 four orders of magnitude apart:
@@ -400,15 +438,13 @@ four orders of magnitude apart:
   is not cross-origin isolated, so ORT runs the WASM backend single-threaded
   (228s to load 1.69G, vs ~52s served with COOP/COEP).
 
-Denoise and smart-turn stay unguarded on purpose: denoise is an AudioWorklet
-over a live mic MediaStream (no mic, no audio graph, headless), and smart-turn
-has no provisioned model at all — nothing sets its `modelUrl`, so `heuristic` is
-the designed state, not a degrade.
+Denoise stays unguarded on purpose: it is an AudioWorklet over a live mic
+MediaStream — no mic, no audio graph, headless.
 
-Prereqs: `npm run provision:stt` + `provision:tts` + `provision:llm`, and a
-Playwright browser (`npx playwright install chromium-headless-shell`). Missing
-prereqs exit as **infra** with the remedy named — never confusable with a code
-regression.
+Prereqs: `npm run provision:stt` + `provision:tts` + `provision:smart-turn` +
+`provision:llm`, and a Playwright browser
+(`npx playwright install chromium-headless-shell`). Missing prereqs exit as
+**infra** with the remedy named — never confusable with a code regression.
 Forensics land in `.works-check/report.json` (probe report, verdict, browser
 console tail). Exit codes are the contract the refinery-side gate consumes;
 scripts/works-verdict.mjs owns the rules and is unit-tested in `npm test`.

@@ -17,11 +17,8 @@
 // The LISTENER stage (su-lou.9) is split in two because its halves cost four orders
 // of magnitude apart: a per-rung weight-availability check that always runs, and an
 // opt-in load+generate. See runListenerAssets / loadListener for why each is shaped
-// that way. Denoise and smart-turn stay unguarded here, deliberately: denoise is an
-// AudioWorklet over a live mic MediaStream (no mic, no Web Audio graph, headless),
-// and smart-turn has no provisioned model AT ALL — no caller sets its modelUrl, so
-// its 'heuristic' mode is the designed state, not a degrade, and gating on 'model'
-// would paint the board red for an unbuilt feature.
+// that way. Denoise stays unguarded here, deliberately: it is an AudioWorklet over a
+// live mic MediaStream (no mic, no Web Audio graph, headless).
 
 import {
   INLINE_WEIGHTS_MIN_BYTES,
@@ -33,9 +30,11 @@ import {
 import { resolveListenerOptions } from './listener-config.ts';
 import { resolveSttOptions } from './stt-config.ts';
 import { resolveTtsOptions } from './tts-config.ts';
+import { resolveSmartTurnOptions } from './smart-turn-config.ts';
 import { createListener } from './listener.ts';
 import { createTranscriber } from './stt.ts';
 import { createSpeaker } from './tts.ts';
+import { createSmartTurn } from './smart-turn.ts';
 
 /** PCM fixture handed in by the driver (decoded from web/test/fixtures/*.wav). */
 export interface ProbeFixture {
@@ -67,6 +66,23 @@ export interface TtsStageReport {
   diagnostics: string[];
   /** Result of synthesizing the smoke sentence; null when the smoke-run never ran. */
   smoke: { mode: string; samples: number; sampleRate: number; rms: number; ms: number } | null;
+  error: string | null;
+}
+
+export interface SmartTurnStageReport {
+  /** Adapter mode after init: 'model' | 'heuristic'. */
+  loadMode: string;
+  loadMs: number;
+  /** The adapter's onDiagnostic lines — names WHY it fell back to the heuristic. */
+  diagnostics: string[];
+  /**
+   * Result of classifying the fixture; null when the smoke-run never ran. `ms` is
+   * the whole verdict (log-Mel front-end + inference) and `warmMs` the same again on
+   * a second call — the steady-state cost a live turn actually pays, which is the
+   * number su-lou.10.5 needs to decide how far the silence floor can drop. Reported,
+   * never gated: a slow CI box is not a regression.
+   */
+  smoke: { mode: string; completionProb: number; ms: number; warmMs: number } | null;
   error: string | null;
 }
 
@@ -110,6 +126,7 @@ export interface ProbeReport {
   version: 1;
   stt: SttStageReport;
   tts: TtsStageReport;
+  smartTurn: SmartTurnStageReport;
   listener: ListenerStageReport;
 }
 
@@ -185,6 +202,46 @@ async function runTts(): Promise<TtsStageReport> {
       };
     } finally {
       speaker.close();
+    }
+  } catch (e) {
+    report.error = errText(e);
+  }
+  return report;
+}
+
+/**
+ * The end-of-utterance classifier (su-lou.10.1). It is in the works-check for the
+ * same reason STT and TTS are: it degrades to a labelled fallback, and until this
+ * unit it had degraded on EVERY run since the file was written because nothing
+ * provisioned a model. The smoke-run classifies the same speech fixture — liveness
+ * (a real model produced a real probability), never a claim about WHICH verdict is
+ * correct, which is a tuning question for the operator feel-test.
+ */
+async function runSmartTurn(fixture: ProbeFixture): Promise<SmartTurnStageReport> {
+  const report: SmartTurnStageReport = { loadMode: 'heuristic', loadMs: 0, diagnostics: [], smoke: null, error: null };
+  try {
+    const t0 = performance.now();
+    const smartTurn = await createSmartTurn({
+      ...resolveSmartTurnOptions(location.search, location.href),
+      onDiagnostic: (m) => report.diagnostics.push(m),
+    });
+    report.loadMode = smartTurn.mode;
+    report.loadMs = Math.round(performance.now() - t0);
+    try {
+      const samples = Float32Array.from(fixture.samples);
+      const t1 = performance.now();
+      const result = await smartTurn.predict(samples, fixture.sampleRate);
+      const ms = Math.round(performance.now() - t1);
+      const t2 = performance.now();
+      await smartTurn.predict(samples, fixture.sampleRate);
+      report.smoke = {
+        mode: result.mode,
+        completionProb: Number(result.completionProb.toFixed(4)),
+        ms,
+        warmMs: Math.round(performance.now() - t2),
+      };
+    } finally {
+      smartTurn.close();
     }
   } catch (e) {
     report.error = errText(e);
@@ -321,8 +378,10 @@ async function run(fixture: ProbeFixture, options: ProbeOptions = {}): Promise<P
     version: 1,
     stt: await runStt(fixture),
     tts: await runTts(),
+    smartTurn: await runSmartTurn(fixture),
     // Loaded LAST: it is by far the largest heap allocation of the run, so leaving
-    // it until stt and tts have closed their sessions keeps it from crowding them.
+    // it until stt, tts and smart-turn have closed their sessions keeps it from
+    // crowding them.
     listener: options.withListener ? await loadListener(listener) : listener,
   };
   // Mirror for humans: the page keeps the full report on screen for anyone

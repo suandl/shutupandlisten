@@ -31,7 +31,7 @@ import type { Plugin } from 'vite';
  * dist/. Kept in lockstep with the gitignored `public/<root>/` trees in .gitignore
  * (asset-fallback.test.ts fails if a new provisioned root is added there but not here).
  */
-export const PROVISIONED_ASSET_ROOTS = ['/models/', '/stt/', '/llm/', '/tts/', '/denoise/'];
+export const PROVISIONED_ASSET_ROOTS = ['/models/', '/stt/', '/llm/', '/tts/', '/denoise/', '/smart-turn/'];
 
 /** True when `pathname` targets one of the provisioned asset trees. */
 export function isProvisionedAssetPath(pathname: string): boolean {

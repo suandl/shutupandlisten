@@ -40,15 +40,13 @@
 //                     check never reads like a passed one.
 //
 // Deliberately still unguarded: denoise (an AudioWorklet over a live mic
-// MediaStream — no mic and no audio graph in this browser) and smart-turn (no
-// provisioned model exists at all; nothing sets its modelUrl, so 'heuristic' is the
-// designed state, not a degrade).
+// MediaStream — no mic and no audio graph in this browser).
 //
 // Prerequisite: provisioned assets (`npm run provision:stt` + `provision:tts` +
-// `provision:llm`) and a Playwright browser (`npx playwright install
-// chromium-headless-shell`). Both are checked up front and reported as INFRA with
-// the remedy, never as a regression — "not provisioned" and "broken" must not be
-// confusable.
+// `provision:smart-turn` + `provision:llm`) and a Playwright browser
+// (`npx playwright install chromium-headless-shell`). Both are checked up front and
+// reported as INFRA with the remedy, never as a regression — "not provisioned" and
+// "broken" must not be confusable.
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync, linkSync, copyFileSync } from 'node:fs';
@@ -60,6 +58,7 @@ import { chromium } from 'playwright';
 import { DEFAULT_LLM_MODEL } from '../src/listener.ts';
 import { DEFAULT_MOONSHINE_MODEL, DEFAULT_WHISPER_MODEL } from '../src/stt.ts';
 import { DEFAULT_TTS_MODEL } from '../src/tts.ts';
+import { DEFAULT_SMART_TURN_MODEL_URL } from '../src/smart-turn.ts';
 import { WORKS_CHECK_PORT, WORKS_CHECK_OUT_DIR } from '../vite.works-check.config.ts';
 import { parseWavPcm16 } from './wav.mjs';
 import { EXIT_INFRA, evaluateReport, exitCodeFor, summarizeVerdict } from './works-verdict.mjs';
@@ -91,12 +90,16 @@ const LISTENER_RUN_TIMEOUT_MS = 900000;
  *  whole run — hold a little headroom over what's written and drop the rest. */
 const CONSOLE_LINES_MAX = 200;
 
-/** The provisioned trees each stage needs, with the remedy to name when absent. */
+/** The provisioned trees each stage needs, with the remedy to name when absent.
+ *  Paths are derived from the app's OWN default URLs where one exists, so a moved
+ *  asset fails at the preflight with a remedy instead of mid-run as a mystery
+ *  degrade. */
 const REQUIRED_ASSETS = [
   { rel: 'public/stt/transformers/transformers.min.js', remedy: 'npm run provision:stt' },
   { rel: `public/models/${DEFAULT_MOONSHINE_MODEL}`, remedy: 'npm run provision:stt' },
   { rel: 'public/tts/transformers/transformers.min.js', remedy: 'npm run provision:tts' },
   { rel: `public/models/${DEFAULT_TTS_MODEL}`, remedy: 'npm run provision:tts' },
+  { rel: `public${DEFAULT_SMART_TURN_MODEL_URL}`, remedy: 'npm run provision:smart-turn' },
   // The listener tree is REQUIRED even for a weights-only run: absent, the check
   // cannot tell "the ladder asks for a variant nobody ships" (a regression) from
   // "nobody ran provision:llm" (infra), and those must never be confusable.
@@ -117,6 +120,7 @@ const SERVED_ASSETS = [
   { rel: `models/${DEFAULT_MOONSHINE_MODEL}`, required: true },
   { rel: `models/${DEFAULT_WHISPER_MODEL}`, required: false },
   { rel: `models/${DEFAULT_TTS_MODEL}`, required: true },
+  { rel: 'smart-turn', required: true },
   { rel: `models/${DEFAULT_LLM_MODEL}`, required: true },
 ];
 
@@ -375,11 +379,20 @@ async function main() {
     // main().catch, and reclassify that loud failure as a retryable EXIT_INFRA.
     const stt = report?.stt ?? {};
     const tts = report?.tts ?? {};
+    const smartTurn = report?.smartTurn ?? {};
     const listener = report?.listener ?? {};
     log('');
     log(`  stt: load=${stt.loadMode} (${stt.loadMs}ms) smoke=${stt.smoke ? `${stt.smoke.mode} "${(stt.smoke.text ?? '').slice(0, 60)}" (${stt.smoke.ms}ms)` : 'none'}`);
     log(`  tts: load=${tts.loadMode} (${tts.loadMs}ms) smoke=${tts.smoke ? `${tts.smoke.mode} ${tts.smoke.samples} samples @${tts.smoke.sampleRate}Hz rms=${tts.smoke.rms} (${tts.smoke.ms}ms)` : 'none'}`);
     for (const d of tts.diagnostics ?? []) log(`       ${d}`);
+    log(
+      `  eou: load=${smartTurn.loadMode} (${smartTurn.loadMs}ms) smoke=${
+        smartTurn.smoke
+          ? `${smartTurn.smoke.mode} P(complete)=${smartTurn.smoke.completionProb} (${smartTurn.smoke.ms}ms cold, ${smartTurn.smoke.warmMs}ms warm)`
+          : 'none'
+      }`,
+    );
+    for (const d of smartTurn.diagnostics ?? []) log(`       ${d}`);
     // Print every rung's weight status, loaded or not: it is the only line that says
     // anything about the webgpu rung this headless browser can never execute.
     for (const a of listener.assets ?? []) {

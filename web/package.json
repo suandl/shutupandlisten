@@ -14,6 +14,7 @@
     "provision:llm": "node scripts/provision-llm.mjs",
     "provision:tts": "node scripts/provision-tts.mjs",
     "provision:denoise": "node scripts/provision-denoise.mjs",
+    "provision:smart-turn": "node scripts/provision-smart-turn.mjs",
     "measure": "node src/measure.ts",
     "demo:capture": "node e2e/capture.ts",
     "demo:u6": "node e2e/capture.ts e2e/demos/u6-warmed-loop.md",
