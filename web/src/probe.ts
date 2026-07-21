@@ -16,8 +16,10 @@
 
 import { resolveSttOptions } from './stt-config.ts';
 import { resolveTtsOptions } from './tts-config.ts';
+import { resolveSmartTurnOptions } from './smart-turn-config.ts';
 import { createTranscriber } from './stt.ts';
 import { createSpeaker } from './tts.ts';
+import { createSmartTurn } from './smart-turn.ts';
 
 /** PCM fixture handed in by the driver (decoded from web/test/fixtures/*.wav). */
 export interface ProbeFixture {
@@ -46,10 +48,22 @@ export interface TtsStageReport {
   error: string | null;
 }
 
+export interface SmartTurnStageReport {
+  /** Adapter mode after init: 'model' | 'heuristic'. */
+  loadMode: string;
+  loadMs: number;
+  /** The adapter's onDiagnostic lines — names WHY it fell back to the heuristic. */
+  diagnostics: string[];
+  /** Result of classifying the fixture; null when the smoke-run never ran. */
+  smoke: { mode: string; completionProb: number; ms: number } | null;
+  error: string | null;
+}
+
 export interface ProbeReport {
   version: 1;
   stt: SttStageReport;
   tts: TtsStageReport;
+  smartTurn: SmartTurnStageReport;
 }
 
 /** What the TTS smoke-run speaks. Content is irrelevant — liveness, not accuracy. */
@@ -114,7 +128,42 @@ async function runTts(): Promise<TtsStageReport> {
 }
 
 /**
- * Run both stages sequentially (they share the CPU/WASM budget — parallel loads
+ * The end-of-utterance classifier (su-lou.10.1). It is in the works-check for the
+ * same reason STT and TTS are: it degrades to a labelled fallback, and until this
+ * unit it had degraded on EVERY run since the file was written because nothing
+ * provisioned a model. The smoke-run classifies the same speech fixture — liveness
+ * (a real model produced a real probability), never a claim about WHICH verdict is
+ * correct, which is a tuning question for the operator feel-test.
+ */
+async function runSmartTurn(fixture: ProbeFixture): Promise<SmartTurnStageReport> {
+  const report: SmartTurnStageReport = { loadMode: 'heuristic', loadMs: 0, diagnostics: [], smoke: null, error: null };
+  try {
+    const t0 = performance.now();
+    const smartTurn = await createSmartTurn({
+      ...resolveSmartTurnOptions(location.search, location.href),
+      onDiagnostic: (m) => report.diagnostics.push(m),
+    });
+    report.loadMode = smartTurn.mode;
+    report.loadMs = Math.round(performance.now() - t0);
+    try {
+      const t1 = performance.now();
+      const result = await smartTurn.predict(Float32Array.from(fixture.samples), fixture.sampleRate);
+      report.smoke = {
+        mode: result.mode,
+        completionProb: Number(result.completionProb.toFixed(4)),
+        ms: Math.round(performance.now() - t1),
+      };
+    } finally {
+      smartTurn.close();
+    }
+  } catch (e) {
+    report.error = errText(e);
+  }
+  return report;
+}
+
+/**
+ * Run the stages sequentially (they share the CPU/WASM budget — parallel loads
  * would contend and distort the load-time numbers the report carries).
  */
 async function run(fixture: ProbeFixture): Promise<ProbeReport> {
@@ -122,6 +171,7 @@ async function run(fixture: ProbeFixture): Promise<ProbeReport> {
     version: 1,
     stt: await runStt(fixture),
     tts: await runTts(),
+    smartTurn: await runSmartTurn(fixture),
   };
   // Mirror for humans: the page keeps the full report on screen for anyone
   // driving the probe by hand, and the console line survives in the

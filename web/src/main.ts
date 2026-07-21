@@ -15,6 +15,7 @@ import {
 import { MicAudioSource, type AudioSource } from './vad.ts';
 import { SimAudioSource, SIM_SCRIPTS, DEMO_SCRIPTS, findDemoScript, type SimScript } from './simulator.ts';
 import { resolveSttOptions } from './stt-config.ts';
+import { resolveSmartTurnOptions } from './smart-turn-config.ts';
 import { resolveDenoiseOptions } from './denoise-config.ts';
 import {
   groupTranscript,
@@ -50,6 +51,14 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 // URL query retunes it for the feel-test without a code edit:
 //   ?stt=off  ·  ?sttEngine=<same-origin url>  ·  ?sttModel=<id>  ·  ?sttFallback=<id>
 const sttOptions = resolveSttOptions(location.search, location.href);
+
+// smart-turn (end-of-utterance) config — su-lou.10.1. Same shape as the rest:
+// the self-hosted classifier when provisioned (`npm run provision:smart-turn`),
+// the labelled duration heuristic otherwise. Until this unit there was no
+// provisioner at all, so the heuristic was the ONLY thing that ever ran and the
+// silence floor carried all the patience alone. Retunable per run:
+//   ?smartTurn=off  ·  ?smartTurnModel=<same-origin url>
+const smartTurnOptions = resolveSmartTurnOptions(location.search, location.href);
 
 // Denoise config — background-noise increment 2. An on-device denoise stage
 // ahead of the VAD (self-hosted same-origin engine when provisioned; passthrough
@@ -384,7 +393,10 @@ async function switchMode(next: 'sim' | 'mic'): Promise<void> {
   liveListenerMode = null;
   liveSpeakerMode = null;
   mode = next;
-  audio = next === 'mic' ? new MicAudioSource({ now, vadKnobs, sttOptions, denoiseOptions }) : new SimAudioSource(now);
+  audio =
+    next === 'mic'
+      ? new MicAudioSource({ now, vadKnobs, smartTurnOptions, sttOptions, denoiseOptions })
+      : new SimAudioSource(now);
   wireAudio(audio);
   resetTranscript();
   $('mode')

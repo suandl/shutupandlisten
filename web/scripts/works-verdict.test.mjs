@@ -10,6 +10,9 @@
 //      is caught by the separate smoke-run assertion
 //   4. 'sim' words and a surprise 'webgpu' voice never green the WASM gate
 //   5. a malformed/partial report fails the missing stage, never silently passes
+//   6. the smart-turn EOU stage (su-lou.10.1) is held to the same rules: the
+//      `heuristic` fallback — which is what EVERY session ran before a model was
+//      provisioned — must never green the gate
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -35,6 +38,14 @@ function healthyReport(overrides = {}) {
       error: null,
       ...(overrides.tts ?? {}),
     },
+    smartTurn: {
+      loadMode: 'model',
+      loadMs: 900,
+      diagnostics: [],
+      smoke: { mode: 'model', completionProb: 0.7434, ms: 60 },
+      error: null,
+      ...(overrides.smartTurn ?? {}),
+    },
   };
 }
 
@@ -46,6 +57,7 @@ test('fully-live report passes with exit 0', () => {
   assert.deepEqual(verdict.failures, []);
   assert.equal(exitCodeFor(verdict), EXIT_PASS);
   assert.match(summarizeVerdict(verdict), /^WORKS-CHECK PASS/);
+  assert.match(summarizeVerdict(verdict), /smart-turn/);
 });
 
 test('whisper fallback is a real backend and passes R2', () => {
@@ -136,16 +148,79 @@ test('a probe-level stage error is a named failure, never a pass', () => {
   assert.match(verdict.failures[0].reason, /probe error: createTranscriber threw/);
 });
 
-test('a malformed report fails both stages rather than silently passing', () => {
+test('a malformed report fails every stage rather than silently passing', () => {
   for (const bad of [null, undefined, {}, { version: 1 }]) {
     const verdict = evaluateReport(bad);
     assert.equal(verdict.pass, false);
-    assert.deepEqual(failedStages(verdict).sort(), ['stt', 'tts']);
+    assert.deepEqual(failedStages(verdict).sort(), ['smart-turn', 'stt', 'tts']);
   }
 });
 
 test('a missing smoke result fails the stage', () => {
-  const verdict = evaluateReport(healthyReport({ stt: { smoke: null }, tts: { smoke: null } }));
+  const verdict = evaluateReport(
+    healthyReport({ stt: { smoke: null }, tts: { smoke: null }, smartTurn: { smoke: null } }),
+  );
   assert.equal(verdict.pass, false);
-  assert.deepEqual(failedStages(verdict).sort(), ['stt', 'tts']);
+  assert.deepEqual(failedStages(verdict).sort(), ['smart-turn', 'stt', 'tts']);
+});
+
+// ── smart-turn (su-lou.10.1) ──────────────────────────────────────────────────
+
+test('the heuristic EOU fallback is a regression naming smart-turn', () => {
+  // This is what main looked like for the whole life of the file: no provisioner,
+  // so `if (!opts.modelUrl) return heuristic` took every call and the 2s silence
+  // floor carried all the patience alone. The gate now says so out loud.
+  const verdict = evaluateReport(
+    healthyReport({
+      smartTurn: {
+        loadMode: 'heuristic',
+        diagnostics: ['[smart-turn] model failed to load (404) — using the duration heuristic'],
+        smoke: { mode: 'heuristic', completionProb: 0.83, ms: 1 },
+      },
+    }),
+  );
+  assert.equal(verdict.pass, false);
+  assert.deepEqual(failedStages(verdict), ['smart-turn']);
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+  const summary = summarizeVerdict(verdict);
+  assert.match(summary, /^WORKS-CHECK REGRESSION: smart-turn /);
+  assert.match(summary, /404/, 'the adapter diagnosis must reach the one-line verdict');
+});
+
+test('an EOU load that greens while the per-call path degrades still fails (R4)', () => {
+  const verdict = evaluateReport(
+    healthyReport({ smartTurn: { smoke: { mode: 'heuristic', completionProb: 0.83, ms: 1 } } }),
+  );
+  assert.equal(verdict.pass, false);
+  assert.deepEqual(failedStages(verdict), ['smart-turn']);
+  assert.match(verdict.failures[0].reason, /smoke-run degraded/);
+});
+
+test('a NaN or out-of-range probability is not a working classifier', () => {
+  for (const completionProb of [NaN, -0.1, 1.5, 'yes', undefined]) {
+    const verdict = evaluateReport(
+      healthyReport({ smartTurn: { smoke: { mode: 'model', completionProb, ms: 40 } } }),
+    );
+    assert.equal(verdict.pass, false, `completionProb=${completionProb} must not pass`);
+    assert.match(verdict.failures[0].reason, /no usable probability/);
+  }
+});
+
+test('the EOU gate asserts liveness, not WHICH verdict is right', () => {
+  // Both extremes are legitimate model output — a confident "complete" on a finished
+  // sentence and a confident "incomplete" mid-thought. Accuracy is a feel-test
+  // question (su-lou.10.5), so the gate must green either.
+  for (const completionProb of [0, 0.0292, 0.5, 1]) {
+    const verdict = evaluateReport(
+      healthyReport({ smartTurn: { smoke: { mode: 'model', completionProb, ms: 40 } } }),
+    );
+    assert.equal(verdict.pass, true, `completionProb=${completionProb} should pass`);
+  }
+});
+
+test('a probe-level smart-turn error is a named failure', () => {
+  const verdict = evaluateReport(healthyReport({ smartTurn: { error: 'createSmartTurn threw: boom' } }));
+  assert.equal(verdict.pass, false);
+  assert.deepEqual(failedStages(verdict), ['smart-turn']);
+  assert.match(verdict.failures[0].reason, /probe error: createSmartTurn threw/);
 });

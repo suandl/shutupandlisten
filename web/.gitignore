@@ -11,15 +11,18 @@ dist/
 # `npm run provision:stt` (STT: transformers.js engine + ONNX Runtime wasm +
 # Moonshine/Whisper weights), `npm run provision:llm` (U5 listener: engine +
 # the small instruct-model weights), `npm run provision:tts` (U6 voice: engine +
-# the small TTS-model weights), and `npm run provision:denoise` (background-noise
-# increment 2: the RNNoise AudioWorklet + wasm). Never committed: large binaries,
-# and the no-egress design serves them same-origin from public/ → dist/. Absent →
-# the adapters use their labelled stubs (the TTS adapter a placeholder tone, the
-# denoise adapter passthrough). The committed public/stt-engine.js,
+# the small TTS-model weights), `npm run provision:denoise` (background-noise
+# increment 2: the RNNoise AudioWorklet + wasm), and
+# `npm run provision:smart-turn` (the smart-turn v3 EOU classifier + its CPU/WASM
+# ONNX Runtime). Never committed: large binaries, and the no-egress design serves
+# them same-origin from public/ → dist/. Absent → the adapters use their labelled
+# stubs (the TTS adapter a placeholder tone, the denoise adapter passthrough, the
+# EOU adapter its duration heuristic). The committed public/stt-engine.js,
 # public/llm-engine.js, public/tts-engine.js and public/denoise-engine.js
 # wrappers are NOT under these paths. public/models/ is the shared weight tree.
 public/stt/
 public/llm/
 public/tts/
 public/denoise/
+public/smart-turn/
 public/models/

@@ -2,8 +2,9 @@
 //
 // The probe page (src/probe.ts) reports FACTS (modes, texts, sample counts); this
 // module decides what they MEAN, per the plan's requirements: each stage must
-// report its REAL backend, not a stub (origin R2 for STT, R3 for TTS), and each
-// must survive a smoke-run with non-empty output — liveness, not accuracy (R4).
+// report its REAL backend, not a stub (origin R2 for STT, R3 for TTS, and the same
+// rule extended to the smart-turn EOU classifier in su-lou.10.1), and each must
+// survive a smoke-run with non-empty output — liveness, not accuracy (R4).
 // Split from the driver so the rules are unit-testable without a browser
 // (works-verdict.test.mjs), and so the exit-0 path is covered even while the gate
 // is expected red on main (su-lou.8's TTS stub is open by design until its fix
@@ -32,8 +33,13 @@ const REAL_STT_MODES = new Set(['moonshine', 'whisper']);
  *  the plan's scope assumption broke — fail loudly and revisit, don't green. */
 const REAL_TTS_MODE = 'wasm';
 
+/** The one real smart-turn mode (su-lou.10.1). 'heuristic' is the labelled degrade
+ *  — the duration proxy that ran for EVERY session before a model was provisioned,
+ *  which is exactly the silent-fallback class this gate exists to catch. */
+const REAL_SMART_TURN_MODE = 'model';
+
 /**
- * @typedef {{ stage: 'stt' | 'tts', reason: string }} Failure
+ * @typedef {{ stage: 'stt' | 'tts' | 'smart-turn', reason: string }} Failure
  * @typedef {{ pass: boolean, failures: Failure[] }} Verdict
  */
 
@@ -98,6 +104,46 @@ export function evaluateReport(report) {
     }
   }
 
+  const smartTurn = report?.smartTurn;
+  if (!smartTurn || typeof smartTurn !== 'object') {
+    failures.push({ stage: 'smart-turn', reason: 'probe returned no smart-turn report' });
+  } else if (smartTurn.error) {
+    failures.push({ stage: 'smart-turn', reason: `probe error: ${smartTurn.error}` });
+  } else {
+    // As with TTS, fold the adapter's diagnostics into the reason so "the model
+    // 404s" and "the model loaded but scores nothing" are told apart at a glance.
+    const diag =
+      Array.isArray(smartTurn.diagnostics) && smartTurn.diagnostics.length > 0 ? ` — ${smartTurn.diagnostics.join(' | ')}` : '';
+    if (smartTurn.loadMode !== REAL_SMART_TURN_MODE) {
+      failures.push({
+        stage: 'smart-turn',
+        reason: `loaded mode '${smartTurn.loadMode}' is not the real EOU classifier (R2)${diag}`,
+      });
+    }
+    if (!smartTurn.smoke) {
+      failures.push({ stage: 'smart-turn', reason: 'smoke-run never produced a verdict' });
+    } else if (smartTurn.smoke.mode !== REAL_SMART_TURN_MODE) {
+      // The load can go green while the per-call path degrades — the same false-green
+      // the TTS stage proved is real, and the likelier failure here: a front-end or
+      // shape mismatch throws inside predict() and the adapter answers with the
+      // heuristic while `.mode` still says model.
+      failures.push({ stage: 'smart-turn', reason: `smoke-run degraded to '${smartTurn.smoke.mode}' (R4)${diag}` });
+    } else if (
+      typeof smartTurn.smoke.completionProb !== 'number' ||
+      !Number.isFinite(smartTurn.smoke.completionProb) ||
+      smartTurn.smoke.completionProb < 0 ||
+      smartTurn.smoke.completionProb > 1
+    ) {
+      // Liveness, not accuracy: WHICH verdict is right is a feel-test question. A
+      // NaN or out-of-range score, though, means the output mapping is broken —
+      // a model whose probability is nonsense is not a working stage.
+      failures.push({
+        stage: 'smart-turn',
+        reason: `smoke-run returned no usable probability (completionProb=${smartTurn.smoke.completionProb}) (R4)`,
+      });
+    }
+  }
+
   return { pass: failures.length === 0, failures };
 }
 
@@ -113,7 +159,7 @@ export function exitCodeFor(verdict) {
  * @param {Verdict} verdict @returns {string}
  */
 export function summarizeVerdict(verdict) {
-  if (verdict.pass) return 'WORKS-CHECK PASS: stt + tts report real backends and non-empty smoke output';
+  if (verdict.pass) return 'WORKS-CHECK PASS: stt + tts + smart-turn report real backends and non-empty smoke output';
   const byStage = new Map();
   for (const f of verdict.failures) {
     if (!byStage.has(f.stage)) byStage.set(f.stage, []);
