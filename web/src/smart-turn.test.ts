@@ -212,6 +212,69 @@ test('a wedged session times out instead of holding the turn open', async () => 
   st.close();
 });
 
+test('a session that keeps failing is ABANDONED, not degraded forever behind a `model` mode', async () => {
+  // The bug this closes: a wedged session degrades EVERY call after the first (the
+  // stalled run holds the thread, so later calls queue and time out too), yet the old
+  // adapter reported one warn line and kept claiming `model` while every verdict came
+  // from the heuristic — a stage dead behind a mode nobody rechecked (su-lou.7/.8/.9).
+  const diagnostics: string[] = [];
+  const fake = fakeClassifier(async () => {
+    throw new Error('shape mismatch'); // warms healthily, then fails every call
+  });
+  const st = await createSmartTurn({
+    createClassifier: async () => fake.classifier,
+    onDiagnostic: (m) => diagnostics.push(m),
+  });
+  assert.equal(st.mode, 'model');
+
+  // Three consecutive failures (the escalation threshold) is enough to give up.
+  for (let i = 0; i < 3; i++) assert.equal((await st.predict(segment(1200), SR)).mode, 'heuristic');
+
+  assert.equal(st.mode, 'heuristic', 'after abandonment `mode` tells the truth: the heuristic is running');
+  assert.equal(fake.closedCount(), 1, 'the abandoned session is released, not left wedged on the thread');
+  assert.equal(diagnostics.filter((m) => /abandoning/.test(m)).length, 1, 'the abandonment is named, once');
+
+  // A later call must not touch the dead classifier again — that is what stops piling
+  // fresh calls onto a wedged session.
+  const before = fake.predictCalls();
+  const r = await st.predict(segment(1200), SR);
+  assert.equal(r.mode, 'heuristic');
+  assert.equal(fake.predictCalls(), before, 'no further calls reach the abandoned classifier');
+  assert.equal(diagnostics.filter((m) => /abandoning/.test(m)).length, 1, 'escalation is reported once, ever');
+  st.close();
+  assert.equal(fake.closedCount(), 1, 'close() on an already-abandoned adapter does not double-release');
+});
+
+test('a clean verdict resets the failure run, so scattered failures never escalate', async () => {
+  // Escalation keys on CONSECUTIVE failures, not a lifetime tally: a lone slow call
+  // between healthy ones is not a dead session, so four total failures that never run
+  // three-in-a-row must leave the model live.
+  const diagnostics: string[] = [];
+  let closed = 0;
+  let calls = 0;
+  const fails = new Set([2, 3, 5, 6]); // call 1 warms; call 4 is a healthy verdict that resets
+  const st = await createSmartTurn({
+    createClassifier: async () => ({
+      run: async () => {
+        calls++;
+        if (fails.has(calls)) throw new Error('transient stall');
+        return [0.8];
+      },
+      close() {
+        closed++;
+      },
+    }),
+    onDiagnostic: (m) => diagnostics.push(m),
+  });
+
+  for (let i = 0; i < 5; i++) await st.predict(segment(1200), SR); // fail, fail, success, fail, fail
+
+  assert.equal(st.mode, 'model', 'the model was never three-in-a-row down, so it is not abandoned');
+  assert.equal(closed, 0, 'a live session is not released mid-run');
+  assert.equal(diagnostics.filter((m) => /abandoning/.test(m)).length, 0, 'no escalation without a consecutive run');
+  st.close();
+});
+
 test('audio at the wrong rate degrades loudly rather than being silently resampled', async () => {
   const diagnostics: string[] = [];
   const fake = fakeClassifier([0.9]);

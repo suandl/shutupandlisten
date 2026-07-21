@@ -192,11 +192,44 @@ export async function createSmartTurn(opts: SmartTurnOptions = {}): Promise<Smar
   }
 
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  // A wedged ORT session does not degrade ONE call — it degrades every call after it.
+  // The stalled WASM run keeps the thread, so later inferences queue behind it and
+  // time out too; the load-time warmup by construction cannot catch a session that
+  // dies mid-flight. Reporting only the first failure and still swearing `model`
+  // while every verdict silently comes from the heuristic is precisely the false-green
+  // su-lou.7/.8/.9 each turned out to be — a stage dead behind a mode nobody rechecked.
+  //
+  // So count CONSECUTIVE failures and, once the session has plainly stopped
+  // recovering, ABANDON it: close it, say so once, and route every later call
+  // straight to the heuristic without touching the classifier again — which also
+  // stops piling fresh calls onto the wedged thread. A single clean verdict resets
+  // the count: one slow call is not a dead session, and only a run of them is.
+  const MAX_CONSECUTIVE_FAILURES = 3;
+
   let degraded = false; // report a per-call degrade once, not once per utterance
+  let abandoned = false; // the session was given up on — every verdict is the heuristic now
+  let consecutiveFailures = 0;
+
+  const closeClassifier = () => {
+    try {
+      classifier.close();
+    } catch {
+      /* already gone */
+    }
+  };
 
   return {
-    mode: 'model',
+    // `mode` must track reality, not the load-time hope: after abandonment every
+    // verdict is the heuristic's, so a consumer that reads it (probe.ts, the
+    // works-check) sees the truth. vad.ts reads it once at mic start and keeps the
+    // honest load-time value — acceptable, because the per-result mode below still
+    // tells the truth on every single call.
+    get mode(): SmartTurnMode {
+      return abandoned ? 'heuristic' : 'model';
+    },
     async predict(audio: Float32Array, sampleRate: number): Promise<SmartTurnResult> {
+      if (abandoned) return heuristic.predict(audio, sampleRate);
       try {
         if (sampleRate !== SAMPLE_RATE) {
           // The VAD hands segments over at exactly 16kHz; resampling silently here
@@ -205,21 +238,24 @@ export async function createSmartTurn(opts: SmartTurnOptions = {}): Promise<Smar
         }
         const features = whisperFeatures(audio);
         const data = await withTimeout(classifier.run(features), timeoutMs);
-        return { completionProb: completionProbFrom(data), mode: 'model' };
+        const completionProb = completionProbFrom(data); // throws before we count it a success
+        consecutiveFailures = 0; // a clean verdict clears the run — the session lives
+        return { completionProb, mode: 'model' };
       } catch (err) {
         if (!degraded) {
           degraded = true;
           diag(opts, `classification failed (${errText(err)})`);
         }
+        if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          abandoned = true;
+          closeClassifier();
+          diag(opts, `${MAX_CONSECUTIVE_FAILURES} consecutive failures — abandoning the model for this session`);
+        }
         return heuristic.predict(audio, sampleRate);
       }
     },
     close() {
-      try {
-        classifier.close();
-      } catch {
-        /* already gone */
-      }
+      if (!abandoned) closeClassifier();
     },
   };
 }
