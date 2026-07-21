@@ -45,7 +45,8 @@ const PUBLIC = join(WEB_ROOT, 'public');
 const OUT_DIR = join(PUBLIC, 'smart-turn');
 
 // Adopted classifier: Pipecat smart-turn v3 (BSD-2-Clause) — a Whisper-tiny encoder
-// plus a shallow classifier head, 8M params, int8 ONNX, ~12ms on CPU.
+// plus a shallow classifier head, 8M params, int8 ONNX. The model card's ~12ms is
+// NATIVE CPU; in browser wasm the whole verdict measures ~270ms (see src/vad.ts).
 // https://huggingface.co/pipecat-ai/smart-turn-v3
 //
 // Pinned to the v3.2 CPU export: the newest of the v3.x line and the same 8.7MB int8
