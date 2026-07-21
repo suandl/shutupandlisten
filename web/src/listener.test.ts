@@ -151,3 +151,77 @@ test('a worker factory that throws → stub', async () => {
   });
   assert.equal(l.mode, 'stub');
 });
+
+// ── diagnosability (su-lou.9) ──
+//
+// The listener used to degrade in total silence: the worker posts a `reason` for a
+// failed load and the adapter dropped it, so "no WebGPU adapter", "the weights
+// 404ed" and "nobody provisioned anything" all surfaced as the same stub text. That
+// is how this bug reached an operator feel-test with no evidence to debug — and why
+// the root cause filed against it (an fp32 model.onnx 404) turned out to be wrong.
+// TTS learned the same lesson as su-lou.7; these lock it in on this side.
+
+test('a failed load reports the worker reason instead of stubbing silently', async () => {
+  const seen: string[] = [];
+  const w = new FakeWorker();
+  const reason = "no model loaded (webgpu/q4f16: skipped — no WebGPU adapter with 'shader-f16'; wasm/q4: OOM)";
+  w.onInit = () => queueMicrotask(() => w.emit('message', { type: 'error', reason }));
+
+  const l = await createListener({ createWorker: () => w, model: 'x', onDiagnostic: (m) => seen.push(m) });
+  assert.equal(l.mode, 'stub');
+  assert.equal(seen.length, 1);
+  assert.match(seen[0], /^\[listener\] /);
+  assert.match(seen[0], /shader-f16/); // the rung-by-rung causes survive the trip
+  assert.match(seen[0], /labelled stub/);
+});
+
+test('an init timeout names itself', async () => {
+  const seen: string[] = [];
+  const w = new FakeWorker(); // never answers
+  const l = await createListener({ createWorker: () => w, model: 'x', initTimeoutMs: 20, onDiagnostic: (m) => seen.push(m) });
+  assert.equal(l.mode, 'stub');
+  assert.equal(seen.length, 1);
+  assert.match(seen[0], /timed out after 20ms/);
+});
+
+test('an unusable handshake mode is reported, not silently accepted', async () => {
+  const seen: string[] = [];
+  const w = new FakeWorker();
+  w.onInit = () => queueMicrotask(() => w.emit('message', { type: 'ready', mode: 'quantum' }));
+  const l = await createListener({ createWorker: () => w, model: 'x', onDiagnostic: (m) => seen.push(m) });
+  assert.equal(l.mode, 'stub');
+  assert.match(seen[0], /unusable device mode \(quantum\)/);
+});
+
+test('a healthy load exposes its dtype and reports the rungs it skipped', async () => {
+  const seen: string[] = [];
+  const w = new FakeWorker();
+  w.onInit = () =>
+    queueMicrotask(() =>
+      w.emit('message', {
+        type: 'ready',
+        mode: 'wasm',
+        dtype: 'q4',
+        notes: ["webgpu/q4f16: skipped — no WebGPU adapter with 'shader-f16'"],
+      }),
+    );
+
+  const l = await createListener({ createWorker: () => w, model: 'x', onDiagnostic: (m) => seen.push(m) });
+  assert.equal(l.mode, 'wasm');
+  // Two rungs both report mode 'wasm'/'webgpu'; only the dtype says WHICH weights.
+  assert.equal(l.dtype, 'q4');
+  // Reported even though the load SUCCEEDED — landing on the slow rung is news.
+  assert.equal(seen.length, 1);
+  assert.match(seen[0], /loaded wasm\/q4 after skipping/);
+  assert.match(seen[0], /shader-f16/);
+});
+
+test('a clean load on the top rung stays quiet', async () => {
+  const seen: string[] = [];
+  const w = new FakeWorker();
+  w.onInit = () => queueMicrotask(() => w.emit('message', { type: 'ready', mode: 'webgpu', dtype: 'q4f16', notes: [] }));
+  const l = await createListener({ createWorker: () => w, model: 'x', onDiagnostic: (m) => seen.push(m) });
+  assert.equal(l.mode, 'webgpu');
+  assert.equal(l.dtype, 'q4f16');
+  assert.deepEqual(seen, []);
+});

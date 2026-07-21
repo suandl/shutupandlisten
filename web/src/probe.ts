@@ -13,9 +13,27 @@
 // driver can always classify (a page-level crash would be indistinguishable from
 // infra). Verdicts live in scripts/works-verdict.mjs, not here: the page reports
 // facts, the check decides.
+//
+// The LISTENER stage (su-lou.9) is split in two because its halves cost four orders
+// of magnitude apart: a per-rung weight-availability check that always runs, and an
+// opt-in load+generate. See runListenerAssets / loadListener for why each is shaped
+// that way. Denoise and smart-turn stay unguarded here, deliberately: denoise is an
+// AudioWorklet over a live mic MediaStream (no mic, no Web Audio graph, headless),
+// and smart-turn has no provisioned model AT ALL — no caller sets its modelUrl, so
+// its 'heuristic' mode is the designed state, not a degrade, and gating on 'model'
+// would paint the board red for an unbuilt feature.
 
+import {
+  INLINE_WEIGHTS_MIN_BYTES,
+  LISTENER_CANDIDATES,
+  listenerCandidateLabel,
+  listenerExternalWeightFile,
+  listenerWeightFile,
+} from './listener-backends.ts';
+import { resolveListenerOptions } from './listener-config.ts';
 import { resolveSttOptions } from './stt-config.ts';
 import { resolveTtsOptions } from './tts-config.ts';
+import { createListener } from './listener.ts';
 import { createTranscriber } from './stt.ts';
 import { createSpeaker } from './tts.ts';
 
@@ -23,6 +41,12 @@ import { createSpeaker } from './tts.ts';
 export interface ProbeFixture {
   samples: number[];
   sampleRate: number;
+}
+
+/** What `run` is asked to do. The listener's deep check is opt-in — see loadListener. */
+export interface ProbeOptions {
+  /** Load the listener model and generate, not just check its weights are served. */
+  withListener?: boolean;
 }
 
 export interface SttStageReport {
@@ -46,14 +70,69 @@ export interface TtsStageReport {
   error: string | null;
 }
 
+/** One rung's weight file, as the SERVER answers for it. */
+export interface ListenerAssetReport {
+  /** The rung that needs it — `webgpu/q4f16`. */
+  rung: string;
+  /** Same-origin URL the engine would resolve for that rung's weights. */
+  url: string;
+  status: number;
+  /** Response content-type, so an SPA-fallback `text/html` names itself (su-lou.7). */
+  contentType: string;
+  bytes: number | null;
+  /** A fetch that never got a response at all (offline, CORS, aborted). */
+  error: string | null;
+}
+
+export interface ListenerStageReport {
+  /** Adapter mode after init: 'webgpu' | 'wasm' | 'stub'; null when not loaded. */
+  loadMode: string | null;
+  /** Weight variant of the live rung ('q4f16' | 'q4'), null in stub mode. */
+  dtype: string | null;
+  loadMs: number;
+  /** The adapter's onDiagnostic lines — names WHY the listener degraded (su-lou.9). */
+  diagnostics: string[];
+  /** Result of generating a reply; null when the smoke-run never ran. */
+  smoke: { mode: string; text: string; ms: number } | null;
+  /** Per-rung weight availability. Checked ALWAYS — it is the only assertion that
+   *  covers a rung this browser cannot load (see runListenerAssets). */
+  assets: ListenerAssetReport[];
+  /** False when the deep load+generate half was not requested. */
+  loaded: boolean;
+  /** Whether the page got SharedArrayBuffer — i.e. whether ORT could thread its WASM
+   *  backend. Reported, never judged: it is the difference between a 52s load and a
+   *  228s one, so a load time is unreadable without it. */
+  crossOriginIsolated: boolean;
+  error: string | null;
+}
+
 export interface ProbeReport {
   version: 1;
   stt: SttStageReport;
   tts: TtsStageReport;
+  listener: ListenerStageReport;
 }
 
 /** What the TTS smoke-run speaks. Content is irrelevant — liveness, not accuracy. */
 export const TTS_SMOKE_TEXT = 'The works check confirms the voice pipeline is alive.';
+
+/** What the listener smoke-run is asked. Short and concrete: the gate reads the
+ *  reply for LIVENESS (real words came back), never for quality. */
+export const LISTENER_SMOKE_TURN = 'I have been turning the same problem over all week and I am tired of it.';
+
+/** Tokens the smoke-run asks for. Small ON PURPOSE: this decides only whether real
+ *  language comes back, and every token costs ~2.5s on the single-threaded WASM rung
+ *  the gate lands on (see LISTENER_INIT_TIMEOUT_MS). A 48-token smoke blew a 120s
+ *  budget and reported a stub for a listener that had loaded perfectly well. */
+const LISTENER_SMOKE_TOKENS = 16;
+
+/** The listener model load is far heavier than STT/TTS (1.09-1.69G of weights) and
+ *  the gate's page is not cross-origin isolated, so ORT runs the WASM backend
+ *  single-threaded: 228s to load, measured. These budgets are sized from that
+ *  measurement so a SLOW load reads as slow, not as a broken stage — the adapter's
+ *  own defaults are tuned for the app, not for this. */
+const LISTENER_INIT_TIMEOUT_MS = 420000;
+const LISTENER_GENERATE_TIMEOUT_MS = 240000;
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -114,14 +193,137 @@ async function runTts(): Promise<TtsStageReport> {
 }
 
 /**
- * Run both stages sequentially (they share the CPU/WASM budget — parallel loads
+ * Ask the SERVER for each rung's weight file, without downloading it.
+ *
+ * This is the half of the listener check that runs on EVERY works-check, and the
+ * only assertion that covers a rung this browser cannot execute: the gate runs
+ * headless with no WebGPU adapter, so it can never load the `webgpu/q4f16` rung the
+ * operator actually uses — but it can still prove those weights are served. A
+ * provisioner that stops shipping a variant, or a rung that starts asking for one
+ * nobody ships, is exactly the drift su-lou.9 was filed about (and, wrongly, was
+ * believed to be). It is also where su-lou.7's SPA fallback would resurface: a
+ * `200 text/html` for a missing model file, which transformers.js JSON.parse()s and
+ * dies on, so the content-type is reported and checked, not just the status.
+ *
+ * HEAD, not GET: the answer is in the status line and headers, and a GET here would
+ * pull 1.09-1.69G per rung. The provisionedAsset404 guard handles HEAD (it accepts
+ * GET and HEAD alike), so a missing file answers a real 404.
+ */
+async function runListenerAssets(engineUrl: string | undefined, model: string | undefined): Promise<ListenerAssetReport[]> {
+  const out: ListenerAssetReport[] = [];
+  if (!engineUrl || !model) return out;
+  // Mirror how public/llm-engine.js resolves weights: `./models/` RELATIVE TO THE
+  // ENGINE MODULE, so a `?llmEngine=` override is checked where it really looks.
+  const modelsBase = new URL('./models/', new URL(engineUrl, location.href));
+  const head = async (rel: string, rung: string): Promise<ListenerAssetReport> => {
+    const url = new URL(`${model}/${rel}`, modelsBase).href;
+    const entry: ListenerAssetReport = {
+      rung,
+      url: new URL(url).pathname,
+      status: 0,
+      contentType: '',
+      bytes: null,
+      error: null,
+    };
+    try {
+      const res = await fetch(url, { method: 'HEAD' });
+      entry.status = res.status;
+      entry.contentType = res.headers.get('content-type') ?? '';
+      const len = res.headers.get('content-length');
+      entry.bytes = len === null ? null : Number(len);
+    } catch (e) {
+      entry.error = errText(e);
+    }
+    return entry;
+  };
+
+  for (const c of LISTENER_CANDIDATES) {
+    const rung = listenerCandidateLabel(c);
+    const graph = await head(listenerWeightFile(c.dtype), rung);
+    out.push(graph);
+    // The `.onnx` above is the GRAPH; for a model this size the weights are all in
+    // the `_data` sibling. Only demand it when the graph is too small to hold them
+    // — a smaller model swapped in via `?llmModel=` keeps its weights inline and
+    // ships no sibling at all (see INLINE_WEIGHTS_MIN_BYTES).
+    const inlineWeights = graph.bytes !== null && graph.bytes >= INLINE_WEIGHTS_MIN_BYTES;
+    if (graph.status === 200 && !inlineWeights) {
+      out.push(await head(listenerExternalWeightFile(c.dtype), `${rung} weights`));
+    }
+  }
+  return out;
+}
+
+/**
+ * The deep half: load the real listener model and generate a reply.
+ *
+ * OPT-IN (`works-check --with-listener`), because it is the one stage whose cost is
+ * out of scale with the rest — 1.69G of weights onto the WASM heap for ~50s+ on a
+ * warm host, every run, to exercise the fallback rung rather than the operator's GPU
+ * one. Making it default-on is how a gate becomes the thing everyone skips; making
+ * it unavailable is how a stage stays unguarded. So the cheap contract check above
+ * always runs, this runs when asked, and works-check.mjs prints loudly which of the
+ * two it did (a silently-skipped check reads as a passed one).
+ */
+async function baseListenerReport(): Promise<ListenerStageReport> {
+  const opts = resolveListenerOptions(location.search, location.href);
+  const report: ListenerStageReport = {
+    loadMode: null,
+    dtype: null,
+    loadMs: 0,
+    diagnostics: [],
+    smoke: null,
+    assets: await runListenerAssets(opts.engineUrl, opts.model),
+    loaded: false,
+    crossOriginIsolated: Boolean(self.crossOriginIsolated),
+    error: null,
+  };
+  return report;
+}
+
+async function loadListener(report: ListenerStageReport): Promise<ListenerStageReport> {
+  const opts = resolveListenerOptions(location.search, location.href);
+  report.loaded = true;
+  try {
+    const t0 = performance.now();
+    const listener = await createListener({
+      ...opts,
+      initTimeoutMs: LISTENER_INIT_TIMEOUT_MS,
+      timeoutMs: LISTENER_GENERATE_TIMEOUT_MS,
+      onDiagnostic: (m) => report.diagnostics.push(m),
+    });
+    report.loadMode = listener.mode;
+    report.dtype = listener.dtype ?? null;
+    report.loadMs = Math.round(performance.now() - t0);
+    try {
+      const t1 = performance.now();
+      const result = await listener.respond({
+        messages: [{ role: 'user', content: LISTENER_SMOKE_TURN }],
+        tier: 'reflection',
+        maxNewTokens: LISTENER_SMOKE_TOKENS,
+      });
+      report.smoke = { mode: result.mode, text: result.text, ms: Math.round(performance.now() - t1) };
+    } finally {
+      listener.close();
+    }
+  } catch (e) {
+    report.error = errText(e);
+  }
+  return report;
+}
+
+/**
+ * Run the stages sequentially (they share the CPU/WASM budget — parallel loads
  * would contend and distort the load-time numbers the report carries).
  */
-async function run(fixture: ProbeFixture): Promise<ProbeReport> {
+async function run(fixture: ProbeFixture, options: ProbeOptions = {}): Promise<ProbeReport> {
+  const listener = await baseListenerReport();
   const report: ProbeReport = {
     version: 1,
     stt: await runStt(fixture),
     tts: await runTts(),
+    // Loaded LAST: it is by far the largest heap allocation of the run, so leaving
+    // it until stt and tts have closed their sessions keeps it from crowding them.
+    listener: options.withListener ? await loadListener(listener) : listener,
   };
   // Mirror for humans: the page keeps the full report on screen for anyone
   // driving the probe by hand, and the console line survives in the
@@ -134,7 +336,7 @@ async function run(fixture: ProbeFixture): Promise<ProbeReport> {
 
 declare global {
   interface Window {
-    __worksCheck: { version: 1; run: (fixture: ProbeFixture) => Promise<ProbeReport> };
+    __worksCheck: { version: 1; run: (fixture: ProbeFixture, options?: ProbeOptions) => Promise<ProbeReport> };
   }
 }
 
