@@ -399,7 +399,8 @@ decision-ready verdict (U8) gets its evidence.
 ## The works-check (pre-operator gate)
 
 ```
-npm run works-check        # exit 0 pass · 100 regression (names the stage) · other = infra
+npm run works-check                    # exit 0 pass · 100 regression (names the stage) · other = infra
+npm run works-check -- --with-listener # ...and load the 1.69G listener model + generate (minutes)
 ```
 
 The layer the node suite cannot be (su-lou.8: 25/25 green while a real browser
@@ -421,7 +422,27 @@ it, because WHICH verdict is right is a feel-test question (su-lou.10.5). Its
 cold/warm timings are reported for that unit to use, never gated — a loaded CI
 box is not a regression.
 
-Prereqs: `npm run provision:stt` + `provision:tts` + `provision:smart-turn`, and a Playwright browser
+**The listener** (su-lou.9) is checked in two tiers, because its halves cost
+four orders of magnitude apart:
+
+- **always** — every rung of the listener's device ladder
+  (`src/listener-backends.ts`) must have its weights actually *served*: the ONNX
+  graph **and** the `_data` sibling that holds the gigabytes. Milliseconds, and
+  it is the only listener assertion that covers the `webgpu/q4f16` rung an
+  **operator** runs — this browser exposes no WebGPU adapter with `shader-f16`, so
+  it can never load that rung, only prove the deploy serves it.
+- **`-- --with-listener`** — additionally load the model and generate a reply,
+  asserting a real backend and that the reply is *language*: a WebGPU adapter
+  without `shader-f16` loads q4f16 happily and emits `"!!!!!!!!!!!!"`, which
+  every other liveness rule here would have greened. Budget ~5 minutes: the page
+  is not cross-origin isolated, so ORT runs the WASM backend single-threaded
+  (228s to load 1.69G, vs ~52s served with COOP/COEP).
+
+Denoise stays unguarded on purpose: it is an AudioWorklet over a live mic
+MediaStream — no mic, no audio graph, headless.
+
+Prereqs: `npm run provision:stt` + `provision:tts` + `provision:smart-turn` +
+`provision:llm`, and a Playwright browser
 (`npx playwright install chromium-headless-shell`). Missing prereqs exit as
 **infra** with the remedy named — never confusable with a code regression.
 Forensics land in `.works-check/report.json` (probe report, verdict, browser

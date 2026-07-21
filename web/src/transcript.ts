@@ -8,9 +8,15 @@
 //
 // PURE — no DOM, no audio, no detector coupling. The grouping logic is unit-tested
 // headlessly, the same discipline as turn-detection.ts. main.ts feeds it transcript
-// segments (from stt.ts) plus the detector's turn-start / turn-end OutputEvents and
+// segments (from stt.ts) plus the detector's turn-start / evaluate OutputEvents and
 // renders the returned view model. It is strictly additive: it reads the detector's
 // output, never alters the InputEvent stream or the tested timing.
+//
+// The end mark comes from `evaluate`, not `turn-end`: what the operator needs to
+// see is where the PATIENCE WINDOW closed — that is the knob they are tuning — and
+// it closes whether or not the companion then decides to speak (spec §4a). A turn
+// the gate answered with `silence` still gets its marker, and still reads as
+// "held Nms after last speech".
 
 // 'sim' — scripted demo words from the simulator (su-lou.4.1), NOT a real STT run.
 // Distinct from 'stub' (an unlabelled/absent-model placeholder): a 'sim' segment
@@ -38,6 +44,7 @@ export interface TurnStartMark {
   t: number;
 }
 
+/** Where a turn's patience window closed (the detector's `evaluate`) and why. */
 export interface TurnEndMark {
   turn: number;
   t: number;
@@ -48,7 +55,7 @@ export interface TurnEndMark {
 export interface TurnTranscript {
   turn: number;
   segments: TranscriptSegment[];
-  /** null while the turn is still open (no turn-end emitted yet). */
+  /** null while the turn is still open (its patience window has not closed). */
   end: TurnEndMark | null;
 }
 

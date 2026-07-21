@@ -1,0 +1,29 @@
+{
+  "name": "10-late-decision-stamps-verdict",
+  "description": "turn-end is stamped at the verdict, not at the deadline (spec §6): the patience window closes at 4000 but the host deliberates until 6500. The evaluate stays at 4000 (the endpoint a transcript aligns to); turn-end and response-start carry the decision's time, so the response runs 6500-8000 — deliberation latency is visible, not erased.",
+  "knobs": {
+    "silenceFloorMs": 2000,
+    "incompleteExtensionMs": 4000,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1500,
+    "useSmartTurn": true
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 2000, "type": "speech-end" },
+    { "t": 6500, "type": "decision", "outcome": "speak" },
+    { "t": 9000, "type": "tick" }
+  ],
+  "expected": {
+    "turnStartCount": 1,
+    "turnEndCount": 1,
+    "turnEnds": [{ "t": 6500, "turn": 1, "reason": "floor" }],
+    "emit": [
+      { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 4000, "type": "evaluate", "turn": 1, "reason": "floor", "trigger": "deadline" },
+      { "t": 6500, "type": "turn-end", "turn": 1, "reason": "floor" },
+      { "t": 6500, "type": "response-start", "turn": 1 },
+      { "t": 8000, "type": "response-end", "turn": 1, "reason": "completed" }
+    ]
+  }
+}

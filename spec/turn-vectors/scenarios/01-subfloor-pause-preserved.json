@@ -1,6 +1,6 @@
 {
   "name": "01-subfloor-pause-preserved",
-  "description": "A pause shorter than the silence floor does not end the turn (thinking-pause preserved). The cardinal-failure guard and the TDD red anchor: a mid-thought pause under the floor must NOT emit an end-of-turn.",
+  "description": "A pause shorter than the silence floor does not close the patience window (thinking-pause preserved). The cardinal-failure guard and the TDD red anchor: a mid-thought pause under the floor must NOT emit an evaluate — and so can never end the turn.",
   "knobs": {
     "silenceFloorMs": 2000,
     "incompleteExtensionMs": 4000,

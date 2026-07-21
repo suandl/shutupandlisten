@@ -9,6 +9,8 @@
 //      touch it and reports total null — it is not counted as a completed loop
 //   5. the summary means each leg over the turns that recorded it, and the total over
 //      spoken turns only
+//   6. clear(turn) forgets one turn — the escape hatch from first-write-wins for a
+//      patience window that closed and was then abandoned (the thinker resumed)
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -143,4 +145,18 @@ test('reset drops all recorded marks', () => {
   m.reset();
   assert.deepEqual(m.turns(), []);
   assert.equal(m.turnLatency(1), null);
+});
+
+test('clear(turn) frees an abandoned turn to be re-marked, and leaves other turns alone', () => {
+  const m = new LoopMetrics();
+  m.mark(1, 'turn-end', 1000); // patience window closed…
+  m.mark(2, 'turn-end', 8000);
+  m.clear(1); // …then the thinker resumed: that iteration never happened
+
+  assert.deepEqual(m.turns(), [2], 'the abandoned turn is gone');
+  // The escape from first-write-wins: the turn's REAL window close now sticks.
+  m.mark(1, 'turn-end', 5000);
+  m.mark(1, 'speech-start', 5400);
+  assert.equal(m.turnLatency(1)?.totalMs, 400, 'measured from the real close (5000), not the abandoned one');
+  assert.equal(m.has(2, 'turn-end'), true, 'turn 2 untouched');
 });
