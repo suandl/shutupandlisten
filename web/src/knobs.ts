@@ -7,6 +7,7 @@
 // patience change in real time during the feel-test.
 
 import { DEFAULT_KNOBS, type TurnKnobs } from './turn-detection.ts';
+import type { GateConfig } from './response-hierarchy.ts';
 
 export interface KnobSpec {
   key: string;
@@ -28,7 +29,11 @@ export const TURN_KNOBS: KnobSpec[] = [
     default: DEFAULT_KNOBS.silenceFloorMs,
     min: 200,
     max: 6000,
-    step: 100,
+    // 50, not 100: the value su-lou.10.6 is hunting lives in the 500-750ms band, and
+    // a 100ms grid cannot express 750 at all — `(750-200) % 100 ≠ 0`, so a range
+    // input snaps it to 700 and the operator rates a rung they did not choose. The
+    // sweep ladder is pinned to this grid by a test for exactly that reason.
+    step: 50,
     unit: 'ms',
     help: 'Minimum silence before a pause may end the turn. The load-bearing tunable — raise it to wait through longer thinking-pauses.',
   },
@@ -73,6 +78,80 @@ export const TURN_KNOBS: KnobSpec[] = [
     help: 'On = floor + asymmetric smart-turn veto. Off = patience-only baseline arm (the scenario-6 control).',
   },
 ];
+
+/**
+ * The FLOOR SWEEP LADDER (su-lou.10.5) — the values su-lou.10.6's feel-test steps
+ * through, ordered most-patient → least.
+ *
+ * The slider alone can already reach any of these, and that is exactly the problem
+ * it does not solve: an A/B by feel needs the SAME few values, in a known order,
+ * reachable in one click, so two sittings are comparable and the operator is rating
+ * the companion rather than hunting a slider. Dragging to "about 700" twice does not
+ * produce two readings of one value.
+ *
+ * Spaced wide at the top and tight at the bottom because that is where the decision
+ * lives: everything at/above ~1000ms is known-comfortable (it is the shipped
+ * behaviour, minus a little), and the interesting question is where it starts to
+ * cut people off. 200ms is deliberately past the point the measured EOU cost can
+ * fit inside — the veto CANNOT land in time there, so it is the rung that shows the
+ * operator what losing the classifier feels like, not a candidate default.
+ */
+export const FLOOR_SWEEP_MS: readonly number[] = [1500, 1000, 750, 500, 350, 200];
+
+/** URL query-param name for a turn knob — the key itself (`?silenceFloorMs=750`). */
+export function turnKnobParam(key: string): string {
+  return key;
+}
+
+/**
+ * Resolve the live turn knobs from a URL query string, layered over DEFAULT_KNOBS.
+ *
+ * The sweep's other half: the ladder makes a value reachable mid-session, this makes
+ * one reproducible ACROSS sessions. A rung the operator liked is a URL they can
+ * re-open, paste into the bead, or hand to the next person — where "I think it was
+ * around 700" is not a measurement. It also means su-lou.10.6 can report its
+ * preferred value as something re-runnable rather than as a slider position.
+ *
+ *   ?silenceFloorMs=<200..6000>        the load-bearing one — the patience window
+ *   ?incompleteExtensionMs=<0..8000>   extra patience on an `incomplete` verdict
+ *   ?completionThreshold=<0..1>        P(complete) boundary (BOTH readers — see
+ *                                      gateConfigFromTurnKnobs)
+ *   ?responseDurationMs=<200..4000>    stubbed response length
+ *   ?useSmartTurn=<on|off>             the asymmetric veto, or the baseline arm
+ *
+ * Same rules as `resolveVadKnobs`, deliberately: values clamp to the knob's own
+ * [min,max], and an absent, blank, non-numeric or non-finite value keeps the
+ * default. Clamping rather than rejecting matters here — a fat-fingered
+ * `?silenceFloorMs=50000` should give the operator the most patient harness the
+ * slider can express, not silently the default they were trying to move away from.
+ * Pure: `search` is passed in, so this is testable headlessly.
+ */
+export function resolveTurnKnobs(search: string): TurnKnobs {
+  const q = new URLSearchParams(search);
+  const knobs = { ...DEFAULT_KNOBS } as unknown as Record<string, number | boolean>;
+  for (const spec of TURN_KNOBS) {
+    const raw = q.get(turnKnobParam(spec.key));
+    if (raw == null || raw.trim() === '') continue;
+    if (spec.kind === 'toggle') {
+      const v = parseToggle(raw);
+      if (v !== null) knobs[spec.key] = v;
+      continue;
+    }
+    if (spec.min == null || spec.max == null) continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) continue;
+    knobs[spec.key] = Math.min(spec.max, Math.max(spec.min, n));
+  }
+  return knobs as unknown as TurnKnobs;
+}
+
+/** `on`/`off` (and the usual synonyms) → boolean; anything else → null (keep default). */
+function parseToggle(raw: string): boolean | null {
+  const v = raw.trim().toLowerCase();
+  if (v === 'on' || v === 'true' || v === '1' || v === 'yes') return true;
+  if (v === 'off' || v === 'false' || v === '0' || v === 'no') return false;
+  return null;
+}
 
 /** VAD adapter knobs (Silero via @ricky0123/vad-web). Defaults are vad-web's, tuned slightly toward patience. */
 export interface VadKnobs {
@@ -127,6 +206,29 @@ export const VAD_KNOBS: KnobSpec[] = [
 
 export function defaultTurnKnobs(): TurnKnobs {
   return { ...DEFAULT_KNOBS };
+}
+
+/**
+ * The gate's runtime config, derived from the detector's LIVE turn knobs.
+ *
+ * The shared default (completion-threshold.ts) stops the two 0.5s drifting in the
+ * source. It does nothing about the RUNTIME pair: `TurnDetector.setKnobs()` and
+ * `GateConfig` are separately overridable, and the completion-threshold slider moves
+ * only the first. That is the mirror that actually gets moved — su-lou.10.6 retunes
+ * this threshold from the live UI during the feel-test, not by editing a default —
+ * so the live app derives the gate's value from the detector's knob here rather than
+ * re-defaulting it. One slider, both readers.
+ *
+ * A `Partial<GateConfig>`, not a whole one: the gate's other knobs (substantive word
+ * count, acks, question cooldown) are not turn-detection's business and keep their
+ * own defaults via `decideTier`'s spread.
+ *
+ * This lives in knobs.ts — the module that already owns "what the UI exposes and how
+ * it reaches the engine" — so neither the detector nor the standalone gate has to
+ * learn about the other.
+ */
+export function gateConfigFromTurnKnobs(knobs: TurnKnobs): Partial<GateConfig> {
+  return { completionThreshold: knobs.completionThreshold };
 }
 
 /** URL query-param name for a VAD knob: `positiveSpeechThreshold` → `vadPositiveSpeechThreshold`. */

@@ -393,6 +393,28 @@ async function main() {
       }`,
     );
     for (const d of smartTurn.diagnostics ?? []) log(`       ${d}`);
+    // MAIN-THREAD OCCUPANCY (su-lou.10.5). Printed next to the latency because it is
+    // the half the latency cannot say: whether the page was FROZEN for those ms. The
+    // two controls are printed with it — a measurement whose instrument was not shown
+    // working on this box, next to a thread that was shown free on this box, is a
+    // number nobody can act on.
+    // Guarded like every other deref in this summary: a report shape that is not
+    // what we expect must not throw HERE, where the failure would land in
+    // main().catch and be reclassified from a loud verdict into a retryable INFRA.
+    const occ = smartTurn.occupancy;
+    if (occ?.idle && occ?.busy) {
+      const runs = occ.predictRuns ?? [];
+      const pct = (r) => (r.windowMs > 0 ? Math.round((r.maxGapMs / r.windowMs) * 100) : 0);
+      log(
+        `  eou main-thread: ${runs
+          .map((r) => `${Math.round(r.windowMs)}ms verdict → ${Math.round(r.maxGapMs)}ms blocked (${pct(r)}%)`)
+          .join(' · ')}`,
+      );
+      log(
+        `       controls: idle ${Math.round(occ.idle.windowMs)}ms → max gap ${occ.idle.maxGapMs.toFixed(1)}ms (${occ.idle.ticks} ticks) · ` +
+          `deliberate ${occ.busyMs}ms block → max gap ${Math.round(occ.busy.maxGapMs)}ms (${occ.busy.ticks} ticks)`,
+      );
+    }
     // Print every rung's weight status, loaded or not: it is the only line that says
     // anything about the webgpu rung this headless browser can never execute.
     for (const a of listener.assets ?? []) {

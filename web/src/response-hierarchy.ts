@@ -34,6 +34,13 @@
 // The banned-phrase avoid-list is deliberately NOT carried here — like the
 // prototype, it lives in the system prompt (prompts/chatgpt.md, fed to the model)
 // and judges/restraint.txt (scored); a third copy would only drift.
+//
+// STANDALONE, still: the one import below is a LEAF CONSTANT — a bare number shared
+// with the detector because both threshold the same probability (su-lou.10.5). It
+// pulls in no detector, no policy and no state, so the gate remains testable with
+// nothing else in sight, which is the property this header has always claimed.
+
+import { DEFAULT_COMPLETION_THRESHOLD as SHARED_COMPLETION_THRESHOLD } from './completion-threshold.ts';
 
 // ── The four rungs of the response hierarchy, lowest → highest ──
 
@@ -89,23 +96,25 @@ export const DEFAULT_QUESTION_COOLDOWN_TURNS = 2;
 /**
  * `EvalContext.completionProb` at/above this reads as a finished thought; below it
  * the EOU classifier called the pause INCOMPLETE and rule 2 holds silence. Higher ⇒
- * more patient. Mirrors the detector's own knob (turn-detection.ts
- * `DEFAULT_KNOBS.completionThreshold`) — the same comparison that used to be
- * collapsed into the `extended` turn-end reason before the gate ever saw it.
+ * more patient.
  *
- * STAGE-2 DRIFT HAZARD (two knobs, one probability). Today the bridge feeds the gate
- * a synthetic 0/1 (`completionProbFromTurnEnd`), so this value is inert for any
- * threshold in (0, 1] and cannot disagree with the detector. When stage 2 threads the
- * classifier's REAL score to both, these become two independently-overridable knobs
- * thresholding the SAME probability: let them diverge and the detector can call a
- * pause `extended` while the gate reads it complete (or the reverse). Sharing this
- * default constant across the modules would NOT close that gap — runtime configs
- * still drift — and would couple this deliberately standalone gate to the detector
- * (this module imports nothing; see header). The question stage 2 must actually
- * settle is whether the two should collapse into ONE knob; that is left to stage 2,
- * not pre-judged here.
+ * ONE CONSTANT, TWO READERS (su-lou.10.5). This is the detector's knob
+ * (turn-detection.ts `DEFAULT_KNOBS.completionThreshold`) and the gate's rule-2
+ * boundary, and they threshold the SAME probability — so both now read the single
+ * definition in completion-threshold.ts rather than each carrying a literal 0.5
+ * mirrored by a comment and enforced by nothing. That module's header carries the
+ * full reasoning, including why the shared value lives in a leaf of its own instead
+ * of one module importing the other: this gate stays standalone (see this file's
+ * header) and the detector stays ignorant of the response policy.
+ *
+ * The earlier note here argued against sharing on the grounds that a shared DEFAULT
+ * does not stop two RUNTIME configs drifting. That is true and it is why the live
+ * app also derives the gate's runtime threshold from the detector's live knob
+ * (knobs.ts `gateConfigFromTurnKnobs`, passed by main.ts to `decideTier`) — the
+ * mirror su-lou.10.6 actually moves, since it retunes from the UI slider and never
+ * by editing a default. Both mirrors are closed, and neither is closed by the other.
  */
-export const DEFAULT_COMPLETION_THRESHOLD = 0.5;
+export const DEFAULT_COMPLETION_THRESHOLD = SHARED_COMPLETION_THRESHOLD;
 
 export interface GateConfig {
   substantiveWords: number;

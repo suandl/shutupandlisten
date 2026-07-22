@@ -7,8 +7,10 @@ import { TurnDetector, type InputEvent, type OutputEvent, type TurnKnobs } from 
 import {
   TURN_KNOBS,
   VAD_KNOBS,
+  FLOOR_SWEEP_MS,
   resolveVadKnobs,
-  defaultTurnKnobs,
+  resolveTurnKnobs,
+  gateConfigFromTurnKnobs,
   type KnobSpec,
   type VadKnobs,
 } from './knobs.ts';
@@ -82,7 +84,14 @@ const listenerOptions = resolveListenerOptions(location.search, location.href);
 const ttsOptions = resolveTtsOptions(location.search, location.href);
 
 // ── detector + live state ──
-const turnKnobs: TurnKnobs = defaultTurnKnobs();
+// Turn knobs, seeded from the URL over the defaults — the reproducible half of the
+// floor sweep (su-lou.10.5). A rung the operator settles on is then a link, not a
+// remembered slider position:
+//   ?silenceFloorMs=<200..6000> · ?incompleteExtensionMs=<0..8000>
+//   ?completionThreshold=<0..1> · ?responseDurationMs=<200..4000> · ?useSmartTurn=<on|off>
+// DEFAULTS ARE UNCHANGED by this unit: silenceFloorMs stays 2000 until su-lou.10.6's
+// feel-test picks a value, so a plain load behaves exactly as it did.
+const turnKnobs: TurnKnobs = resolveTurnKnobs(location.search);
 // VAD segmentation knobs (Silero via @ricky0123/vad-web). The browser APM
 // (noiseSuppression/echoCancellation/autoGainControl) is already forced on by
 // vad-web's getUserMedia (see vad.ts), so the increment-1 café lever is the
@@ -192,7 +201,26 @@ let lastListenerSpeechEndT: number | null = null;
 // mode, then reused. Warmed on mic start so it is ready by the first completed turn.
 let listenerPromise: Promise<Listener> | null = null;
 function getListener(): Promise<Listener> {
-  if (!listenerPromise) listenerPromise = createListener(listenerOptions);
+  if (!listenerPromise) {
+    // Record which rung actually loaded HERE, where the adapter resolves, rather
+    // than at the mic-start call site that used to own it: the loop-driving demo
+    // substrate reaches the listener through this same lazy path and never touches
+    // mic-start, so a demo run named no backend at all — in the source line, and in
+    // the metrics readout. "Which rung am I rating?" is exactly the question
+    // su-lou.9 was filed over, and it applies to the mic-less substrate too.
+    // `listenerPromise === p` rather than a bare truthiness check: a dispose during
+    // the load nulls it, and a NEW load may already have replaced it by the time this
+    // one resolves — the stale adapter must not relabel the live one.
+    const p: Promise<Listener> = createListener(listenerOptions).then((l) => {
+      if (listenerPromise === p) {
+        liveListenerMode = l.mode;
+        liveListenerDtype = l.dtype ?? null;
+        refreshSourceInfo();
+      }
+      return l;
+    });
+    listenerPromise = p;
+  }
   return listenerPromise;
 }
 function disposeListener(): void {
@@ -207,7 +235,18 @@ function disposeListener(): void {
 // lives here, kept out of the adapter. ──
 let speakerPromise: Promise<Speaker> | null = null;
 function getSpeaker(): Promise<Speaker> {
-  if (!speakerPromise) speakerPromise = createSpeaker(ttsOptions);
+  if (!speakerPromise) {
+    // Same reasoning as getListener: the voice is reached lazily from the reply path
+    // in the demo substrate too, so its mode is recorded where it resolves.
+    const p: Promise<Speaker> = createSpeaker(ttsOptions).then((s) => {
+      if (speakerPromise === p) {
+        liveSpeakerMode = s.mode;
+        refreshSourceInfo();
+      }
+      return s;
+    });
+    speakerPromise = p;
+  }
   return speakerPromise;
 }
 function disposeSpeaker(): void {
@@ -415,10 +454,19 @@ function beginSpeech(entry: TurnResponse): SpeechSession | null {
 }
 
 // ── knobs ──
-renderKnobs($('turn-knobs'), TURN_KNOBS, (key, value) => {
-  detector.setKnobs({ [key]: value } as Partial<TurnKnobs>);
-  refreshStage();
-});
+renderKnobs(
+  $('turn-knobs'),
+  TURN_KNOBS,
+  (key, value) => {
+    detector.setKnobs({ [key]: value } as Partial<TurnKnobs>);
+    refreshStage();
+    renderMetrics(); // the panel names the floor its numbers were taken under
+  },
+  // Seed from the ?-resolved knobs (not the static spec defaults) so a URL-pinned
+  // sweep rung is visible in the slider and still further-tunable by hand.
+  turnKnobs as unknown as Record<string, number | boolean>,
+);
+renderFloorSweep($('floor-sweep'));
 renderKnobs(
   $('vad-knobs'),
   VAD_KNOBS,
@@ -429,6 +477,40 @@ renderKnobs(
   // defaults) so the URL overrides are visible and further-tunable.
   vadKnobs as unknown as Record<string, number | boolean>,
 );
+
+/**
+ * The floor-sweep ladder (su-lou.10.5): one click per rung of FLOOR_SWEEP_MS, so the
+ * operator can A/B the patience window by feel in a single sitting instead of across
+ * builds — and land on the SAME values each time, which a dragged slider does not
+ * give you.
+ *
+ * Each button drives the existing slider rather than the detector directly: set the
+ * range input's value and dispatch the `input` event the knob already listens for.
+ * One path to `setKnobs`, so the slider, its readout and the detector can never
+ * disagree about which rung is live — the failure mode a second, parallel setter
+ * would introduce on the very control the feel-test is rating.
+ */
+function renderFloorSweep(container: HTMLElement): void {
+  const slider = document.getElementById('k-silenceFloorMs') as HTMLInputElement | null;
+  if (!slider) return; // the knob panel owns the control; no slider, no sweep
+  for (const ms of FLOOR_SWEEP_MS) {
+    const b = document.createElement('button');
+    b.textContent = `${ms}ms`;
+    b.title =
+      ms >= 1000
+        ? `Patience window ${ms}ms — the comfortable end of the sweep.`
+        : `Patience window ${ms}ms — short enough that the EOU verdict may not land inside it.`;
+    b.addEventListener('click', () => {
+      slider.value = String(ms);
+      slider.dispatchEvent(new Event('input')); // the knob's own handler does the rest
+    });
+    container.appendChild(b);
+  }
+  const hint = document.createElement('div');
+  hint.className = 'hint';
+  hint.textContent = 'Floor sweep — same values every sitting. Pin one for a whole session with ?silenceFloorMs=<ms>.';
+  container.appendChild(hint);
+}
 
 function renderKnobs(
   container: HTMLElement,
@@ -518,21 +600,11 @@ $('mic-start').addEventListener('click', async () => {
     await audio.start();
     refreshSourceInfo();
     // Warm the listener AND the voice now so both are ready by the first completed
-    // turn; when each resolves, surface which mode is live next to the source.
-    // Guard against a stop / mode-switch that happened while they were loading.
-    void getListener().then((l) => {
-      if (mode === 'mic' && listenerPromise) {
-        liveListenerMode = l.mode;
-        liveListenerDtype = l.dtype ?? null;
-        refreshSourceInfo();
-      }
-    });
-    void getSpeaker().then((s) => {
-      if (mode === 'mic' && speakerPromise) {
-        liveSpeakerMode = s.mode;
-        refreshSourceInfo();
-      }
-    });
+    // turn. Which mode each resolved to is recorded inside getListener/getSpeaker —
+    // where the adapter actually loads — so every entry point reports it, not just
+    // this one.
+    void getListener();
+    void getSpeaker();
   } catch (err) {
     sourceInfo.textContent = `mic failed: ${(err as Error).message} — staying in simulation`;
   }
@@ -842,22 +914,32 @@ function maybeRespond(groups: TurnTranscript[]): void {
 
     // Stage 2+3: the transcript resolved (we have userText) and the gate decides.
     loopMetrics.mark(g.turn, 'transcript', now());
-    const decision = decideTier({
-      utteranceIndex: g.turn,
-      utteranceTextSoFar: userText,
-      // Stage-1 bridge: TurnEndMark carries the detector's two-valued reason, not
-      // the classifier's score, so the gate gets certainty stand-ins. Stage 2
-      // threads smart-turn's real P(complete) through here instead — the widened
-      // contract is what lets that be a one-line change (su-lou.10.3).
-      completionProb: completionProbFromTurnEnd(g.end.reason),
-      // No segments ⇒ no speech-end to measure from: NaN, the "no measurement"
-      // sentinel (never a real 0-length pause), read the fail-safe way a non-finite
-      // completionProb is — see the field doc in response-hierarchy.ts.
-      msSinceSpeechEnd: lastSpeechEndT > 0 ? Math.max(0, g.end.t - lastSpeechEndT) : NaN,
-      msSinceWeLastSpoke:
-        lastListenerSpeechEndT === null ? Infinity : Math.max(0, g.end.t - lastListenerSpeechEndT),
-      priorDecisions,
-    });
+    const decision = decideTier(
+      {
+        utteranceIndex: g.turn,
+        utteranceTextSoFar: userText,
+        // Stage-1 bridge: TurnEndMark carries the detector's two-valued reason, not
+        // the classifier's score, so the gate gets certainty stand-ins. Stage 2
+        // threads smart-turn's real P(complete) through here instead — the widened
+        // contract is what lets that be a one-line change (su-lou.10.3).
+        completionProb: completionProbFromTurnEnd(g.end.reason),
+        // No segments ⇒ no speech-end to measure from: NaN, the "no measurement"
+        // sentinel (never a real 0-length pause), read the fail-safe way a non-finite
+        // completionProb is — see the field doc in response-hierarchy.ts.
+        msSinceSpeechEnd: lastSpeechEndT > 0 ? Math.max(0, g.end.t - lastSpeechEndT) : NaN,
+        msSinceWeLastSpoke:
+          lastListenerSpeechEndT === null ? Infinity : Math.max(0, g.end.t - lastListenerSpeechEndT),
+        priorDecisions,
+      },
+      // The gate's completion threshold, taken from the detector's LIVE knob rather
+      // than re-defaulted — so the UI slider moves ONE boundary, not one of two that
+      // silently disagree (knobs.ts `gateConfigFromTurnKnobs`; su-lou.10.5). Read at
+      // decision time, so a mid-session retune during the feel-test applies to the
+      // very next turn. Inert today — the bridge above feeds a synthetic 0/1, which
+      // resolves identically for any threshold in (0, 1] — and load-bearing the
+      // moment stage 2 threads the classifier's real score through.
+      gateConfigFromTurnKnobs(detector.config),
+    );
     loopMetrics.mark(g.turn, 'gate', now());
     const entry: TurnResponse = {
       evaluation,
@@ -994,10 +1076,14 @@ function renderMetrics(): void {
   const summary = loopMetrics.summary();
   const head = document.createElement('div');
   head.className = 'lm-summary';
+  // The floor is named IN the panel, not just in the slider above it: during a sweep
+  // these numbers change meaning every few turns, and a screenshot or a read-out that
+  // does not say which rung produced them is not evidence su-lou.10.6 can use.
+  const floor = `floor ${detector.config.silenceFloorMs}ms`;
   head.textContent =
     summary.completed > 0
-      ? `${summary.completed} spoken · mean turn-end→speech ${summary.meanTotalMs}ms`
-      : 'waiting for the first spoken reply…';
+      ? `${summary.completed} spoken · mean turn-end→speech ${summary.meanTotalMs}ms · ${floor}`
+      : `waiting for the first spoken reply… · ${floor}`;
   metricsEl.appendChild(head);
 
   // Per-leg mean latency (the pipeline's costs: STT / gate / LLM / TTS).
@@ -1106,6 +1192,45 @@ function ensureAudioCtx(): void {
   }
   void audioCtx?.resume();
 }
+
+// ── the warmed loop's numbers, readable from outside the page (su-lou.10.5) ──
+//
+// The metrics panel has always RENDERED these; nothing could ever READ them. So the
+// per-stage latency of the end-to-end loop — including the listener LLM's generation
+// time, the number that decides whether the deferred stage 2 is worth anything — was
+// obtainable only by a human squinting at a panel and typing what they saw.
+//
+// Same shape and same reason as probe.ts's `window.__worksCheck`: a driver navigates,
+// waits for this to appear, drives a loop-driving ?demo=, and reads the table out
+// (scripts/loop-latency.mjs). Read-only and additive — the app does not consult it,
+// so nothing about the measured behaviour depends on it existing.
+declare global {
+  interface Window {
+    __loopMetrics: {
+      version: 1;
+      /** Mean per-leg + mean total, over the turns recorded so far. */
+      summary: () => ReturnType<LoopMetrics['summary']>;
+      /** Every recorded turn's latencies, for per-turn spread rather than just the mean. */
+      turnLatencies: () => ReturnType<LoopMetrics['all']>;
+      /** The knobs the numbers were taken under — a latency without its floor is unreadable. */
+      knobs: () => TurnKnobs;
+      /** Which backends are actually live: a 'stub' listener makes gate→reply meaningless. */
+      modes: () => { source: string; listener: string | null; listenerDtype: string | null; speaker: string | null };
+    };
+  }
+}
+window.__loopMetrics = {
+  version: 1,
+  summary: () => loopMetrics.summary(),
+  turnLatencies: () => loopMetrics.all(),
+  knobs: () => ({ ...detector.config }),
+  modes: () => ({
+    source: audio.info,
+    listener: liveListenerMode,
+    listenerDtype: liveListenerDtype,
+    speaker: liveSpeakerMode,
+  }),
+};
 
 refreshStage();
 renderTranscript();
