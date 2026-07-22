@@ -25,7 +25,7 @@ const fs = require('fs');
 const MARKER = '<!-- promptfoo-eval-summary -->';
 
 // Preferred judge column order; anything else is appended alphabetically.
-const JUDGE_ORDER = ['probing-depth', 'restraint', 'variety'];
+const JUDGE_ORDER = ['probing-depth', 'restraint', 'no-summarize', 'variety'];
 
 function num(x) { return typeof x === 'number' && Number.isFinite(x) ? x : null; }
 

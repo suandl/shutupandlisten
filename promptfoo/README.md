@@ -121,7 +121,7 @@ which wraps a target listener model (e.g. `openai:gpt-4o` or
 thinker side is not a confound when comparing listener prompts and
 models). It returns the full transcript as the cell's output.
 
-The transcript is scored by three LLM-rubric judges in `judges/`:
+The transcript is scored by four LLM-rubric judges in `judges/`:
 
 - `judges/probing-depth.txt` — once the idea is laid out, does the
   listener's thread-pull engage a *specific* thread of the idea, or
@@ -129,6 +129,14 @@ The transcript is scored by three LLM-rubric judges in `judges/`:
 - `judges/restraint.txt` — does the listener stay silent while the
   idea is dictated, or take over with mid-stream acks / echoes /
   summary / coaching?
+- `judges/no-summarize.txt` — B3, the dealbreaker: does any listener
+  turn reflect the thinker's own thought back at them, in *any*
+  wording? Scored semantically on purpose. `restraint.txt` caps the
+  score on a list of banned phrases, and su-lou.11 caught a live
+  on-device run walking straight around it — "it's interesting that
+  you're thinking about the consequences and power of using Voice…"
+  trips no phrase and is the identical violation. A phrase list
+  cannot hold B3.
 - `judges/variety.txt` — across the conversation, do the listener's
   questions vary in stem and target? (Returns 5 if the listener asks
   ≤1 questions — restraint penalises over-questioning separately.)
