@@ -8,8 +8,30 @@
 // `idea_arc` (read from `context.test.metadata`).
 //
 // The provider returns the full transcript as a single string formatted as
-// "THINKER: ...\n\nLISTENER: ...\n\n...". All three judges score against
+// "THINKER: ...\n\nLISTENER: ...\n\n...". All four judges score against
 // this transcript.
+//
+// THE DICTATION HAS TO END. judges/restraint.txt scores a TRANSITION — silence
+// while the idea is being laid out, then at most one thread-pull once it lands.
+// A simulator that dictates across every turn never reaches that transition, so
+// every listener turn is mid-dictation by construction and no transcript can
+// score above the over-engagement band whatever the prompt, provider or model
+// does. That is not a strict judge, it is an unmeasurable column: it read
+// 0-of-16 on the first full run and, because a cell passes only when every
+// judge passes, it forced 0-of-16 overall and hid movement everywhere else
+// (su-lou.12). The loop therefore ends the dictation on purpose:
+//
+//   * every simulator call carries a PHASE directive, and the LAST one is a
+//     LANDING directive — finish the idea and come to a natural stopping point
+//     — so the final thinker turn ENDS the dictation instead of extending it;
+//   * the formatted transcript carries LANDING_MARKER right after that turn, so
+//     judges anchor "mid-dictation" vs "after the idea landed" on a fixed line
+//     rather than guessing where the thinker stopped.
+//
+// The marker is added at FORMAT time only. It never enters the message arrays
+// sent to the listener or the simulator, so it cannot cue the system under test
+// that its window has opened — the listener still has to read the landing out
+// of the thinker's own words, which is exactly the product behaviour under test.
 //
 // Why a custom JS provider (vs. promptfoo redteam strategies): the redteam
 // strategies are shaped around adversarial probing — turn budgets, refusal
@@ -53,6 +75,41 @@
 
 const fs = require('fs');
 const path = require('path');
+
+// Emitted into the formatted transcript directly after the thinker turn that
+// lands the idea. Self-describing on purpose: every judge reads this same
+// transcript, so the line has to explain itself to a rubric that was never told
+// a marker existed. judges/restraint.txt anchors its mid-dictation vs.
+// post-landing split on this exact string (pinned by
+// test/landing-phase.test.js).
+const LANDING_MARKER =
+  '[THE THINKER HAS NOW FINISHED LAYING OUT THE IDEA — anything below this line is after the idea landed]';
+
+// Phase directive appended to the simulator's system prompt for ONE call.
+// `call` is the 0-based simulator-call index; `totalCalls` is how many the run
+// makes (maxTurns - 1). The arc in simulators/thinker.md already asks the
+// thinker to reach a stopping point, but nothing told it WHEN — so it kept
+// dictating to the turn budget. The last call now says so explicitly.
+function phaseDirective(call, totalCalls) {
+  if (call >= totalCalls - 1) {
+    return [
+      'PHASE — LANDING. This is your LAST turn: finish laying the idea out and',
+      'come to a natural stopping point. Say the final piece and close it off',
+      "(“…so that's basically the idea”). Do not open a new thread, and do",
+      'not ask the listener a question.',
+    ].join('\n');
+  }
+  if (call === totalCalls - 2) {
+    return [
+      'PHASE — CONVERGING. You are near the end of the arc: start bringing the',
+      'idea together. You will finish laying it out on your next turn.',
+    ].join('\n');
+  }
+  return [
+    'PHASE — DEVELOPING. You are still laying the idea out: carry it forward',
+    'through the next stage of the arc. Do not wrap up yet.',
+  ].join('\n');
+}
 
 class MultiTurnProvider {
   constructor(options) {
@@ -158,6 +215,12 @@ ${arcLines}`;
     // role=assistant means listener. When we call the simulator, we flip
     // roles so the simulator sees itself as the assistant.
     const transcript = [{ role: 'user', content: startingTurn }];
+    // Index of the thinker turn that ends the dictation — the last one, since
+    // the last simulator call is given the LANDING directive. Starts at the
+    // opening turn so a maxTurns=1 run (no simulator calls at all) still has a
+    // defined landing rather than an unanchored transcript.
+    let landingIndex = 0;
+    const simulatorCalls = Math.max(this.maxTurns - 1, 0);
     const usage = { total: 0, prompt: 0, completion: 0, numRequests: 0 };
     let cost = 0;
     // How many LISTENER turns actually hit the target model. For the base
@@ -185,8 +248,10 @@ ${arcLines}`;
 
       // Flip roles so the simulator sees itself as the assistant, then
       // sanitize for the provider (drop silent turns, keep roles alternating).
+      // The phase directive rides on the system prompt for this call only — the
+      // last call is the one told to land the idea.
       const simulatorMessages = toProviderMessages(
-        simulatorSystem,
+        `${simulatorSystem}\n\n${phaseDirective(turn, simulatorCalls)}`,
         transcript.map((m) => ({
           role: m.role === 'user' ? 'assistant' : 'user',
           content: m.content,
@@ -201,6 +266,7 @@ ${arcLines}`;
       }
       const simText = String(simResp.output ?? '').trim();
       transcript.push({ role: 'user', content: simText });
+      landingIndex = transcript.length - 1;
       accumulateUsage(usage, simResp.tokenUsage);
       cost += simResp.cost || 0;
     }
@@ -210,10 +276,18 @@ ${arcLines}`;
     // thinker dictating with the listener speaking only when it pulls a thread.
     // The judges score this text; restraint reads the sparse listener presence
     // as silence, probing-depth scores the thread-pull(s) that remain.
-    const formatted = transcript
-      .filter((m) => String(m.content ?? '').trim() !== '')
-      .map((m) => `${m.role === 'user' ? 'THINKER' : 'LISTENER'}: ${m.content}`)
-      .join('\n\n');
+    const lines = [];
+    transcript.forEach((m, i) => {
+      const content = String(m.content ?? '').trim();
+      if (content) {
+        lines.push(`${m.role === 'user' ? 'THINKER' : 'LISTENER'}: ${content}`);
+      }
+      // The landing marker is positional, so it is emitted even when the
+      // landing turn itself came back empty — the judges need the boundary,
+      // and its position is what carries the meaning.
+      if (i === landingIndex) lines.push(LANDING_MARKER);
+    });
+    const formatted = lines.join('\n\n');
 
     return {
       output: formatted,
@@ -289,3 +363,8 @@ function accumulateUsage(total, u) {
 }
 
 module.exports = MultiTurnProvider;
+// Exported so judges/tests can pin the exact marker string rather than
+// re-typing it (a silently drifted copy would un-anchor the restraint rubric
+// and put the column straight back to un-measurable).
+module.exports.LANDING_MARKER = LANDING_MARKER;
+module.exports.phaseDirective = phaseDirective;
