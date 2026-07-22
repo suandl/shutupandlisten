@@ -139,10 +139,64 @@ input events (← from the audio source) and output events (→ from the detecto
 |------|--------------|
 | Silence floor (patience window) | Minimum silence before a pause may end the turn. The load-bearing tunable. |
 | Incomplete extension | Extra patience when smart-turn reads the pause as "incomplete". |
-| Completion threshold | smart-turn P(complete) cutoff; higher = more patient. |
+| Completion threshold | smart-turn P(complete) cutoff; higher = more patient. Drives **both** readers of that probability — the detector's veto and the gate's rule 2 (see below). |
 | Stubbed response length | How long the canned response "plays". |
 | smart-turn veto | On = floor + veto; off = the patience-only baseline arm. |
 | VAD thresholds (mic) | Silero speech on/off probabilities and redemption frames. |
+
+Every turn knob is also a URL parameter, so a configuration is a link rather than a
+remembered slider position: `?silenceFloorMs=750`, `?incompleteExtensionMs=2000`,
+`?completionThreshold=0.65`, `?responseDurationMs=900`, `?useSmartTurn=off`. Values
+clamp to the slider's own range; anything blank or unparseable keeps the default.
+
+**One probability, one threshold.** smart-turn's `P(complete)` is thresholded twice —
+by the detector, to decide whether a pause earns the incomplete extension, and by the
+response-hierarchy gate, as rule 2. Those were two independent `0.5`s mirrored by a
+comment; they now share one constant (`completion-threshold.ts`) *and* the live app
+derives the gate's runtime value from the detector's knob (`gateConfigFromTurnKnobs`),
+so the slider moves one boundary rather than one of two that can silently disagree.
+
+### Floor sweep (the feel-test harness)
+
+Under the knobs is a row of one-click floor values — 1500 · 1000 · 750 · 500 · 350 ·
+200ms — for A/B-ing the patience window by feel in a single sitting. They exist
+because a dragged slider does not give you *the same* value twice, and a feel-test
+that cannot repeat a rung cannot compare two sittings. The buttons drive the slider
+itself (one path to the detector), and the **Loop latency** panel names the floor its
+numbers were taken under, so a screenshot is self-describing.
+
+200ms is deliberately below what the EOU verdict can fit inside — see the measurement
+below — so it shows what losing the classifier feels like. It is not a candidate
+default.
+
+### Measuring the loop
+
+```bash
+npm run measure:loop                     # real provisioned models
+npm run measure:loop -- --query llm=off  # stub substrate: structure only, seconds not minutes
+npm run measure:loop -- --json           # machine-readable
+```
+
+Drives the mic-less `?demo=u6-warmed-loop` substrate in headless Chromium and reads
+the warmed-loop instrumentation out of the page (`window.__loopMetrics`), printing
+per-leg and per-turn latency with the knobs and live backends that produced it. The
+panel had rendered these numbers since U6; nothing could read them, so the listener
+LLM's generation time — the number that decides whether shortening the floor on a
+confident verdict is worth building — was only ever obtainable by squinting at a UI.
+
+Read the substrate line before the numbers: the demo's turns are spaced for the
+*stub* reply length, so with real models on a slow rung later turns can overlap the
+one before them. Turn 1 is always clean.
+
+### Main-thread occupancy of the EOU verdict
+
+`npm run works-check` reports, next to the smart-turn latency, how much of that time
+the verdict **held the main thread** — with two controls on the same box (an idle
+window, and a deliberate 150ms block) so the number is readable rather than merely
+printed. This distinguishes two very different defects: waiting 300ms for a verdict
+is a tuning question; freezing the page for 300ms on every pause is jank no knob
+value can fix. Measured, not inferred from the code shape — the instrument's own
+controls live in `main-thread-occupancy.test.ts`.
 
 ## Architecture
 
