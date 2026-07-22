@@ -30,6 +30,11 @@
 const fs = require('fs');
 const path = require('path');
 
+// Imported, never retyped: a drifted copy of the marker string here would skip
+// a line the harness does not actually emit (same principle as
+// test/fixtures/transcripts.js).
+const { LANDING_MARKER } = require('../providers/multi-turn.js');
+
 const RUBRIC_PATH = path.resolve(__dirname, '..', 'judges', 'variety.txt');
 
 // Two questions is the smallest sample in which "do they differ?" has an
@@ -54,6 +59,10 @@ function listenerTurns(transcript) {
       current = speaker[1] === 'LISTENER' ? speaker[2] : null;
       continue;
     }
+    // Skip the landing marker so it is never appended into a listener turn.
+    // It usually follows a THINKER turn (current === null, already skipped), but
+    // an empty landing thinker turn can leave it directly after a LISTENER block.
+    if (line.trim() === LANDING_MARKER) continue;
     if (current !== null) current += `\n${line}`;
   }
   if (current !== null) turns.push(current);
@@ -73,7 +82,9 @@ function countListenerQuestions(transcript) {
 
 // promptfoo exposes its llm-rubric matcher on the package's public surface;
 // resolved lazily (and via dynamic import, matching providers/multi-turn.js)
-// so the keyless unit tests never load the promptfoo runtime.
+// so the keyless unit tests never load the promptfoo runtime. Cached back into
+// the same _rubricMatcher slot the tests stub, so a real run imports promptfoo
+// once instead of on every cell.
 async function resolveRubricMatcher() {
   if (assertVariety._rubricMatcher) return assertVariety._rubricMatcher;
   const promptfoo = await import('promptfoo');
@@ -87,6 +98,7 @@ async function resolveRubricMatcher() {
       'variety assertion: could not resolve promptfoo.assertions.matchesLlmRubric',
     );
   }
+  assertVariety._rubricMatcher = matcher;
   return matcher;
 }
 

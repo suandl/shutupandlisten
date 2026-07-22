@@ -101,6 +101,22 @@ test('only LISTENER turns count, across multi-line turns and the marker', () => 
   assert.ok(turns[1].startsWith('Why would staples'), 'the marker is not attributed to a speaker');
 });
 
+// An empty landing thinker turn leaves the marker directly after a LISTENER
+// block instead of a THINKER one. The marker must still be dropped, not
+// appended into that listener turn — otherwise its text leaks into the graded
+// content and the question count is off.
+test('the landing marker is dropped even when it follows a LISTENER turn', () => {
+  const transcript = [
+    'THINKER: so the idea is a grocery app, but backwards.',
+    'LISTENER: What decides which perishable wins?',
+    LANDING_MARKER,
+  ].join('\n\n');
+
+  const turns = listenerTurns(transcript);
+  assert.ok(!turns.some((t) => t.includes(LANDING_MARKER)), 'the marker must not leak into a listener turn');
+  assert.equal(countListenerQuestions(transcript), 1);
+});
+
 test('an empty or non-string output is unassessable rather than a crash', async () => {
   variety._rubricMatcher = stubMatcher();
   for (const output of ['', null, undefined, 42]) {
