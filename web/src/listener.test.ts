@@ -225,3 +225,80 @@ test('a clean load on the top rung stays quiet', async () => {
   assert.equal(l.dtype, 'q4f16');
   assert.deepEqual(seen, []);
 });
+
+// ── streamed partials (su-lou.11) ──
+//
+// The reply now arrives in pieces where the engine can manage it, so the loop can
+// speak the first finished sentence while the rest still decodes. The contract the
+// caller depends on: partials are ADVISORY — they never settle the request, never
+// stop the timeout, and a backend that cannot stream is indistinguishable from one
+// that simply had nothing to report yet.
+
+test('partials reach onPartial as the reply-so-far, then the final result settles it', async () => {
+  const w = new FakeWorker();
+  w.onInit = () => queueMicrotask(() => w.emit('message', { type: 'ready', mode: 'webgpu' }));
+  w.onGenerate = (m) =>
+    queueMicrotask(() => {
+      w.emit('message', { type: 'partial', id: m.id, text: 'That is' });
+      w.emit('message', { type: 'partial', id: m.id, text: 'That is the tension.' });
+      w.emit('message', { type: 'result', id: m.id, text: 'That is the tension. Say more.' });
+    });
+
+  const seen: string[] = [];
+  const l = await createListener({ createWorker: () => w, model: 'x' });
+  const r = await l.respond(req('reflection'), (t) => seen.push(t));
+  assert.deepEqual(seen, ['That is', 'That is the tension.']);
+  assert.equal(r.text, 'That is the tension. Say more.');
+  assert.equal(r.mode, 'webgpu');
+});
+
+test('a partial does not settle the request, and does not hold off the timeout', async () => {
+  const w = new FakeWorker();
+  w.onInit = () => queueMicrotask(() => w.emit('message', { type: 'ready', mode: 'webgpu' }));
+  // Streams a piece and then wedges — the exact shape a stalled decode has.
+  w.onGenerate = (m) => queueMicrotask(() => w.emit('message', { type: 'partial', id: m.id, text: 'That is' }));
+
+  const seen: string[] = [];
+  const l = await createListener({ createWorker: () => w, model: 'x', timeoutMs: 30 });
+  const r = await l.respond(req('reflection'), (t) => seen.push(t));
+  assert.deepEqual(seen, ['That is']);
+  assert.equal(r.mode, 'stub'); // still degraded on schedule
+});
+
+test('partials for an unknown or already-settled request are ignored', async () => {
+  const w = new FakeWorker();
+  w.onInit = () => queueMicrotask(() => w.emit('message', { type: 'ready', mode: 'webgpu' }));
+  w.onGenerate = (m) =>
+    queueMicrotask(() => {
+      w.emit('message', { type: 'result', id: m.id, text: 'done' });
+      w.emit('message', { type: 'partial', id: m.id, text: 'late' }); // after settling
+      w.emit('message', { type: 'partial', id: 999, text: 'nobody' }); // never issued
+    });
+
+  const seen: string[] = [];
+  const l = await createListener({ createWorker: () => w, model: 'x' });
+  const r = await l.respond(req('reflection'), (t) => seen.push(t));
+  await new Promise((res) => setTimeout(res, 5));
+  assert.deepEqual(seen, []);
+  assert.equal(r.text, 'done');
+});
+
+test('a caller that wants no partials, and a backend that sends none, both work', async () => {
+  const w = new FakeWorker();
+  w.onInit = () => queueMicrotask(() => w.emit('message', { type: 'ready', mode: 'webgpu' }));
+  w.onGenerate = (m) =>
+    queueMicrotask(() => {
+      w.emit('message', { type: 'partial', id: m.id, text: 'ignored' }); // no callback registered
+      w.emit('message', { type: 'result', id: m.id, text: 'the whole reply' });
+    });
+
+  const l = await createListener({ createWorker: () => w, model: 'x' });
+  assert.equal((await l.respond(req('reflection'))).text, 'the whole reply');
+
+  // The stub listener takes the same call shape and simply never streams.
+  const seen: string[] = [];
+  const stub = await createListener({});
+  const r = await stub.respond(req('question'), (t) => seen.push(t));
+  assert.deepEqual(seen, []);
+  assert.equal(r.mode, 'stub');
+});

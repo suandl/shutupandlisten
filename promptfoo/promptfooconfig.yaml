@@ -1,15 +1,15 @@
 description: shutupandlisten — listener-prompt evaluation harness
 
 # Matrix:
-#   2 prompts   (prompts/claude.md, prompts/chatgpt.md — byte-identical at v0)
+#   2 prompts   (prompts/claude.md [v0], prompts/chatgpt.md [hardened])
 #   × 2 providers (openai:gpt-4o, anthropic:claude-haiku-4-5)
 #   × 4 scenarios (scenarios/*.yaml — driven multi-turn by simulators/thinker.md)
-#   × 3 judges  (probing-depth, restraint, variety)
+#   × 4 judges  (probing-depth, restraint, no-summarize, variety)
 #
-# The 2×2 prompt×provider matrix is intentional even though the two
-# prompts are identical at v0: it locks in baseline numbers for each
-# (prompt-file → provider) cell *before* the two prompts fork, so the
-# fork's deltas are measurable against an apples-to-apples baseline.
+# The prompts started byte-identical at v0. Su-lou.11 hardened chatgpt.md
+# (the prompt the web app ships) while claude.md stayed at v0, so the
+# prompt axis now measures that hardened variant against the locked
+# baseline.
 #
 # Each scenario runs as a 4-6 turn conversation: simulators/thinker.md
 # drives the user (thinker) side using the scenario's `topic` and
@@ -163,14 +163,24 @@ defaultTest:
     claude_system: file://../prompts/claude.md
     chatgpt_system: file://../prompts/chatgpt.md
   assert:
-    # All three judges run against the full multi-turn transcript
+    # All four judges run against the full multi-turn transcript
     # returned by providers/multi-turn.js. Variety is meaningful now
     # that each cell produces ~5 listener turns. (.txt rather than
     # .md because promptfoo's llm-rubric loader doesn't accept .md.)
+    #
+    # no-summarize is the B3 dealbreaker, and it is a JUDGE rather than a
+    # string assertion on purpose: restraint.txt caps the score on a list
+    # of banned phrases, and su-lou.11 showed a live on-device run route
+    # straight around that list — "it's interesting that you're thinking
+    # about the consequences and power of using Voice…" is lexically clean
+    # and the identical violation. A phrase list cannot hold B3; only a
+    # semantic read of what each turn DOES can.
     - type: llm-rubric
       value: file://judges/probing-depth.txt
     - type: llm-rubric
       value: file://judges/restraint.txt
+    - type: llm-rubric
+      value: file://judges/no-summarize.txt
     - type: llm-rubric
       value: file://judges/variety.txt
 

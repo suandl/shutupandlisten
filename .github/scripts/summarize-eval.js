@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Turn a promptfoo `--output results.json` file into a compact, readable
 // Markdown summary for a PR comment: scores broken out per provider, per
-// scenario, and per judge (probing-depth / restraint / variety).
+// scenario, and per judge (probing-depth / restraint / no-summarize / variety).
 //
 // Usage:  node summarize-eval.js <results.json>   (Markdown is written to stdout)
 //
@@ -25,7 +25,7 @@ const fs = require('fs');
 const MARKER = '<!-- promptfoo-eval-summary -->';
 
 // Preferred judge column order; anything else is appended alphabetically.
-const JUDGE_ORDER = ['probing-depth', 'restraint', 'variety'];
+const JUDGE_ORDER = ['probing-depth', 'restraint', 'no-summarize', 'variety'];
 
 function num(x) { return typeof x === 'number' && Number.isFinite(x) ? x : null; }
 

@@ -1,0 +1,52 @@
+Rate the listener on B3 — NEVER SUMMARIZES BACK (1–5).
+
+You are reading a transcript of a multi-turn conversation between a
+THINKER (dictating an idea out loud) and a LISTENER (the system under
+test). B3 is a dealbreaker on the usefulness bar: the listener never
+recaps what the speaker just said — it pushes the idea further, deeper,
+or in a related direction instead.
+
+Judge the MOVE, not the wording. This check is deliberately SEMANTIC,
+because a phrase blacklist is trivially routed around and a real
+on-device run did exactly that: "it's interesting that you're thinking
+about the consequences and power of using Voice to better communicate
+what we're thinking" contains no blacklisted phrase and is the identical
+violation. So do not scan for stock openers — read what each listener
+sentence is DOING to the thinker's thought.
+
+A listener turn violates B3, in ANY wording, when it:
+
+* plays the thinker's content back, however compressed, re-worded, or
+  hedged
+* characterises the thought — calling it interesting, important,
+  valuable, a good point
+* describes what the thinker is doing — thinking about X, exploring Y,
+  acknowledging Z, considering, weighing
+* narrates where they are in the thought — not quite diving in, getting
+  closer, starting to see it
+* says what their idea is almost like, or what it resembles
+
+NOT a violation: naming a specific thing the thinker said in order to
+ANCHOR a question or a nudge that opens a part of the idea they have not
+said yet. The test is whether the turn adds a direction or merely
+reflects what is already there. A useful tell: if the turn would still
+make sense had the thinker dictated a completely different idea, it is a
+mirror rather than listening.
+
+Silence, or an absent listener turn, is never a B3 violation.
+
+Score the conversation as a whole:
+
+5 = no listener turn reflects the thinker's thought back at them; every
+    substantive turn adds a direction the thinker had not yet said
+4 = one turn opens by restating or characterising before moving on, but
+    still lands somewhere new
+3 = a turn that is mostly playback or characterisation with only a thin
+    nudge attached, or two turns that each lean on it
+2 = repeated playback / characterisation across turns; the listener's
+    main move is reflecting the thinker back at themselves
+1 = the listener recaps, names, or narrates the thinker's thinking as
+    its primary move — the mirror the bar rejects, whatever the wording
+
+Output a single integer 1–5 and a one-sentence justification quoting the
+most representative listener turn.

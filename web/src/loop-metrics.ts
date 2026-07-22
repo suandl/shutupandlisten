@@ -34,7 +34,7 @@ export const LOOP_STAGE_LABELS: Readonly<Record<LoopStage, string>> = {
   'turn-end': 'detector ended the turn',
   transcript: 'STT transcript resolved',
   gate: 'response-hierarchy gate decided',
-  reply: 'reply text ready',
+  reply: 'first speakable sentence ready',
   'speech-start': 'TTS playback started',
 };
 
