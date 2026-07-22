@@ -307,7 +307,7 @@ function refreshSourceInfo(): void {
 interface SpeechSession {
   /** Feed the reply generated SO FAR. Anything newly complete starts synthesizing. */
   push(textSoFar: string): void;
-  /** Feed the FINAL reply. Returns the text that will actually have been said. */
+  /** Feed the FINAL reply. Returns the reply as it was handed to the voice. */
   finish(finalText: string): string;
 }
 
@@ -374,7 +374,10 @@ function beginSpeech(entry: TurnResponse): SpeechSession | null {
         await playPcm(res.audio, res.sampleRate, epoch);
       }
     } catch {
-      /* the speaker never rejects (it degrades to the tone); nothing to do */
+      // The speaker never rejects — it degrades to the placeholder tone. If one
+      // ever did, DROP the rest of the reply: the re-entry below would otherwise
+      // hand the same failing chunk straight back and spin on it forever.
+      queue.length = 0;
     } finally {
       draining = false;
       // A sentence that arrived while the loop was on its way out still gets said.
