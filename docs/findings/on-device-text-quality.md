@@ -114,6 +114,16 @@ The on-device cells will produce this exact shape once a runtime is available.
   threshold — a real signal (this run was *too* withholding), not a harness
   defect. This is the precise output `eval:smoke:ondevice` yields per candidate.
 
+  > **Two of these numbers are superseded (su-lou.12, 2026-07-22).** The
+  > variety row is the defect rather than a result: the rubric awarded a
+  > perfect 5 for asking *zero* questions, so the column flattered exactly the
+  > degenerate output the bar rejects. That cell now returns **N/A** and is
+  > excluded from the column. The restraint row predates the simulator's
+  > landing phase and is not comparable with later runs either — restraint now
+  > scores each turn against *where the dictation ended*, which is a boundary
+  > this run's transcript did not have. Re-run before quoting either number;
+  > probing-depth is unaffected.
+
 - **Full-brain vs reduced-role on `gpt-4o`** (no judges) produced **identical,
   valid transcripts** with `listenerModelCalls = 4/4` for *both*. See §5 for why
   the reduced-role saving doesn't appear with a clean-prose thinker — it is a

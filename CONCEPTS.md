@@ -26,13 +26,20 @@ meaning — use them as written, and map synonyms back to them.
   advice. Drives the user side of each scenario, pinned to one model so it is not
   a confound when comparing listeners.
 
-- **judges** — Three LLM-rubric scorers run against a full transcript:
-  - **restraint** — does the listener stay out of the way, or take over with
-    summary / coaching / paraphrase?
+- **judges** — Four rubric scorers run against a full transcript:
+  - **restraint** — does the listener stay out of the way *while the idea is
+    being dictated*, or take over with summary / coaching / paraphrase? Scored
+    against the **landing** — the point where the thinker finishes laying the
+    idea out — because one thread-pull after it is the job, and the same
+    sentence before it is an interruption.
   - **variety** — across the conversation, do the listener's questions vary in
-    stem and target?
+    stem and target? Returns **N/A** below two questions: variety is undefined
+    on a single sample, and scoring it there flatters a listener that asks
+    nothing.
   - **probing-depth** — does the listener engage the *specific* things the
     thinker said, or pivot to generic prompts?
+  - **no-summarize** — does any turn reflect the thinker's own thought back at
+    them, in any wording? Judged as a semantic move, not a phrase list.
 
 ## Delivery architecture
 

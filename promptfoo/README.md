@@ -63,8 +63,17 @@ npm run eval                # full matrix (all scenarios × providers × prompts
 npm run eval:smoke          # one scenario × openai × claude-prompt (cheap)
 npm run eval:smoke:ondevice # one on-device (Ollama) model × one scenario (needs Ollama)
 npm run validate            # schema-check the config without calling APIs
-npm test                    # gate + banned-phrase-sync unit tests (keyless, no model)
+npm test                    # gate, landing-phase, variety-gate, summary unit tests (keyless)
+npm run test:judges         # OPT-IN: scores two fixture transcripts with a real grader (paid)
 ```
+
+`npm test` is keyless and pins structure. `npm run test:judges` is the
+acceptance test for the judges themselves — it scores a deliberately
+restrained transcript and a deliberately intrusive one (identical idea,
+identical wording, no banned phrases; they differ only in *when* the
+listener speaks) and requires the restraint judge to separate them. It
+makes paid grader calls, so `npm test` skips it unless
+`RUN_JUDGE_ACCEPTANCE=1` is set.
 
 The on-device-class candidates (full-brain and reduced-role) and the
 runtime they each need are documented in
@@ -121,14 +130,27 @@ which wraps a target listener model (e.g. `openai:gpt-4o` or
 thinker side is not a confound when comparing listener prompts and
 models). It returns the full transcript as the cell's output.
 
-The transcript is scored by four LLM-rubric judges in `judges/`:
+**The dictation ends on purpose.** Each simulator call carries a phase
+directive and the last one is a *landing* — finish the idea, come to a
+natural stopping point — after which the transcript carries a marker
+line. Restraint scores a transition (silence while the idea is dictated,
+then one thread-pull once it lands), so a thinker who never finishes
+makes the top of that rubric unreachable: every listener turn is
+mid-dictation by construction. That is what pinned the column at 0-of-16
+before su-lou.12, whatever the prompt or model did. The marker is added
+when the transcript is formatted, so the judges see it and the listener
+never does — it still has to hear the landing in the thinker's own words.
+
+The transcript is scored by four judges in `judges/`:
 
 - `judges/probing-depth.txt` — once the idea is laid out, does the
   listener's thread-pull engage a *specific* thread of the idea, or
   pivot to a generic / emotional prompt?
 - `judges/restraint.txt` — does the listener stay silent while the
   idea is dictated, or take over with mid-stream acks / echoes /
-  summary / coaching?
+  summary / coaching? Anchored on the landing marker above: turns
+  before it are interjections, the one after it is the listener's
+  legitimate window and is never penalised.
 - `judges/no-summarize.txt` — B3, the dealbreaker: does any listener
   turn reflect the thinker's own thought back at them, in *any*
   wording? Scored semantically on purpose. `restraint.txt` caps the
@@ -138,8 +160,12 @@ The transcript is scored by four LLM-rubric judges in `judges/`:
   trips no phrase and is the identical violation. A phrase list
   cannot hold B3.
 - `judges/variety.txt` — across the conversation, do the listener's
-  questions vary in stem and target? (Returns 5 if the listener asks
-  ≤1 questions — restraint penalises over-questioning separately.)
+  questions vary in stem and target? Run behind `asserts/variety.js`,
+  which counts the listener's questions first and returns **N/A** below
+  two, excluding the cell from the column (the summary reports the
+  count). Variety is undefined on a single sample, and the rubric's old
+  "≤1 questions → 5" rule meant zero-question transcripts — the most
+  degenerate output in the matrix — scored top marks on it.
 
 ## Iteration loop
 
