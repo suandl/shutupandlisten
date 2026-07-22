@@ -3,6 +3,9 @@
 Status: U3 (epic su-lou, Phase B / Rung 1), 2026-06-29.
 Amended 2026-07-21 (su-lou.10.2): `Deciding` un-collapsed — the silence floor
 triggers an **evaluation**, it does not make the decision. See §4a.
+Amended 2026-07-22 (su-lou.10.4): a turn is one **utterance**, counted separately
+from the **evaluation** ticks inside it; only the listener taking the floor ends
+one. See §4b.
 
 This is the **runtime-agnostic** definition of the quiet-companion's
 turn-detection layer — the product-defining component (CONCEPTS.md:
@@ -160,6 +163,55 @@ event-for-event, plus the `evaluate` itself.
 
 ---
 
+## 4b. What ends a turn — the utterance / evaluation split
+
+A **turn** is one *utterance*: everything the thinker says until the listener takes
+the floor. An **evaluation** is one closing of the patience window — a question put
+to the host, answerable either way. Since §4a they are different things, and the
+machine counts them separately: `turn` on the one hand, `evaluation` on the other.
+
+**Only the listener taking the floor ends a turn.** Concretely, `turn++` happens on
+exactly two edges, and both mean "the previous turn is over":
+
+- a `speak` verdict → `turn-end` → the thinker's turn is finished, so the *next*
+  speech is a new one;
+- `dropTurn()` → the host abandoned the conversation (a mode switch, a fresh script).
+  Not a transition — it emits nothing and moves no state; it exists because throwing
+  the transcript away is the one turn boundary that is not a spoken response.
+
+A **`silence` verdict ends nothing.** The window closed, the host declined, and the
+thinker was never interrupted — so when they resume it is the same thought, the same
+`turn`, and **no `turn-start` is emitted**. This is what makes declining free
+*downstream* as well as inside the machine.
+
+Why it must be this way, and why now: the floor is about to get short (su-lou.10.5),
+and a short floor draws several evaluations per thought. Counting those as separate
+turns is not a cosmetic mislabel — everything calibrated to a thought reads the
+wrong number:
+
+| Reads `turn` as | Breaks how, if a tick counts as a turn |
+|-----------------|----------------------------------------|
+| the transcript grouping | one thought is split across several blocks |
+| the gate's word count | a substantive thought arrives as a "brief turn" and is **backchannelled over mid-sentence** |
+| the question cooldown | "don't ask twice in a row" is measured in breaths, so it clears early |
+| the prior-decision history | pauses within one thought read as separate exchanges |
+| one loop-metrics iteration | a declined window becomes the origin of a loop that never ran |
+
+The second row is the sharp one: at a 500 ms floor a mid-sentence pause carries only
+a few words, the gate's rule 4 reads a short finished aside, and the companion says
+"mm." over someone who is still talking. Feeding it the utterance so far instead of
+the fragment is the fix, and it is only expressible once the two identities are
+distinct.
+
+**Which id goes where.** An evaluation belongs to exactly one turn; a turn may have
+many. A window closing at the deadline opens a *new* evaluation; the evidence-driven
+re-evaluation that supersedes one (§6) keeps its id, because it is the same question
+asked again with better evidence. `turn-end` names the evaluation the `speak` verdict
+answered. Barge-in is untouched (**B2**): reaching `responding` means the floor was
+already taken, so the interrupting speech opens a new turn exactly as before.
+
+---
+
 ## 5. Events
 
 ### Input events (from the audio adapters / a golden vector)
@@ -183,9 +235,9 @@ discrete change.
 
 | Event | Meaning |
 |-------|---------|
-| `{ t, type: "turn-start", turn }` | A new turn began (first speech after `listening`, or a fresh turn after barge-in). `turn` is a monotonically increasing id. |
-| `{ t, type: "evaluate", turn, reason, trigger }` | **End-of-thought detected — should the listener speak?** A request for a verdict, not a decision. `reason`: `"floor"` (the patience window closed at the bare floor) or `"extended"` (it closed after an `incomplete` extension). `trigger`: `"deadline"` (the patience window closing) or `"evidence"` (a fresh verdict superseding an evaluation still awaiting an answer). This is the event a consumer aligns a transcript's turn boundary to, and the one endpointing is measured against — it fires whether or not the companion goes on to speak. |
-| `{ t, type: "turn-end", turn, reason }` | The listener **takes the floor**: the thinker's turn is over and a response begins. Emitted only when a `speak` verdict answers an `evaluate`, at the moment the verdict arrives, carrying that evaluation's `reason`. A `silence` verdict ends no turn. |
+| `{ t, type: "turn-start", turn }` | A new turn — a new **utterance** — began: the first speech after the previous turn ended (or after `dropTurn()`), or a fresh turn after barge-in. `turn` is a monotonically increasing id. **Not** emitted when the thinker resumes into a turn that is still open, whether the pause went un-evaluated or the host declined it (§4b). |
+| `{ t, type: "evaluate", turn, evaluation, reason, trigger }` | **End-of-thought detected — should the listener speak?** A request for a verdict, not a decision. `evaluation` is a monotonically increasing id for the window closure; one `turn` may carry several (§4b). `reason`: `"floor"` (the patience window closed at the bare floor) or `"extended"` (it closed after an `incomplete` extension). `trigger`: `"deadline"` (the patience window closing — a NEW `evaluation`) or `"evidence"` (a fresh verdict superseding an evaluation still awaiting an answer — the SAME `evaluation`). This is the event a consumer aligns a transcript's turn boundary to, and the one endpointing is measured against — it fires whether or not the companion goes on to speak. |
+| `{ t, type: "turn-end", turn, evaluation, reason }` | The listener **takes the floor**: the thinker's turn is over and a response begins. Emitted only when a `speak` verdict answers an `evaluate`, at the moment the verdict arrives, carrying that evaluation's id and `reason`. A `silence` verdict ends no turn. |
 | `{ t, type: "response-start", turn }` | Stubbed response began (immediately follows `turn-end`). |
 | `{ t, type: "response-end", turn, reason }` | Stubbed response finished. `reason`: `"completed"` or `"barge-in"`. |
 | `{ t, type: "barge-in", turn }` | The user spoke over a response; the floor is yielded instantly. `turn` is the interrupted turn. |
@@ -197,9 +249,9 @@ discrete change.
 `advance(t)` runs before every event and on every tick. It repeatedly applies
 the first matching timer transition whose fire-time ≤ `t`:
 
-- `pending` and `t ≥ deadline` → emit `evaluate` (`reason` per §2's deadline,
-  `trigger: "deadline"`) at `deadline`; enter `deciding`. **No turn ends here** —
-  `deciding` carries no timer, so nothing further can fire.
+- `pending` and `t ≥ deadline` → `evaluation++`; emit `evaluate` (`reason` per §2's
+  deadline, `trigger: "deadline"`) at `deadline`; enter `deciding`. **No turn ends
+  here** — `deciding` carries no timer, so nothing further can fire.
 - `responding` and `t ≥ responseStart + responseDurationMs` → emit
   `response-end` (`reason: "completed"`) at that time; enter `listening`.
 
@@ -207,17 +259,17 @@ Discrete events (after `advance(t)`):
 
 | In state | Event | Transition / emission |
 |----------|-------|-----------------------|
-| `listening` | `speech-start` | → `speaking`; `turn++`; emit `turn-start`. |
+| `listening` | `speech-start` | → `speaking`. If the turn ENDED (a `speak` verdict, or `dropTurn()`): `turn++`; emit `turn-start`. If it is still open — the host answered `silence` and the thinker resumed — the **same turn** continues and nothing is emitted (§4b). |
 | `speaking` | `speech-start` | (already speaking) ignore. |
 | `pending` | `speech-start` | Speaker resumed **before** the deadline (else `advance` already evaluated) → `speaking`, **same turn**; clear the pending verdict. No new turn. |
 | `deciding` | `speech-start` | Speaker resumed while the verdict was outstanding. Nothing has been spoken, so there is no floor to yield and nothing to interrupt: **not** a barge-in. The evaluation is abandoned → `speaking`, **same turn**; clear the verdict. No new turn. |
 | `responding` | `speech-start` | **Barge-in**: emit `barge-in`; emit `response-end` (`reason: "barge-in"`) — both at `t`; → `speaking`; `turn++`; emit `turn-start`. The yield is instant: the response is cut at `t`, not at its natural end. |
 | `speaking` | `speech-end` | → `pending`; `silenceStart = t`; verdict ← none. |
-| `deciding` | `decision` `"speak"` | The listener takes the floor: emit `turn-end` at `t` carrying the evaluation's `reason`; → `responding` with `responseStart = t`; emit `response-start` at `t`. |
-| `deciding` | `decision` `"silence"` | The listener declines: → `listening`. **No** `turn-end`, **no** response park — declining costs nothing. |
+| `deciding` | `decision` `"speak"` | The listener takes the floor: the turn is now ENDED (§4b); emit `turn-end` at `t` carrying the evaluation's id and `reason`; → `responding` with `responseStart = t`; emit `response-start` at `t`. |
+| `deciding` | `decision` `"silence"` | The listener declines: → `listening`, turn still **open**. **No** `turn-end`, **no** response park — declining costs nothing. |
 | any other | `decision` | Ignore (stale: the evaluation it answers was superseded or abandoned). |
 | `pending` | `eou` | Set the pending verdict (direct, or threshold `completionProb`). Recompute the deadline; settle (re-advance to `t`) in case the new verdict makes the deadline already due — e.g. an `incomplete` hold flips to `complete`. |
-| `deciding` | `eou` | Set the verdict. If it **changed** it and `useSmartTurn`, emit a superseding `evaluate` at `t` (`trigger: "evidence"`, same `reason`). Stays in `deciding` — a re-evaluation is a fresh question, not an answer. |
+| `deciding` | `eou` | Set the verdict. If it **changed** it and `useSmartTurn`, emit a superseding `evaluate` at `t` (`trigger: "evidence"`, same `reason`, same `evaluation` — the window has not closed again, only the evidence improved). Stays in `deciding` — a re-evaluation is a fresh question, not an answer. |
 | any other | `eou` | Ignore (no decision hangs on it). |
 | any | `speech-end` outside `speaking` | Ignore (defensive; VAD should not emit it). |
 | any | `tick` | No-op beyond the `advance(t)` already done. |
@@ -234,9 +286,10 @@ Notes:
   same pause; the deadline is recomputed from the latest. An `incomplete`→
   `complete` flip after the floor has passed evaluates immediately (at the
   moment the machine learns the thought is complete), never retroactively.
-- **Barge-in starts a new turn** because the barge-in *is* a `speech-start`:
-  the user is now talking, so a fresh turn is captured. The interrupted turn's
-  response is closed with `reason: "barge-in"`.
+- **Barge-in starts a new turn** because reaching `responding` means the floor was
+  already taken — which ended the interrupted turn (§4b) — so the speech that
+  interrupts it is a new one. The interrupted turn's response is closed with
+  `reason: "barge-in"`, instantly, at `t`.
 - **`turn-end` is stamped at the verdict, not at the deadline.** The floor passes
   to the listener when the decision is made, so a host that deliberates for 300 ms
   starts its response 300 ms after the patience window closed — and says so. The
@@ -258,14 +311,15 @@ is spoken) stays outside this machine, because it does not change the timing:
 | `PauseDetected → Listening: speech resumes before floor` | `pending` + `speech-start` → `speaking` (same turn) |
 | `PauseDetected → Deciding: floor elapsed AND EOU not incomplete` | `pending` deadline reached → `evaluate` → `deciding` |
 | `PauseDetected → Listening: EOU incomplete holds turn open` | `incomplete` extends the deadline (§2) |
-| `Deciding → Silence` | `decision "silence"` → `listening`, no `turn-end`, no response park |
+| `Deciding → Silence` | `decision "silence"` → `listening`, no `turn-end`, no response park — and the turn stays open (§4b) |
 | `Deciding → MinimalAck / Reflection / Question` | `decision "speak"` → `turn-end` → `responding` (which rung is spoken is the response gate's business, not the machine's) |
 | `Reflection / Question → Listening: barge-in — yield instantly` | `responding` + `speech-start` → `barge-in` → `speaking` |
 
 The timing-only milestone originally collapsed `Deciding` into `responding` and
-stubbed the fan-out; su-lou.10.2 restored the state (§4a). U4–U6 expand what
-happens *inside* `responding` (STT → listener-LLM → TTS); the timing contract in
-§2 does not change.
+stubbed the fan-out; su-lou.10.2 restored the state (§4a) and su-lou.10.4 made the
+turn id mean what the diagram always meant by it (§4b). U4–U6 expand what happens
+*inside* `responding` (STT → listener-LLM → TTS); the timing contract in §2 does not
+change.
 
 ---
 

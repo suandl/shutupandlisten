@@ -128,6 +128,11 @@ export type TurnEndReason = 'floor' | 'extended';
 
 /** A prior turn's decision — the history the escalate-slowly policy reads. */
 export interface PriorDecision {
+  /**
+   * The UTTERANCE the decision was made about (`EvalContext.utteranceIndex`), so
+   * the cooldown below measures spacing in thoughts. One entry per prior utterance,
+   * carrying that utterance's latest (final) decision.
+   */
   turn: number;
   tier: Tier;
 }
@@ -158,14 +163,20 @@ export interface EvalContext {
    * Utterance identity (1-based) — which THOUGHT this is, not which evaluation tick
    * fired. The ack rotation and the question cooldown are spacing rules about
    * utterances, so they must not be keyed on a tick that can repeat within one
-   * pause. Today the detector's turn number is both (one evaluation per turn); when
-   * su-lou.10.4 splits them, only this field's SOURCE changes — not this contract.
+   * pause. su-lou.10.4 made the detector count the two separately (spec §4b), so
+   * this is now the detector's `turn` — which advances only when the listener takes
+   * the floor — while several `evaluate` ticks can share it. The contract here did
+   * not change; only its source did, exactly as this field's original note promised.
    */
   utteranceIndex: number;
   /**
    * The WHOLE utterance transcribed so far — NOT the fragment since the last
    * evaluation. Rules 4/5 ask "how big is this thought?", so a re-evaluation of a
    * still-growing utterance has to see all of it. Empty ⇒ nothing was transcribed.
+   *
+   * This is what stops the companion CHIRPING mid-sentence once the floor is short:
+   * fed the fragment after a declined pause, rule 4 reads a substantive thought as a
+   * "brief turn" and backchannels over someone who is still talking.
    */
   utteranceTextSoFar: string;
   /**

@@ -130,10 +130,14 @@ function resetTranscript(): void {
   // the next script/session would resume that stale turn instead of opening a
   // fresh one. Decline it: `silence` re-arms to listening at no cost.
   answerEvaluation('silence');
+  // …but declining does not END the turn (§4b), and this transcript is being thrown
+  // away, so drop it explicitly: the next speech must open a turn the cleared
+  // `turnStarts` actually has a mark for.
+  detector.dropTurn();
   transcriptSegments.clear();
   turnStarts = [];
   turnEnds = [];
-  turnResponses.clear();
+  responsesByEvaluation.clear();
   lastListenerSpeechEndT = null;
   loopMetrics.reset();
   stopSpeech();
@@ -142,12 +146,19 @@ function resetTranscript(): void {
 }
 
 // ── listener (U5): response-hierarchy gate + on-device LLM, additive over the
-// transcript. When a turn ENDS and its transcript RESOLVES, the gate picks a tier
-// (silence / acknowledge = rules-only; reflection / question = the LLM) and the
-// listener's reply renders under that turn. Strictly downstream of the detector —
-// it reads turn boundaries + words, never alters the tested timing. ──
+// transcript. When a turn's patience window CLOSES and its transcript RESOLVES, the
+// gate picks a tier (silence / acknowledge = rules-only; reflection / question = the
+// LLM) and the listener's reply renders under that turn. Strictly downstream of the
+// detector — it reads turn boundaries + words, never alters the tested timing.
+//
+// Keyed by EVALUATION, not by turn (spec §4b): one turn can close its window several
+// times, and each closure is a fresh question — asked over more words than the last —
+// that needs its own answer back to the detector. The `utterance` field is what
+// everything calibrated to a THOUGHT reads: the ack rotation, the question cooldown,
+// the LLM's conversation history, one loop-metrics iteration. ──
 interface TurnResponse {
-  turn: number;
+  evaluation: number;
+  utterance: number;
   userText: string; // the thinker's transcribed words (gate input + LLM history)
   decision: GateDecision;
   text: string; // rendered reply: ack, LLM reply, LLM stub, or '' for silence
@@ -156,7 +167,15 @@ interface TurnResponse {
   spoken?: boolean; // guard: this reply's audio was already synthesized + played
   ttsMode?: SpeakerMode; // which voice spoke it (webgpu | wasm | stub tone)
 }
-const turnResponses = new Map<number, TurnResponse>();
+// Insertion order IS evaluation order, which the utterance-keyed reads below rely on.
+const responsesByEvaluation = new Map<number, TurnResponse>();
+
+/** The decision currently shown for a turn: its most recent evaluation's. */
+function latestResponseFor(turn: number): TurnResponse | undefined {
+  let latest: TurnResponse | undefined;
+  for (const r of responsesByEvaluation.values()) if (r.utterance === turn) latest = r;
+  return latest;
+}
 
 // When the companion last RELEASED THE FLOOR (performance.now() ms), or null if it
 // has not spoken this session. Set from the detector's response-end / barge-in — the
@@ -259,7 +278,7 @@ function speakResponse(entry: TurnResponse): void {
     .then((sp) => sp.synthesize(text))
     .then((res) => {
       entry.ttsMode = res.mode;
-      loopMetrics.mark(entry.turn, 'speech-start', now());
+      loopMetrics.mark(entry.utterance, 'speech-start', now());
       playPcm(res.audio, res.sampleRate);
       renderMetrics();
       renderTranscript();
@@ -472,12 +491,12 @@ function wireAudio(src: AudioSource): void {
 //     resolving IS the trigger (see maybeRespond), never a timer.
 // An evaluation the harness never answers would park the detector in `deciding`,
 // so every path out of here must end in exactly one answer.
-let awaitingVerdictForTurn: number | null = null;
+let awaiting: { evaluation: number; turn: number } | null = null;
 
 /** Answer the outstanding evaluation, if there is one. Safe to call unconditionally. */
 function answerEvaluation(outcome: 'speak' | 'silence'): void {
-  if (awaitingVerdictForTurn === null) return;
-  awaitingVerdictForTurn = null;
+  if (awaiting === null) return;
+  awaiting = null;
   // Re-entrant when called from handleOut (inside detector.input); the detector
   // queues such an event and applies it as soon as the current one settles.
   detector.input({ t: now(), type: 'decision', outcome });
@@ -499,9 +518,9 @@ function answerEvaluation(outcome: 'speak' | 'silence'): void {
  * was not this turn's end, and the next (real) evaluation must be free to mark it.
  */
 function cancelAbandonedEvaluation(): void {
-  if (awaitingVerdictForTurn === null || detector.state === 'deciding') return;
-  const turn = awaitingVerdictForTurn;
-  awaitingVerdictForTurn = null;
+  if (awaiting === null || detector.state === 'deciding') return;
+  const { turn } = awaiting;
+  awaiting = null;
   turnEnds = turnEnds.filter((m) => m.turn !== turn);
   loopMetrics.clear(turn);
   renderTranscript();
@@ -523,13 +542,22 @@ function handleOut(e: OutputEvent): void {
     // The patience window closed. THIS is where the transcript's turn-end marker
     // and the loop metric's first stage belong — the moment the detector read the
     // pause as an end-of-thought — whether or not the companion goes on to speak.
-    // A superseding re-evaluation of the same turn re-uses the first mark: the
+    // A superseding re-evaluation (same `evaluation`) re-uses the first mark: the
     // patience deadline is where the window closed, and it has not moved.
-    if (!turnEnds.some((m) => m.turn === e.turn)) {
-      turnEnds.push({ turn: e.turn, t: e.t, reason: e.reason });
+    //
+    // A NEW evaluation of the same turn is the other case (§4b): the gate declined,
+    // the thinker kept going, and the window has now closed again further along. Its
+    // predecessor marked an origin for a loop iteration that never happened, so
+    // replace it — the same reasoning cancelAbandonedEvaluation clears marks under.
+    if (!turnEnds.some((m) => m.evaluation === e.evaluation)) {
+      if (turnEnds.some((m) => m.turn === e.turn)) {
+        turnEnds = turnEnds.filter((m) => m.turn !== e.turn);
+        loopMetrics.clear(e.turn);
+      }
+      turnEnds.push({ turn: e.turn, evaluation: e.evaluation, t: e.t, reason: e.reason });
       loopMetrics.mark(e.turn, 'turn-end', e.t);
     }
-    awaitingVerdictForTurn = e.turn;
+    awaiting = { evaluation: e.evaluation, turn: e.turn };
     if (loopActive()) renderTranscript(); // → maybeRespond answers once the transcript resolves
     else answerEvaluation('speak'); // timing-only: the stubbed response, exactly as before
   }
@@ -627,7 +655,7 @@ function renderTranscript(): void {
     }
 
     // U5: the listener's reply for this turn (once the gate has decided it).
-    const resp = turnResponses.get(g.turn);
+    const resp = latestResponseFor(g.turn);
     if (resp) turnEl.appendChild(renderResponse(resp));
 
     transcriptEl.appendChild(turnEl);
@@ -635,11 +663,11 @@ function renderTranscript(): void {
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
-// Kick off the gate + listener for any turn that has just ended AND whose
-// transcript has fully resolved. The gate decision is synchronous (renders at
+// Kick off the gate + listener for any turn whose patience window has closed AND
+// whose transcript has fully resolved. The gate decision is synchronous (renders at
 // once); a reflection/question additionally calls the LLM, which resolves later
-// and re-renders. Idempotent — a turn already handled is skipped — so it is safe
-// to call on every render.
+// and re-renders. Idempotent — an evaluation already handled is skipped — so it is
+// safe to call on every render.
 //
 // It is also what answers the detector's outstanding `evaluate`: the gate's tier
 // IS the verdict (`silence` declines the floor; every speaking tier takes it).
@@ -649,17 +677,23 @@ function maybeRespond(groups: TurnTranscript[]): void {
   if (!loopActive()) return;
   for (const g of groups) {
     if (!g.end) continue;
-    if (turnResponses.has(g.turn)) {
-      // Already gated. A re-evaluation of this turn (fresh evidence) still needs
-      // an answer, and the decision has not changed — replay it rather than
+    const evaluation = g.end.evaluation;
+    if (responsesByEvaluation.has(evaluation)) {
+      // Already gated. A re-evaluation of the same window (fresh EOU evidence) still
+      // needs an answer, and the decision has not changed — replay it rather than
       // re-running the gate, or the detector waits on a verdict that never comes.
-      answerFor(g.turn, turnResponses.get(g.turn)?.decision.tier);
+      answerFor(evaluation, responsesByEvaluation.get(evaluation)?.decision.tier);
       continue;
     }
     if (g.segments.some((s) => s.pending)) continue; // wait for STT to resolve first
 
     // Real words only: a stub placeholder ("⟨speech 1.4s …⟩") is not transcription,
     // so it must not read as a substantive turn. All-stub/empty ⇒ '' ⇒ silence.
+    //
+    // These are the WHOLE turn's segments, so a second evaluation of a turn the gate
+    // declined into sees the thought so far and not just the words since the pause —
+    // `EvalContext.utteranceTextSoFar`, and the thing that stops rule 4 backchannelling
+    // over a substantive turn once the floor is short.
     const userText = g.segments
       .filter((s) => !s.pending && s.mode !== 'stub')
       .map((s) => s.text)
@@ -667,10 +701,12 @@ function maybeRespond(groups: TurnTranscript[]): void {
       .replace(/\s+/g, ' ')
       .trim();
 
-    const priorDecisions: PriorDecision[] = [...turnResponses.values()]
-      .filter((r) => r.turn < g.turn)
-      .sort((a, b) => a.turn - b.turn)
-      .map((r) => ({ turn: r.turn, tier: r.decision.tier }));
+    // One entry per prior utterance — its latest evaluation's decision — so the
+    // gate's history counts thoughts, not evaluation ticks (§4b). Insertion order
+    // (evaluation order) keeps the last write per turn, ascending by turn.
+    const latest = new Map<number, Tier>();
+    for (const r of responsesByEvaluation.values()) if (r.utterance < g.turn) latest.set(r.utterance, r.decision.tier);
+    const priorDecisions: PriorDecision[] = [...latest].map(([turn, tier]) => ({ turn, tier }));
 
     // How long the pause had run when the detector evaluated it: last speech-end in
     // this turn → where the patience window closed. 0 only when the turn has NO
@@ -698,19 +734,20 @@ function maybeRespond(groups: TurnTranscript[]): void {
     });
     loopMetrics.mark(g.turn, 'gate', now());
     const entry: TurnResponse = {
-      turn: g.turn,
+      evaluation,
+      utterance: g.turn,
       userText,
       decision,
       text: decision.ackText ?? '',
       status: decision.callModel ? 'pending' : 'done',
     };
-    turnResponses.set(g.turn, entry);
+    responsesByEvaluation.set(evaluation, entry);
 
     // The verdict, back to the detector: `silence` re-arms it to listening with
     // no response park; a speaking tier takes the floor. The reply text is still
     // being generated at this point for reflection/question — the decision to
     // SPEAK is what the detector is waiting on, not the words.
-    answerFor(g.turn, decision.tier);
+    answerFor(evaluation, decision.tier);
 
     if (decision.callModel) {
       const request = buildListenerRequest({
@@ -750,16 +787,22 @@ function maybeRespond(groups: TurnTranscript[]): void {
 }
 
 /** Feed the gate's tier back as the detector's verdict, if it is what is awaited. */
-function answerFor(turn: number, tier: Tier | undefined): void {
-  if (!tier || awaitingVerdictForTurn !== turn) return;
+function answerFor(evaluation: number, tier: Tier | undefined): void {
+  if (!tier || awaiting?.evaluation !== evaluation) return;
   answerEvaluation(tier === 'silence' ? 'silence' : 'speak');
 }
 
-// Prior turns as an alternating thinker/listener history for the LLM. Silent turns
-// contribute nothing (their empty reply text is dropped downstream).
+// Prior turns as an alternating thinker/listener history for the LLM. One entry per
+// TURN, not per evaluation: a turn's last evaluation holds its full text and the
+// reply that was actually spoken, so the earlier looks at the same growing thought
+// would only repeat the thinker back at itself. Silent turns contribute nothing
+// (their empty reply text is dropped downstream).
 function conversationHistory(beforeTurn: number): ConversationTurn[] {
+  const latest = new Map<number, TurnResponse>();
+  for (const r of responsesByEvaluation.values()) if (r.utterance < beforeTurn) latest.set(r.utterance, r);
   const turns: ConversationTurn[] = [];
-  for (const r of [...turnResponses.values()].filter((x) => x.turn < beforeTurn).sort((a, b) => a.turn - b.turn)) {
+  for (const utterance of [...latest.keys()].sort((a, b) => a - b)) {
+    const r = latest.get(utterance) as TurnResponse;
     turns.push({ speaker: 'thinker', text: r.userText });
     if (r.text) turns.push({ speaker: 'listener', text: r.text });
   }

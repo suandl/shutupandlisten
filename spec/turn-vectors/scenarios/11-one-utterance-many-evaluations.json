@@ -1,0 +1,41 @@
+{
+  "name": "11-one-utterance-many-evaluations",
+  "description": "The utterance/evaluation split (§4b) at a short floor: one thought with two thinking-pauses the host declines to speak into draws THREE evaluations and stays ONE turn — turn 1 throughout, one turn-start, one turn-end. Only the third evaluation is answered 'speak', and that is what ends the turn, so the speech at 7500 is the first that opens a second turn. Under the pre-split machine each decline made the next speech a new turn, which is what fed the gate a fragment instead of the whole thought.",
+  "knobs": {
+    "silenceFloorMs": 500,
+    "incompleteExtensionMs": 4000,
+    "completionThreshold": 0.5,
+    "responseDurationMs": 1500,
+    "useSmartTurn": true
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 1000, "type": "speech-end" },
+    { "t": 1500, "type": "decision", "outcome": "silence" },
+    { "t": 1800, "type": "speech-start" },
+    { "t": 2800, "type": "speech-end" },
+    { "t": 3300, "type": "decision", "outcome": "silence" },
+    { "t": 3600, "type": "speech-start" },
+    { "t": 5000, "type": "speech-end" },
+    { "t": 5500, "type": "decision", "outcome": "speak" },
+    { "t": 7500, "type": "speech-start" },
+    { "t": 9000, "type": "tick" }
+  ],
+  "expected": {
+    "turnStartCount": 2,
+    "turnEndCount": 1,
+    "turnEnds": [
+      { "t": 5500, "turn": 1, "reason": "floor" }
+    ],
+    "emit": [
+      { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 1500, "type": "evaluate", "turn": 1, "evaluation": 1, "reason": "floor", "trigger": "deadline" },
+      { "t": 3300, "type": "evaluate", "turn": 1, "evaluation": 2, "reason": "floor", "trigger": "deadline" },
+      { "t": 5500, "type": "evaluate", "turn": 1, "evaluation": 3, "reason": "floor", "trigger": "deadline" },
+      { "t": 5500, "type": "turn-end", "turn": 1, "evaluation": 3, "reason": "floor" },
+      { "t": 5500, "type": "response-start", "turn": 1 },
+      { "t": 7000, "type": "response-end", "turn": 1, "reason": "completed" },
+      { "t": 7500, "type": "turn-start", "turn": 2 }
+    ]
+  }
+}
