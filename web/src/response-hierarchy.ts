@@ -130,8 +130,8 @@ export type TurnEndReason = 'floor' | 'extended';
 export interface PriorDecision {
   /**
    * The UTTERANCE the decision was made about (`EvalContext.utteranceIndex`), so
-   * the cooldown below measures spacing in thoughts. One utterance can contribute
-   * several entries — one per evaluation the gate answered within it.
+   * the cooldown below measures spacing in thoughts. One entry per prior utterance,
+   * carrying that utterance's latest (final) decision.
    */
   turn: number;
   tier: Tier;

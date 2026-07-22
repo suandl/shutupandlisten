@@ -137,7 +137,7 @@ function resetTranscript(): void {
   transcriptSegments.clear();
   turnStarts = [];
   turnEnds = [];
-  turnResponses.clear();
+  responsesByEvaluation.clear();
   lastListenerSpeechEndT = null;
   loopMetrics.reset();
   stopSpeech();
@@ -168,12 +168,12 @@ interface TurnResponse {
   ttsMode?: SpeakerMode; // which voice spoke it (webgpu | wasm | stub tone)
 }
 // Insertion order IS evaluation order, which the utterance-keyed reads below rely on.
-const turnResponses = new Map<number, TurnResponse>();
+const responsesByEvaluation = new Map<number, TurnResponse>();
 
 /** The decision currently shown for a turn: its most recent evaluation's. */
 function latestResponseFor(turn: number): TurnResponse | undefined {
   let latest: TurnResponse | undefined;
-  for (const r of turnResponses.values()) if (r.utterance === turn) latest = r;
+  for (const r of responsesByEvaluation.values()) if (r.utterance === turn) latest = r;
   return latest;
 }
 
@@ -678,11 +678,11 @@ function maybeRespond(groups: TurnTranscript[]): void {
   for (const g of groups) {
     if (!g.end) continue;
     const evaluation = g.end.evaluation;
-    if (turnResponses.has(evaluation)) {
+    if (responsesByEvaluation.has(evaluation)) {
       // Already gated. A re-evaluation of the same window (fresh EOU evidence) still
       // needs an answer, and the decision has not changed — replay it rather than
       // re-running the gate, or the detector waits on a verdict that never comes.
-      answerFor(evaluation, turnResponses.get(evaluation)?.decision.tier);
+      answerFor(evaluation, responsesByEvaluation.get(evaluation)?.decision.tier);
       continue;
     }
     if (g.segments.some((s) => s.pending)) continue; // wait for STT to resolve first
@@ -701,12 +701,12 @@ function maybeRespond(groups: TurnTranscript[]): void {
       .replace(/\s+/g, ' ')
       .trim();
 
-    // Every decision made about an EARLIER turn, stamped with that turn — so the
-    // question cooldown counts thoughts, not evaluation ticks (§4b). Already in
-    // evaluation order (the map's insertion order), hence ascending by turn too.
-    const priorDecisions: PriorDecision[] = [...turnResponses.values()]
-      .filter((r) => r.utterance < g.turn)
-      .map((r) => ({ turn: r.utterance, tier: r.decision.tier }));
+    // One entry per prior utterance — its latest evaluation's decision — so the
+    // gate's history counts thoughts, not evaluation ticks (§4b). Insertion order
+    // (evaluation order) keeps the last write per turn, ascending by turn.
+    const latest = new Map<number, Tier>();
+    for (const r of responsesByEvaluation.values()) if (r.utterance < g.turn) latest.set(r.utterance, r.decision.tier);
+    const priorDecisions: PriorDecision[] = [...latest].map(([turn, tier]) => ({ turn, tier }));
 
     // How long the pause had run when the detector evaluated it: last speech-end in
     // this turn → where the patience window closed. 0 only when the turn has NO
@@ -741,7 +741,7 @@ function maybeRespond(groups: TurnTranscript[]): void {
       text: decision.ackText ?? '',
       status: decision.callModel ? 'pending' : 'done',
     };
-    turnResponses.set(evaluation, entry);
+    responsesByEvaluation.set(evaluation, entry);
 
     // The verdict, back to the detector: `silence` re-arms it to listening with
     // no response park; a speaking tier takes the floor. The reply text is still
@@ -799,7 +799,7 @@ function answerFor(evaluation: number, tier: Tier | undefined): void {
 // (their empty reply text is dropped downstream).
 function conversationHistory(beforeTurn: number): ConversationTurn[] {
   const latest = new Map<number, TurnResponse>();
-  for (const r of turnResponses.values()) if (r.utterance < beforeTurn) latest.set(r.utterance, r);
+  for (const r of responsesByEvaluation.values()) if (r.utterance < beforeTurn) latest.set(r.utterance, r);
   const turns: ConversationTurn[] = [];
   for (const utterance of [...latest.keys()].sort((a, b) => a - b)) {
     const r = latest.get(utterance) as TurnResponse;

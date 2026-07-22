@@ -29,6 +29,7 @@ import {
   type EvalContext,
   type GateDecision,
   type PriorDecision,
+  type Tier,
 } from './response-hierarchy.ts';
 
 /** One spoken run of words, exactly as the VAD + STT would deliver it. */
@@ -80,10 +81,11 @@ function runLoop(phrases: readonly Phrase[], knobs: Partial<TurnKnobs>, finalT: 
       .join(' ')
       .replace(/\s+/g, ' ')
       .trim();
-    // History from EARLIER turns only, stamped with the turn it was about.
-    const priorDecisions: PriorDecision[] = decided
-      .filter((d) => d.turn < e.turn)
-      .map((d) => ({ turn: d.turn, tier: d.decision.tier }));
+    // History from EARLIER turns only, stamped with the turn it was about — one
+    // entry per prior utterance, its latest evaluation's decision.
+    const latest = new Map<number, Tier>();
+    for (const d of decided) if (d.turn < e.turn) latest.set(d.turn, d.decision.tier);
+    const priorDecisions: PriorDecision[] = [...latest].map(([turn, tier]) => ({ turn, tier }));
 
     const decision = decideTier({
       utteranceIndex: e.turn,
