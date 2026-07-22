@@ -29,6 +29,8 @@
 // OutputEvent doc block below; everything calibrated to a thought — word counts,
 // the question cooldown, transcript grouping — keys on the former.
 
+import { DEFAULT_COMPLETION_THRESHOLD } from './completion-threshold.ts';
+
 export type Verdict = 'complete' | 'incomplete';
 export type TurnState = 'listening' | 'speaking' | 'pending' | 'deciding' | 'responding';
 
@@ -47,7 +49,13 @@ export interface TurnKnobs {
   silenceFloorMs: number;
   /** Extra patience (ms) added when the EOU verdict for the pause is `incomplete`. */
   incompleteExtensionMs: number;
-  /** smart-turn P(complete) >= this ⇒ `complete`, else `incomplete`. Higher ⇒ more patient. */
+  /**
+   * smart-turn P(complete) >= this ⇒ `complete`, else `incomplete`. Higher ⇒ more
+   * patient. The gate thresholds the SAME probability for its own rule 2, so both
+   * read one shared default (completion-threshold.ts) and the live app derives the
+   * gate's runtime value from this knob — see that module for why drift here is a
+   * companion that holds the turn open and then answers anyway.
+   */
   completionThreshold: number;
   /** Length (ms) of the stubbed canned response (timing-only milestone). */
   responseDurationMs: number;
@@ -58,7 +66,7 @@ export interface TurnKnobs {
 export const DEFAULT_KNOBS: TurnKnobs = {
   silenceFloorMs: 2000,
   incompleteExtensionMs: 4000,
-  completionThreshold: 0.5,
+  completionThreshold: DEFAULT_COMPLETION_THRESHOLD,
   responseDurationMs: 1500,
   useSmartTurn: true,
 };
