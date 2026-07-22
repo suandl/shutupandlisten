@@ -174,7 +174,7 @@ default.
 ```bash
 npm run measure:loop                     # real provisioned models
 npm run measure:loop -- --query llm=off  # stub substrate: structure only, seconds not minutes
-npm run measure:loop -- --json           # machine-readable
+npm run -s measure:loop -- --json        # machine-readable (-s keeps npm's banner off stdout)
 ```
 
 Drives the mic-less `?demo=u6-warmed-loop` substrate in headless Chromium and reads

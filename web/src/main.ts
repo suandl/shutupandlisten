@@ -1077,8 +1077,8 @@ declare global {
       version: 1;
       /** Mean per-leg + mean total, over the turns recorded so far. */
       summary: () => ReturnType<LoopMetrics['summary']>;
-      /** Every recorded turn, for per-turn spread rather than just the mean. */
-      turns: () => ReturnType<LoopMetrics['all']>;
+      /** Every recorded turn's latencies, for per-turn spread rather than just the mean. */
+      turnLatencies: () => ReturnType<LoopMetrics['all']>;
       /** The knobs the numbers were taken under — a latency without its floor is unreadable. */
       knobs: () => TurnKnobs;
       /** Which backends are actually live: a 'stub' listener makes gate→reply meaningless. */
@@ -1089,7 +1089,7 @@ declare global {
 window.__loopMetrics = {
   version: 1,
   summary: () => loopMetrics.summary(),
-  turns: () => loopMetrics.all(),
+  turnLatencies: () => loopMetrics.all(),
   knobs: () => ({ ...detector.config }),
   modes: () => ({
     source: audio.info,

@@ -19,7 +19,9 @@
 //   npm run measure:loop                      real provisioned models
 //   npm run measure:loop -- --query llm=off   the stub substrate (fast; structure only)
 //   npm run measure:loop -- --base-url http://localhost:5173   reuse a running server
-//   npm run measure:loop -- --json            machine-readable, for pasting into a bead
+//   npm run -s measure:loop -- --json         machine-readable, for pasting into a bead
+//                                             (-s: npm's own run banner also lands on
+//                                             stdout and would corrupt a piped blob)
 //
 // READ THE SUBSTRATE LINE BEFORE THE NUMBERS. The demo's turns are spaced for the
 // STUB response length (floor 2s + 1.5s reply). A real listener on the single-
@@ -62,18 +64,34 @@ function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--port') opts.port = Number(argv[++i]);
+    // Numeric flags are kept as their raw string here and validated once below, so
+    // the error can echo exactly what was typed rather than a coerced NaN.
+    if (a === '--port') opts.port = argv[++i];
     else if (a === '--base-url') opts.baseUrl = argv[++i];
     else if (a === '--demo') opts.demo = argv[++i];
     else if (a === '--query') opts.query = argv[++i].replace(/^\?/, '');
-    else if (a === '--turns') opts.turns = Number(argv[++i]);
-    else if (a === '--timeout') opts.timeoutMs = Number(argv[++i]);
+    else if (a === '--turns') opts.turns = argv[++i];
+    else if (a === '--timeout') opts.timeoutMs = argv[++i];
     else if (a === '--json') opts.json = true;
     else {
       console.error(`loop-latency: unknown argument ${a}`);
       process.exit(2);
     }
   }
+  // Number('abc') is NaN, and a NaN turn target means `completed >= opts.turns` is
+  // never true — the run silently burns the whole timeout instead of failing fast.
+  // Catch the garbage here, at the same exit(2) the unknown-argument path uses.
+  const positive = (raw, flag) => {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`loop-latency: ${flag} expects a positive number, got ${raw}`);
+      process.exit(2);
+    }
+    return n;
+  };
+  opts.port = positive(opts.port, '--port');
+  opts.turns = positive(opts.turns, '--turns');
+  opts.timeoutMs = positive(opts.timeoutMs, '--timeout');
   return opts;
 }
 
@@ -157,12 +175,23 @@ function formatTable(result) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  const log = (m) => console.log(m);
+  // Narration goes to stderr; stdout is reserved for the one deliverable (the JSON
+  // blob or the table) so `measure:loop -- --json | jq` isn't fed the running
+  // commentary. Fatal errors already use console.error — this keeps the rest company.
+  const log = (m) => console.error(m);
 
   let server = null;
   let base = opts.baseUrl;
   if (!base) {
-    base = `http://localhost:${opts.port}`;
+    // Pin the literal interface — NOT "localhost" — for the server we own. `localhost`
+    // can resolve differently for the spawner and the spawned server: real dev
+    // containers ship /etc/hosts entries that map it to ::1 only, so vite told to bind
+    // "localhost" listens on IPv6 while node's fetch of the IPv4 side gets ECONNREFUSED
+    // — waitForServer would then poll an address the server never bound and time out on
+    // a server that came up in ~100ms. A measurement harness must not depend on the
+    // resolver agreeing with vite; we bind and probe the same literal 127.0.0.1.
+    // (--base-url is the user's and is left exactly as given.)
+    base = `http://127.0.0.1:${opts.port}`;
     // NEVER adopt a server that happens to be listening. It is very likely THIS app
     // — served from a different checkout — and the numbers would silently describe
     // someone else's working tree. (That is not hypothetical: it is what happened
@@ -177,10 +206,17 @@ async function main() {
       process.exit(1);
     }
     log(`loop-latency: starting the dev server on :${opts.port}…`);
-    server = spawn('npm', ['run', 'dev', '--', '--port', String(opts.port), '--strictPort'], {
+    server = spawn('npm', ['run', 'dev', '--', '--port', String(opts.port), '--strictPort', '--host', '127.0.0.1'], {
       cwd: WEB_DIR,
       stdio: 'ignore',
       detached: true,
+    });
+    // A spawn failure (npm not on PATH → ENOENT) is emitted as an 'error' event, not a
+    // throw; with no listener it becomes an uncaught exception, bypassing the clean
+    // `loop-latency:` error format below. Catch it and exit the same way.
+    server.on('error', (err) => {
+      console.error(`loop-latency: failed to start the dev server: ${err.message}`);
+      process.exit(1);
     });
     if (!(await waitForServer(base, SERVER_UP_TIMEOUT_MS))) {
       stopServer(server);
@@ -225,19 +261,29 @@ async function main() {
 
     const result = await page.evaluate(() => ({
       summary: window.__loopMetrics.summary(),
-      turns: window.__loopMetrics.turns(),
+      // Page-side this is turnLatencies(): per-turn latency records. The name `turns()`
+      // collided with LoopMetrics.turns() (which returns turn NUMBERS), so it was
+      // renamed there. This field stays `turns` — the consumers below read `.turns`.
+      turns: window.__loopMetrics.turnLatencies(),
       knobs: window.__loopMetrics.knobs(),
       modes: window.__loopMetrics.modes(),
     }));
 
-    if (result.summary.completed < opts.turns) {
+    // Compute completeness once so the human warning and the machine flag cannot
+    // disagree: expectedTurns is what we asked for, timedOut is whether we got it.
+    result.expectedTurns = opts.turns;
+    result.timedOut = result.summary.completed < opts.turns;
+
+    if (result.timedOut) {
       // Not a failure: a partial run still carries turn 1, which is the clean one.
       // Say so loudly rather than letting a short table read as a complete one.
       log(`loop-latency: TIMED OUT with ${result.summary.completed}/${opts.turns} spoken — the table below is partial`);
     }
 
+    // The deliverable — and only the deliverable — goes to stdout, so either form
+    // can be piped. Everything else this run said went to stderr via log().
     if (opts.json) console.log(JSON.stringify(result, null, 2));
-    else log(formatTable(result));
+    else console.log(formatTable(result));
   } finally {
     await browser?.close();
     if (server) stopServer(server);
@@ -249,7 +295,13 @@ function stopServer(child) {
     // Detached → kill the whole process group; `npm run dev` spawns vite as a child.
     process.kill(-child.pid, 'SIGTERM');
   } catch {
-    /* already gone */
+    // Group-kill with a negative pid is POSIX-only; where it throws, at least reap the
+    // direct child so we don't leave the immediate `npm` process behind.
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      /* already gone */
+    }
   }
 }
 
