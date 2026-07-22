@@ -209,7 +209,8 @@ export function speechChunks(text: string, minChars: number = MIN_CHUNK_CHARS): 
 export interface SpeechStream {
   push(textSoFar: string): string[];
   finish(finalText: string): string[];
-  /** The cleaned text handed out so far — what the companion has actually said. */
+  /** Everything handed to the voice so far — the companion's reply as it was said,
+   *  which is the whole cleaned reply except where `finish` refused a contradiction. */
   readonly spoken: string;
 }
 

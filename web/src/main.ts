@@ -27,7 +27,8 @@ import {
 import { resolveListenerOptions } from './listener-config.ts';
 import { createListener, listenerStubText, type Listener, type ListenerMode } from './listener.ts';
 import { resolveTtsOptions } from './tts-config.ts';
-import { createSpeaker, type Speaker, type SpeakerMode } from './tts.ts';
+import { createSpeaker, type Speaker, type SpeakerMode, type SpeechResult } from './tts.ts';
+import { createSpeechStream, speakableText } from './speech-text.ts';
 import { LoopMetrics, LOOP_LEGS, legKey } from './loop-metrics.ts';
 import {
   decideTier,
@@ -164,7 +165,7 @@ interface TurnResponse {
   text: string; // rendered reply: ack, LLM reply, LLM stub, or '' for silence
   mode?: ListenerMode; // set for reflection/question (webgpu | wasm | stub)
   status: 'pending' | 'done';
-  spoken?: boolean; // guard: this reply's audio was already synthesized + played
+  spoken?: boolean; // guard: this reply already took the floor (see beginSpeech)
   ttsMode?: SpeakerMode; // which voice spoke it (webgpu | wasm | stub tone)
 }
 // Insertion order IS evaluation order, which the utterance-keyed reads below rely on.
@@ -201,8 +202,9 @@ function disposeListener(): void {
 }
 
 // ── TTS (U6): the on-device voice, warmed lazily like the listener and reused.
-// The speaker synthesizes the gated reply to PCM (pure/testable); playback and the
-// barge-in yield are WebAudio glue that lives here, kept out of the adapter. ──
+// The speaker synthesizes a chunk of the gated reply to PCM (pure/testable); the
+// sentence-at-a-time queue, playback and the barge-in yield are WebAudio glue that
+// lives here, kept out of the adapter. ──
 let speakerPromise: Promise<Speaker> | null = null;
 function getSpeaker(): Promise<Speaker> {
   if (!speakerPromise) speakerPromise = createSpeaker(ttsOptions);
@@ -215,32 +217,70 @@ function disposeSpeaker(): void {
   if (p) void p.then((s) => s.close()).catch(() => {});
 }
 
-// The current utterance's WebAudio source, so a barge-in (or a new turn) can cut it.
+// The clip that is sounding right now, so a barge-in (or a new turn) can cut it.
 let currentSpeech: AudioBufferSourceNode | null = null;
-function stopSpeech(): void {
-  if (!currentSpeech) return;
-  try {
-    currentSpeech.onended = null;
-    currentSpeech.stop();
-  } catch {
-    /* already stopped */
-  }
+// Resolves whatever is awaiting the current clip, so a CUT clip settles its awaiter
+// instead of leaving the speech loop parked on a promise that can never resolve.
+let currentSpeechEnded: (() => void) | null = null;
+
+// Which speech session owns the voice. A reply is spoken as a SEQUENCE of
+// separately-synthesized sentences now (see beginSpeech), so "stop talking" can no
+// longer just cut the buffer that happens to be sounding — the sentences queued
+// behind it would carry straight on over the thinker. Every cancel bumps this
+// counter, and a session checks it before it synthesizes, before it plays, and
+// after every await. B2 ("yields the floor INSTANTLY") is what this protects.
+let speechEpoch = 0;
+
+/** Cut the clip that is sounding. Does NOT cancel the session behind it. */
+function cutCurrentSource(): void {
+  const src = currentSpeech;
+  const ended = currentSpeechEnded;
   currentSpeech = null;
+  currentSpeechEnded = null;
+  if (src) {
+    try {
+      src.onended = null;
+      src.stop();
+    } catch {
+      /* already stopped */
+    }
+  }
+  ended?.();
 }
-function playPcm(pcm: Float32Array, sampleRate: number): void {
+
+/** Yield the floor: cut the audio AND abandon every sentence queued behind it. */
+function stopSpeech(): void {
+  speechEpoch++;
+  cutCurrentSource();
+}
+
+/**
+ * Play one synthesized chunk, resolving when it finishes — or at once if the
+ * session that queued it no longer owns the voice. The session awaits this, which
+ * is what keeps the sentences of one reply in order and gapless.
+ */
+function playPcm(pcm: Float32Array, sampleRate: number, epoch: number): Promise<void> {
   ensureAudioCtx();
-  if (!audioCtx || pcm.length === 0 || sampleRate <= 0) return;
-  stopSpeech(); // one voice at a time — a new reply replaces the last
-  const buf = audioCtx.createBuffer(1, pcm.length, sampleRate);
-  buf.getChannelData(0).set(pcm);
-  const src = audioCtx.createBufferSource();
-  src.buffer = buf;
-  src.connect(audioCtx.destination);
-  src.onended = () => {
-    if (currentSpeech === src) currentSpeech = null;
-  };
-  currentSpeech = src;
-  src.start();
+  if (!audioCtx || pcm.length === 0 || sampleRate <= 0 || epoch !== speechEpoch) return Promise.resolve();
+  cutCurrentSource(); // one voice at a time — this chunk replaces the last
+  const actx = audioCtx;
+  return new Promise<void>((resolve) => {
+    const buf = actx.createBuffer(1, pcm.length, sampleRate);
+    buf.getChannelData(0).set(pcm);
+    const src = actx.createBufferSource();
+    src.buffer = buf;
+    src.connect(actx.destination);
+    src.onended = () => {
+      if (currentSpeech === src) {
+        currentSpeech = null;
+        currentSpeechEnded = null;
+      }
+      resolve();
+    };
+    currentSpeech = src;
+    currentSpeechEnded = resolve;
+    src.start();
+  });
 }
 
 // ── warmed-loop instrumentation (U6): per-stage latency turn-end → transcript →
@@ -263,29 +303,103 @@ function refreshSourceInfo(): void {
   sourceInfo.textContent = parts.join(' + ');
 }
 
+/** One turn's voice: fed the reply as it arrives, it speaks whole sentences. */
+interface SpeechSession {
+  /** Feed the reply generated SO FAR. Anything newly complete starts synthesizing. */
+  push(textSoFar: string): void;
+  /** Feed the FINAL reply. Returns the text that will actually have been said. */
+  finish(finalText: string): string;
+}
+
 /**
- * Speak a completed turn's gated reply. silence stays silent; acknowledge speaks its
- * short backchannel; reflection/question speak the LLM reply. Synthesis + playback
- * are async and idempotent per turn (the `spoken` guard), so this is safe to call
- * from the reply-ready paths without double-voicing on re-render.
+ * Take the floor for a turn's gated reply and speak it SENTENCE BY SENTENCE as the
+ * words arrive. silence never gets here; acknowledge hands over its whole
+ * backchannel at once; reflection/question stream in from the LLM.
+ *
+ * This replaces a fully serial "await the whole generation → await the whole
+ * synthesis → play" (su-lou.11: "the delay until actually spoken is huge"). Two
+ * overlaps come out of it and both are load-bearing:
+ *   - the FIRST sentence is synthesized while the rest is still decoding, so the
+ *     voice starts on a fraction of the generation instead of all of it;
+ *   - the NEXT sentence is synthesized while the current one is playing, so only
+ *     the first synthesis is ever waited on.
+ *
+ * Nothing incomplete is ever voiced: speech-text.ts hands over complete sentences
+ * only, and drops the fragment the token cap leaves behind. And nothing is voiced
+ * after the floor is yielded: `epoch` is re-checked after every await, so a
+ * barge-in stops the reply mid-reply rather than merely mid-clip.
+ *
+ * Returns null when there is nothing to take the floor for.
  */
-function speakResponse(entry: TurnResponse): void {
-  if (!loopActive() || entry.spoken) return;
-  const text = entry.text.trim();
-  if (!text || entry.decision.tier === 'silence') return; // silence stays silent
+function beginSpeech(entry: TurnResponse): SpeechSession | null {
+  if (!loopActive() || entry.spoken || entry.decision.tier === 'silence') return null;
   entry.spoken = true;
-  void getSpeaker()
-    .then((sp) => sp.synthesize(text))
-    .then((res) => {
-      entry.ttsMode = res.mode;
-      loopMetrics.mark(entry.utterance, 'speech-start', now());
-      playPcm(res.audio, res.sampleRate);
-      renderMetrics();
-      renderTranscript();
-    })
-    .catch(() => {
+
+  // Whoever held the floor loses it here (a turn-start normally got there first);
+  // this session owns it until something cancels it in turn.
+  stopSpeech();
+  const epoch = speechEpoch;
+  const stream = createSpeechStream();
+  const queue: string[] = [];
+  let draining = false;
+  let started = false;
+
+  const drain = async (): Promise<void> => {
+    if (draining) return;
+    draining = true;
+    try {
+      const sp = await getSpeaker();
+      let pending: Promise<SpeechResult> | null = null;
+      for (;;) {
+        if (epoch !== speechEpoch) return;
+        if (!pending) {
+          const next = queue.shift();
+          if (next === undefined) return; // said everything we have — for now
+          pending = sp.synthesize(next);
+        }
+        const res = await pending;
+        pending = null;
+        if (epoch !== speechEpoch) return;
+        entry.ttsMode ??= res.mode;
+        if (!started) {
+          started = true;
+          loopMetrics.mark(entry.utterance, 'speech-start', now());
+          renderMetrics();
+          renderTranscript();
+        }
+        // Start the NEXT sentence synthesizing BEFORE waiting on this one's
+        // playback, so synthesis and speech overlap instead of alternating.
+        const ahead = queue.shift();
+        if (ahead !== undefined) pending = sp.synthesize(ahead);
+        await playPcm(res.audio, res.sampleRate, epoch);
+      }
+    } catch {
       /* the speaker never rejects (it degrades to the tone); nothing to do */
-    });
+    } finally {
+      draining = false;
+      // A sentence that arrived while the loop was on its way out still gets said.
+      if (queue.length > 0 && epoch === speechEpoch) void drain();
+    }
+  };
+
+  const enqueue = (chunks: string[]): void => {
+    if (chunks.length === 0) return;
+    // The first speakable sentence IS the reply, as far as latency goes — the U6
+    // bead's own wording for this stage is "first reply token". Marking it here
+    // keeps the leg honest (and ordered) when the reply streams; first-write-wins
+    // means a backend that cannot stream still marks it on the whole reply below.
+    loopMetrics.mark(entry.utterance, 'reply', now());
+    queue.push(...chunks);
+    void drain();
+  };
+
+  return {
+    push: (textSoFar: string) => enqueue(stream.push(textSoFar)),
+    finish: (finalText: string) => {
+      enqueue(stream.finish(finalText));
+      return stream.spoken;
+    },
+  };
 }
 
 // ── knobs ──
@@ -511,7 +625,7 @@ function answerEvaluation(outcome: 'speak' | 'silence'): void {
  * an abandonment emits no output event, so the only way to see it is that the
  * detector is no longer `deciding` while we still believe it is. Left uncancelled,
  * `maybeRespond` would gate that turn the moment its transcript resolved and
- * `speakResponse` would talk over someone who is mid-sentence — with no barge-in
+ * `beginSpeech` would talk over someone who is mid-sentence — with no barge-in
  * to cut it, because the detector never took the floor.
  *
  * The turn's end mark and loop-metric origin go with it: the window that closed
@@ -749,6 +863,10 @@ function maybeRespond(groups: TurnTranscript[]): void {
     // SPEAK is what the detector is waiting on, not the words.
     answerFor(evaluation, decision.tier);
 
+    // Take the floor now, before there are any words: the voice starts on the
+    // first FINISHED SENTENCE of the reply, not on the whole of it (su-lou.11).
+    const speech = beginSpeech(entry);
+
     if (decision.callModel) {
       const request = buildListenerRequest({
         systemPrompt: LISTENER_SYSTEM_PROMPT,
@@ -757,22 +875,25 @@ function maybeRespond(groups: TurnTranscript[]): void {
         history: conversationHistory(g.turn),
       });
       void getListener()
-        .then((l) => l.respond(request))
+        .then((l) => l.respond(request, (textSoFar) => speech?.push(textSoFar)))
         .then((res) => {
-          entry.text = res.text;
+          // What the UI shows and what history replays is what was SAID: sanitized
+          // of stage directions and cut at the last complete sentence. Showing the
+          // raw generation would put an emote the voice refused to speak — and the
+          // half-word the token cap left — back in front of the operator.
+          entry.text = speech ? speech.finish(res.text) : speakableText(res.text);
           entry.mode = res.mode;
           entry.status = 'done';
-          loopMetrics.mark(g.turn, 'reply', now()); // stage 4: reply text ready
-          speakResponse(entry); // stage 5 (speech-start) recorded when playback begins
+          loopMetrics.mark(g.turn, 'reply', now()); // no-op if a streamed sentence marked it
           renderTranscript();
           renderMetrics();
         })
         .catch(() => {
-          entry.text = listenerStubText(decision.tier);
+          const stub = listenerStubText(decision.tier);
+          entry.text = speech ? speech.finish(stub) : stub;
           entry.mode = 'stub';
           entry.status = 'done';
           loopMetrics.mark(g.turn, 'reply', now());
-          speakResponse(entry);
           renderTranscript();
           renderMetrics();
         });
@@ -780,7 +901,7 @@ function maybeRespond(groups: TurnTranscript[]): void {
       // acknowledge: the backchannel is ready synchronously → speak it now.
       // (silence: text is '' → it stays silent, nothing to voice.)
       loopMetrics.mark(g.turn, 'reply', now());
-      speakResponse(entry);
+      speech?.finish(entry.text);
     }
     renderMetrics();
   }

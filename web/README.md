@@ -41,6 +41,18 @@ surfaced in a **Loop latency** panel so the operator can see where time goes.
 Un-provisioned (or `?tts=off`), TTS degrades to a short, labelled **placeholder
 tone** so the loop still audibly closes.
 
+The reply reaches the voice through **[`src/speech-text.ts`](src/speech-text.ts)**,
+never raw (su-lou.11). It **sanitizes** what was written for the eye — asterisk
+stage directions, bracketed emotes, markdown — because everything the listener
+writes is read out as words, and a roleplay-prone small model will emote unless
+stopped twice (the prompt asks; this enforces). It **cuts at the last complete
+sentence**, so the fragment the 64-token cap leaves behind is never voiced. And it
+**splits the reply into sentences**, so the loop stops being serial: the first
+finished sentence is synthesized while the rest is still decoding, and each
+sentence is synthesized while the previous one plays. Perceived latency becomes
+roughly *first sentence generated + first sentence synthesized* instead of the sum
+of two whole stages. Barge-in still cuts mid-reply, not just mid-clip.
+
 > The bead frames the ladder as "listen > acknowledge > probe > advise". That is
 > shorthand: the repo's canonical hierarchy (CONCEPTS.md) is the four tiers above
 > and deliberately has **no "advise" rung** — advising/coaching/solving are on the
@@ -186,10 +198,14 @@ audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ U
 - `src/loop-metrics.ts` — the U6 crux: a pure per-stage latency recorder for the
   warmed loop (turn-end → transcript → gate → reply → speech-start). No DOM, no
   clock — fully unit-tested, the same discipline as `measurement.ts`.
+- `src/speech-text.ts` — the generated-text → spoken-text boundary (su-lou.11):
+  strips stage directions / markdown, trims to the last complete sentence, and
+  splits a streaming reply into speakable sentences without ever repeating one.
+  Pure and synchronous, so the whole of it is covered headlessly.
 - `src/knobs.ts`, `src/main.ts`, `index.html` — knob specs and UI wiring (main.ts
   also runs the U5 gate + listener over completed turns, renders each reply under
-  its transcript turn, speaks it via the U6 voice with barge-in yield, and records
-  the loop-latency panel).
+  its transcript turn, speaks it via the U6 voice sentence-by-sentence as it
+  generates — with barge-in yield — and records the loop-latency panel).
 
 ## Component substitutions (per the plan: substitute and note)
 
