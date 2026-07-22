@@ -21,6 +21,13 @@
 // speak"; the intelligence makes that call, and it is asked early enough that its
 // answer still matters. The reducer stays PURE — it never calls the gate itself;
 // the verdict arrives as an ordinary input event.
+//
+// The third idea (spec §4b): once the floor only EVALUATES, "which turn is this"
+// and "which evaluation is this" stop being the same number. A thinker who pauses,
+// is declined, and keeps going is still on ONE thought — so the machine counts the
+// UTTERANCE (`turn`) separately from the EVALUATION TICK (`evaluation`). See the
+// OutputEvent doc block below; everything calibrated to a thought — word counts,
+// the question cooldown, transcript grouping — keys on the former.
 
 export type Verdict = 'complete' | 'incomplete';
 export type TurnState = 'listening' | 'speaking' | 'pending' | 'deciding' | 'responding';
@@ -64,10 +71,41 @@ export type InputEvent =
   | { t: number; type: 'decision'; outcome: DecisionOutcome }
   | { t: number; type: 'tick' };
 
+/**
+ * TWO IDENTITIES, NOT ONE (spec §4b).
+ *
+ * `turn` is the **utterance** id — *which thought is this*. It advances only when
+ * the previous turn actually ENDED, i.e. when the listener took the floor (or at
+ * the first speech of the session). A pause the listener declines to speak into
+ * does not end anything: the thinker resumes and it is the same turn, one thought,
+ * one `turn-start`.
+ *
+ * `evaluation` is the **evaluation-tick** id — *which patience-window closure is
+ * this*. One turn can carry MANY: every deadline that closes the window opens a
+ * fresh evaluation, and the evidence-driven re-evaluation that supersedes one
+ * (spec §6) reuses its id, because it is the same question asked again with better
+ * evidence. `turn-end` carries the id of the evaluation the `speak` verdict
+ * answered.
+ *
+ * They were one integer while the floor both timed and decided — one evaluation
+ * per turn made the distinction invisible. Un-collapsing `Deciding` (su-lou.10.2)
+ * split them in fact; su-lou.10.4 splits them in the contract, before the floor
+ * drops and a single utterance starts drawing several evaluations routinely.
+ * Anything calibrated to a THOUGHT (word counts, the question cooldown, transcript
+ * grouping, one loop-metrics iteration) keys on `turn`; anything about one
+ * question-and-answer with the host keys on `evaluation`.
+ */
 export type OutputEvent =
   | { t: number; type: 'turn-start'; turn: number }
-  | { t: number; type: 'evaluate'; turn: number; reason: PatienceReason; trigger: 'deadline' | 'evidence' }
-  | { t: number; type: 'turn-end'; turn: number; reason: PatienceReason }
+  | {
+      t: number;
+      type: 'evaluate';
+      turn: number;
+      evaluation: number;
+      reason: PatienceReason;
+      trigger: 'deadline' | 'evidence';
+    }
+  | { t: number; type: 'turn-end'; turn: number; evaluation: number; reason: PatienceReason }
   | { t: number; type: 'response-start'; turn: number }
   | { t: number; type: 'response-end'; turn: number; reason: 'completed' | 'barge-in' }
   | { t: number; type: 'barge-in'; turn: number };
@@ -75,7 +113,10 @@ export type OutputEvent =
 /** A read-only snapshot for live UI (state + countdown), with no side effects. */
 export interface TurnSnapshot {
   state: TurnState;
+  /** The utterance id — see the OutputEvent doc block. */
   turn: number;
+  /** The latest evaluation-tick id (0 before the first patience window closed). */
+  evaluation: number;
   verdict: Verdict | null;
   /** ms until the patience window closes (and evaluation fires), if currently timing a pause; null otherwise. */
   msUntilTurnEnd: number | null;
@@ -86,7 +127,16 @@ export class TurnDetector {
   private readonly onEmit?: (e: OutputEvent) => void;
 
   private _state: TurnState = 'listening';
+  /** Utterance id — advanced only when a new thought opens. See OutputEvent. */
   private turn = 0;
+  /**
+   * Whether the current turn is still the thinker's. Set when a turn opens, cleared
+   * when the listener takes the floor — the ONLY thing that ends a turn (§4b). It is
+   * what makes a declined evaluation free: the thinker resumes into the same turn.
+   */
+  private turnOpen = false;
+  /** Evaluation-tick id — advanced by each patience-window closure. See OutputEvent. */
+  private evaluation = 0;
   private silenceStart = 0;
   private verdict: Verdict | null = null;
   private responseStart = 0;
@@ -111,6 +161,10 @@ export class TurnDetector {
     return this.turn;
   }
 
+  get currentEvaluation(): number {
+    return this.evaluation;
+  }
+
   get config(): Readonly<TurnKnobs> {
     return this.knobs;
   }
@@ -118,6 +172,18 @@ export class TurnDetector {
   /** Live-tune knobs; the change applies to the next deadline computation. */
   setKnobs(partial: Partial<TurnKnobs>): void {
     this.knobs = { ...this.knobs, ...partial };
+  }
+
+  /**
+   * Abandon the current turn without a spoken response, so the next speech opens a
+   * FRESH one — the host dropped the conversation (a mode switch, a new demo
+   * script), which is the one turn boundary that is not the listener taking the
+   * floor. Not a transition: it emits nothing and moves no state, it only clears
+   * the "this turn is still open" latch. An outstanding `evaluate` is unaffected
+   * and must still be answered (a `silence` verdict is the cheap way).
+   */
+  dropTurn(): void {
+    this.turnOpen = false;
   }
 
   /**
@@ -182,7 +248,13 @@ export class TurnDetector {
     if (this._state === 'pending') {
       msUntilTurnEnd = Math.max(0, this.deadline() - Math.max(now, this.clock));
     }
-    return { state: this._state, turn: this.turn, verdict: this.verdict, msUntilTurnEnd };
+    return {
+      state: this._state,
+      turn: this.turn,
+      evaluation: this.evaluation,
+      verdict: this.verdict,
+      msUntilTurnEnd,
+    };
   }
 
   // ── internals ──
@@ -213,9 +285,20 @@ export class TurnDetector {
         // decision to speak: the machine parks in `deciding` until the host
         // answers. `deciding` carries no timer of its own — nothing else can
         // fire here, so the loop is done either way.
+        //
+        // A closing window is a NEW question about the same thought, so it opens a
+        // fresh evaluation tick while `turn` stays put (§4b).
         this.evaluationReason = this.extended() ? 'extended' : 'floor';
+        this.evaluation += 1;
         this._state = 'deciding';
-        this.emit({ t: d, type: 'evaluate', turn: this.turn, reason: this.evaluationReason, trigger: 'deadline' });
+        this.emit({
+          t: d,
+          type: 'evaluate',
+          turn: this.turn,
+          evaluation: this.evaluation,
+          reason: this.evaluationReason,
+          trigger: 'deadline',
+        });
         return;
       }
       if (this._state === 'responding') {
@@ -229,12 +312,25 @@ export class TurnDetector {
     }
   }
 
+  /**
+   * Speech from a resting state. A turn opens ONLY if the last one is over — the
+   * listener took the floor, or the host dropped it. Coming back from a `silence`
+   * verdict the turn is still open, so this is the same thought resuming and
+   * nothing is emitted: that is what makes declining free downstream too, not just
+   * in the state machine (§4b).
+   */
+  private openTurnIfEnded(t: number): void {
+    this._state = 'speaking';
+    if (this.turnOpen) return;
+    this.turn += 1;
+    this.turnOpen = true;
+    this.emit({ t, type: 'turn-start', turn: this.turn });
+  }
+
   private onSpeechStart(t: number): void {
     switch (this._state) {
       case 'listening':
-        this.turn += 1;
-        this._state = 'speaking';
-        this.emit({ t, type: 'turn-start', turn: this.turn });
+        this.openTurnIfEnded(t);
         return;
       case 'pending':
         // Resumed before the deadline (advance() would have ended it otherwise):
@@ -253,12 +349,13 @@ export class TurnDetector {
         return;
       case 'responding':
         // Barge-in — yield the floor instantly and open a fresh turn. The
-        // interrupted response is cut at t, not at its natural end.
+        // interrupted response is cut at t, not at its natural end. Unchanged by
+        // the utterance split (B2): reaching `responding` means the listener took
+        // the floor, which already ended the interrupted turn, so `openTurnIfEnded`
+        // always opens a new one here.
         this.emit({ t, type: 'barge-in', turn: this.turn });
         this.emit({ t, type: 'response-end', turn: this.turn, reason: 'barge-in' });
-        this.turn += 1;
-        this._state = 'speaking';
-        this.emit({ t, type: 'turn-start', turn: this.turn });
+        this.openTurnIfEnded(t);
         return;
       case 'speaking':
         return; // already speaking
@@ -287,11 +384,15 @@ export class TurnDetector {
     // reason is unchanged — the deadline that opened this evaluation has already
     // passed; only the evidence is new. The baseline arm ignores every verdict,
     // so it never re-evaluates on one.
+    //
+    // It is the SAME evaluation tick: the window that opened it has not closed
+    // again, only the evidence behind the question improved (§4b).
     if (this._state === 'deciding' && changed && this.knobs.useSmartTurn) {
       this.emit({
         t,
         type: 'evaluate',
         turn: this.turn,
+        evaluation: this.evaluation,
         reason: this.evaluationReason ?? 'floor',
         trigger: 'evidence',
       });
@@ -303,6 +404,9 @@ export class TurnDetector {
    * NOW the turn ends and the response begins; `silence` re-arms straight back to
    * `listening` with no response park, which is the whole point of un-collapsing
    * `Deciding`: declining to speak must cost nothing.
+   *
+   * Taking the floor is also the one thing that ENDS a turn (§4b): after `speak`
+   * the next speech is a new thought, after `silence` it is the same one continuing.
    */
   private onDecision(outcome: DecisionOutcome, t: number): void {
     if (this._state !== 'deciding') return; // stale: the evaluation it answers is gone
@@ -312,7 +416,8 @@ export class TurnDetector {
       this._state = 'listening';
       return;
     }
-    this.emit({ t, type: 'turn-end', turn: this.turn, reason });
+    this.turnOpen = false;
+    this.emit({ t, type: 'turn-end', turn: this.turn, evaluation: this.evaluation, reason });
     this._state = 'responding';
     this.responseStart = t;
     this.emit({ t, type: 'response-start', turn: this.turn });

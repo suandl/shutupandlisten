@@ -119,9 +119,11 @@ when the incomplete veto is active), the current turn/verdict/arm, and the
 responding indicator. The **Transcript + listener** panel (mic) shows the running
 transcript grouped by turn: each segment's words, a `⏷` where speech-end landed,
 and a `turn-end floor|extended` chip (with how long the floor held after the last
-speech) where the detector ended the turn — so you can read back what was said and
-see exactly where patience cut or held. Under each completed turn the **listener's
-reply** appears: a faint `· held ·` when the gate holds silence, a `mm`/`yeah`
+speech) where the patience window closed — so you can read back what was said and
+see exactly where patience cut or held. A turn is one *utterance*: a pause the gate
+declines to speak into does not start a new block, so the words either side of it
+stay together and the chip marks the latest window (spec §4b). Under each turn the
+**listener's reply** appears: a faint `· held ·` when the gate holds silence, a `mm`/`yeah`
 backchannel for a minimal acknowledgment, or a `reflection`/`question` tier chip
 with the on-device LLM's reply (or its labelled stub) — so you can see the response
 hierarchy escalate, or decline to. **In mic mode that reply is also spoken aloud**
@@ -162,8 +164,8 @@ audio source ──InputEvent──▶ TurnDetector ──OutputEvent──▶ U
 - `src/stt.ts` / `src/stt.worker.ts` — STT adapter (Moonshine/Whisper in a
   CPU/WASM worker) + labelled stub fallback (see substitutions).
 - `src/transcript.ts` — pure turn-alignment: groups transcribed segments under
-  the detector's turns and marks where speech-end / turn-end landed. No DOM,
-  fully unit-tested.
+  the detector's turns (one turn = one utterance, however many evaluations it
+  drew) and marks where speech-end / turn-end landed. No DOM, fully unit-tested.
 - `src/simulator.ts` — scripted/synthetic event source for the mic-less demo.
 - `src/measurement.ts` / `src/measure.ts` — scenario-6 false-cutoff /
   false-continuation harness vs the patience-only baseline.

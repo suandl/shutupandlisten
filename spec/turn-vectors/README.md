@@ -50,8 +50,8 @@ the machine waits; the turn ends only when a `{ "type": "decision", "outcome":
 window closes is asserting that the machine **waits** — which is why `01`'s
 `turnEnds: []` and `09`'s both mean something.
 
-These ten cover the plan's scenarios 1–5, the asymmetric-veto hold, and the
-un-collapsed `Deciding`:
+These eleven cover the plan's scenarios 1–5, the asymmetric-veto hold, the
+un-collapsed `Deciding`, and the utterance/evaluation split:
 
 | Vector | Plan scenario | Asserts |
 |--------|---------------|---------|
@@ -61,10 +61,11 @@ un-collapsed `Deciding`:
 | `04-resume-continues-turn` | 4 | Speech resuming after a sub-floor pause continues the **same** turn (one turn-start, one turn-end). |
 | `05-barge-in-yields` | 5 | Speaking over a response yields **instantly** (response-end `reason: barge-in` at the interrupt, new turn). |
 | `06-incomplete-extends-floor` | (§2 veto) | An `incomplete` verdict holds the turn open to `floor + extension` (`reason: extended`); the value the EOU adds over the bare floor. |
-| `07-silence-verdict-no-response` | (§4a) | A `silence` verdict emits **no** turn-end and **no** response-start — declining the floor costs nothing. Same event times as `05`, where the `speak` answer turns the 4500 resume into a barge-in. |
+| `07-silence-verdict-no-response` | (§4a) | A `silence` verdict emits **no** turn-end and **no** response-start — declining the floor costs nothing, and the turn does not end, so the 4500 resume is the **same** turn. Same event times as `05`, where the `speak` answer turns that resume into a barge-in. |
 | `08-resume-while-deciding` | (§4a) | Resuming while the verdict is outstanding is a **resume, not a barge-in**: same turn, no new turn-start; a verdict arriving after it is stale and ignored. |
 | `09-evidence-reevaluation` | (§4a) | A fresh EOU verdict while deciding **supersedes** the evaluation (`trigger: evidence`) — re-evaluation is evidence-driven, not clock-driven. |
 | `10-late-decision-stamps-verdict` | (§6 note) | A `speak` verdict arriving 2500 ms after the window closed stamps `turn-end`/`response-start` at the **verdict** (6500) while `evaluate` keeps the deadline (4000) — deliberation latency is visible, not erased. |
+| `11-one-utterance-many-evaluations` | (§4b) | One thought, two declined pauses at a 500 ms floor: **three** evaluations (`evaluation` 1→3) under **one** turn. `turn` counts thoughts, `evaluation` counts window closures; only taking the floor ends a turn. |
 
 ## `labeled/` — measurement vectors (scenario 6)
 

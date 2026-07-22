@@ -20,8 +20,8 @@
     "turnEnds": [{ "t": 6500, "turn": 1, "reason": "floor" }],
     "emit": [
       { "t": 0, "type": "turn-start", "turn": 1 },
-      { "t": 4000, "type": "evaluate", "turn": 1, "reason": "floor", "trigger": "deadline" },
-      { "t": 6500, "type": "turn-end", "turn": 1, "reason": "floor" },
+      { "t": 4000, "type": "evaluate", "turn": 1, "evaluation": 1, "reason": "floor", "trigger": "deadline" },
+      { "t": 6500, "type": "turn-end", "turn": 1, "evaluation": 1, "reason": "floor" },
       { "t": 6500, "type": "response-start", "turn": 1 },
       { "t": 8000, "type": "response-end", "turn": 1, "reason": "completed" }
     ]

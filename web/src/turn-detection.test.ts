@@ -4,12 +4,14 @@
 //   node --test 'src/**/*.test.ts'
 // (also runnable under vitest; the suite uses only node:test + node:assert).
 //
-// The ten golden vectors in spec/turn-vectors/scenarios/ ARE the contract —
+// The golden vectors in spec/turn-vectors/scenarios/ ARE the contract —
 // this file loads each, replays it through a fresh TurnDetector, and asserts
 // the emitted output matches byte-for-byte. The named tests below restate the
 // plan's scenarios 1–5 (+ the asymmetric-veto hold) so intent stays legible,
 // then pin the un-collapsed `Deciding` state: the floor triggers an EVALUATE and
-// only a `speak` verdict enters `responding`.
+// only a `speak` verdict enters `responding`. The last block pins the identity
+// split those two together forced (spec §4b): `turn` counts UTTERANCES and only a
+// taken floor advances it, while `evaluation` counts window closures.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -253,10 +255,13 @@ test('deciding: a `silence` verdict never enters responding — it re-arms to li
   assert.equal(byType(out, 'response-start').length, 0, 'no response park');
   assert.equal(byType(out, 'response-end').length, 0);
   assert.equal(det.state, 'listening', 're-armed straight back to listening');
-  // …and the next speech is a plain new turn, not a barge-in over a stub response.
+  // …and the next speech is neither a barge-in (nothing was spoken to interrupt)
+  // nor a new turn (nothing ended one): it is the same thought resuming — §4b.
   const next = det.input({ t: 4500, type: 'speech-start' });
   assert.equal(byType(next, 'barge-in').length, 0, 'nothing to barge in over');
-  assert.deepEqual(next, [{ t: 4500, type: 'turn-start', turn: 2 }]);
+  assert.deepEqual(next, [], 'no turn-start: a declined pause did not end the turn');
+  assert.equal(det.currentTurn, 1, 'still the same utterance');
+  assert.equal(det.state, 'speaking');
 });
 
 test('deciding: a `speak` verdict takes the floor, carrying the patience reason', () => {
@@ -322,6 +327,83 @@ test('deciding: the baseline arm (useSmartTurn=false) never re-evaluates on a ve
   assert.equal(byType(out, 'evaluate').length, 1, 'only the deadline evaluation; verdicts are ignored');
 });
 
+// ── Two identities: `turn` counts utterances, `evaluation` counts window closures ──
+
+test('identity: a declined pause keeps ONE turn while the evaluation tick advances', () => {
+  // The shape su-lou.10.5 makes routine: a short floor, a thinker who keeps going.
+  const det = new TurnDetector({ silenceFloorMs: 500 });
+  const out = [
+    ...det.input({ t: 0, type: 'speech-start' }),
+    ...det.input({ t: 1000, type: 'speech-end' }),
+    ...det.input({ t: 1500, type: 'decision', outcome: 'silence' }), // evaluates at 1500
+    ...det.input({ t: 1800, type: 'speech-start' }), // the same thought, continuing
+    ...det.input({ t: 2800, type: 'speech-end' }),
+    ...det.input({ t: 3300, type: 'decision', outcome: 'silence' }), // evaluates at 3300
+    ...det.input({ t: 3600, type: 'speech-start' }),
+    ...det.input({ t: 5000, type: 'speech-end' }),
+    ...det.input({ t: 5500, type: 'decision', outcome: 'speak' }), // evaluates at 5500, takes the floor
+  ];
+  const evals = byType(out, 'evaluate') as Array<OutputEvent & { turn: number; evaluation: number }>;
+  assert.deepEqual(evals.map((e) => e.evaluation), [1, 2, 3], 'each closing window is its own tick');
+  assert.deepEqual(evals.map((e) => e.turn), [1, 1, 1], 'all of them about ONE thought');
+  assert.equal(byType(out, 'turn-start').length, 1, 'one utterance, one turn-start');
+  const ends = byType(out, 'turn-end') as Array<OutputEvent & { evaluation: number }>;
+  assert.equal(ends.length, 1, 'only the answered evaluation ends the turn');
+  assert.equal(ends[0].evaluation, 3, 'turn-end names the evaluation the verdict answered');
+  // …and NOW the turn is over, so the next speech is a new one.
+  const next = det.input({ t: 8000, type: 'speech-start' });
+  assert.deepEqual(next.filter((e) => e.type === 'turn-start'), [{ t: 8000, type: 'turn-start', turn: 2 }]);
+});
+
+test('identity: an evidence re-evaluation is the SAME tick, a new window is a new one', () => {
+  const det = new TurnDetector({ silenceFloorMs: 500 });
+  const out = [
+    ...det.input({ t: 0, type: 'speech-start' }),
+    ...det.input({ t: 1000, type: 'speech-end' }),
+    ...det.input({ t: 1600, type: 'eou', verdict: 'incomplete' }), // supersedes the 1500 evaluation
+    ...det.input({ t: 1700, type: 'decision', outcome: 'silence' }),
+    ...det.input({ t: 2000, type: 'speech-start' }),
+    ...det.input({ t: 3000, type: 'speech-end' }),
+    ...det.input({ t: 3500, type: 'tick' }), // a second window closes
+  ];
+  const evals = byType(out, 'evaluate') as Array<OutputEvent & { evaluation: number; trigger: string }>;
+  assert.deepEqual(
+    evals.map((e) => [e.trigger, e.evaluation]),
+    [
+      ['deadline', 1],
+      ['evidence', 1], // better evidence for the same question — not a new one
+      ['deadline', 2],
+    ],
+  );
+});
+
+test('identity: barge-in still opens a fresh turn (B2 is untouched)', () => {
+  const det = new TurnDetector({ silenceFloorMs: 500, responseDurationMs: 1500 });
+  const out = [
+    ...det.input({ t: 0, type: 'speech-start' }),
+    ...det.input({ t: 1000, type: 'speech-end' }),
+    ...det.input({ t: 1500, type: 'decision', outcome: 'speak' }), // response runs 1500..3000
+    ...det.input({ t: 2000, type: 'speech-start' }), // barge-in
+  ];
+  assert.equal(byType(out, 'barge-in').length, 1);
+  const starts = byType(out, 'turn-start') as Array<OutputEvent & { turn: number }>;
+  assert.deepEqual(starts.map((e) => e.turn), [1, 2], 'the floor was taken, so this IS a new thought');
+  const respEnds = byType(out, 'response-end') as Array<OutputEvent & { reason: string; t: number }>;
+  assert.equal(respEnds[0].reason, 'barge-in');
+  assert.equal(respEnds[0].t, 2000, 'cut at the interrupt, instantly');
+});
+
+test('identity: dropTurn ends the turn without a response (the host reset the session)', () => {
+  const det = new TurnDetector({ silenceFloorMs: 500 });
+  det.input({ t: 0, type: 'speech-start' });
+  det.input({ t: 1000, type: 'speech-end' });
+  const abandoned = det.input({ t: 1500, type: 'decision', outcome: 'silence' });
+  assert.equal(byType(abandoned, 'turn-end').length, 0);
+  det.dropTurn();
+  const next = det.input({ t: 2000, type: 'speech-start' });
+  assert.deepEqual(next, [{ t: 2000, type: 'turn-start', turn: 2 }], 'a dropped turn does not resume');
+});
+
 // The decision loop's real wiring: the host answers from inside the emit callback.
 test('deciding: a host answering from within onEmit gets one ordered, complete stream', () => {
   const seen: OutputEvent[] = [];
@@ -333,8 +415,8 @@ test('deciding: a host answering from within onEmit gets one ordered, complete s
   det.input({ t: 4000, type: 'speech-end' });
   const out = det.input({ t: 6000, type: 'tick' }); // fires the deadline; the host answers re-entrantly
   assert.deepEqual(out, [
-    { t: 6000, type: 'evaluate', turn: 1, reason: 'floor', trigger: 'deadline' },
-    { t: 6000, type: 'turn-end', turn: 1, reason: 'floor' },
+    { t: 6000, type: 'evaluate', turn: 1, evaluation: 1, reason: 'floor', trigger: 'deadline' },
+    { t: 6000, type: 'turn-end', turn: 1, evaluation: 1, reason: 'floor' },
     { t: 6000, type: 'response-start', turn: 1 },
   ]);
   assert.deepEqual(seen.slice(1), out, 'the callback saw exactly what the caller was returned');
