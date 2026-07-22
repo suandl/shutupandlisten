@@ -168,6 +168,11 @@ defaultTest:
     # that each cell produces ~5 listener turns. (.txt rather than
     # .md because promptfoo's llm-rubric loader doesn't accept .md.)
     #
+    # restraint scores a TRANSITION — silence while the idea is dictated,
+    # then one thread-pull once it lands — so it only means anything if the
+    # dictation actually ends. multi-turn.js steers the simulator's last turn
+    # into a landing and marks it in the transcript; see the header there.
+    #
     # no-summarize is the B3 dealbreaker, and it is a JUDGE rather than a
     # string assertion on purpose: restraint.txt caps the score on a list
     # of banned phrases, and su-lou.11 showed a live on-device run route
@@ -181,8 +186,19 @@ defaultTest:
       value: file://judges/restraint.txt
     - type: llm-rubric
       value: file://judges/no-summarize.txt
-    - type: llm-rubric
-      value: file://judges/variety.txt
+    # variety runs behind a JS applicability gate rather than as a bare
+    # llm-rubric. The rubric used to carry its own "<=1 questions -> 5" rule,
+    # which handed a PERFECT score to zero-question transcripts — the column
+    # that measures how the listener's questions differ was flattering a
+    # listener that asked none (su-lou.12). asserts/variety.js counts the
+    # questions first and returns N/A below two (excluded from the column by
+    # .github/scripts/summarize-eval.js), delegating to judges/variety.txt only
+    # when there is something to compare. `metric` keeps the column named
+    # "variety" regardless of what promptfoo stores in `value` for a file://
+    # JS assertion.
+    - type: javascript
+      value: file://asserts/variety.js
+      metric: variety
 
 # Each scenario YAML in scenarios/ is itself a promptfoo test case
 # (top-level `description` + `vars` + `metadata`). The glob below loads

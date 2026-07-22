@@ -12,6 +12,7 @@ const {
   failMarkdown,
   judgeName,
   MARKER,
+  NOT_APPLICABLE_PREFIX,
 } = require('../../.github/scripts/summarize-eval.js');
 
 // Build one promptfoo result cell (prompt × provider × scenario) with the three
@@ -138,6 +139,69 @@ test('failMarkdown stays sticky and carries the note', () => {
 test('judgeName strips file:// prefix and extension', () => {
   assert.equal(judgeName({ value: 'file://judges/variety.txt' }), 'variety');
   assert.equal(judgeName({ value: 'judges/probing-depth.txt' }), 'probing-depth');
+  assert.equal(judgeName({ value: 'file://asserts/variety.js' }), 'variety');
   assert.equal(judgeName({ metric: 'restraint' }), 'restraint');
   assert.equal(judgeName({ type: 'llm-rubric' }), 'llm-rubric');
+});
+
+test('judgeName falls through a non-string value to the metric', () => {
+  // promptfoo swaps `value` for the loaded function on a file://…js assertion,
+  // so the column name has to survive a value that isn't a string.
+  assert.equal(judgeName({ value: () => true, metric: 'variety', type: 'javascript' }), 'variety');
+  assert.equal(judgeName({ value: () => true, type: 'javascript' }), 'javascript');
+});
+
+// A cell where an assertion declared itself unassessable rather than scoring —
+// see promptfoo/asserts/variety.js. It must not be averaged in, and must not
+// count toward the pass rate either way.
+function naCell(prompt, provider, scenario, judges) {
+  const c = cell(prompt, provider, scenario, true, judges);
+  c.gradingResult.componentResults.push({
+    pass: true,
+    score: 0,
+    reason: `${NOT_APPLICABLE_PREFIX} variety needs at least 2 listener questions to compare; this transcript has 0.`,
+    assertion: { type: 'javascript', value: 'file://asserts/variety.js', metric: 'variety' },
+  });
+  return c;
+}
+
+test('an N/A judge result is excluded from the column, not averaged in', () => {
+  const data = {
+    results: {
+      stats: { successes: 2, failures: 0 },
+      results: [
+        cell('claude', 'openai-gpt-4o', 'feature-idea', true, { restraint: 5, variety: 3 }),
+        naCell('claude', 'anthropic-claude-haiku-4-5', 'feature-idea', { restraint: 5 }),
+      ],
+    },
+  };
+  const md = buildSummary(data, {});
+  // Variety saw one real score (3) and one N/A: mean is 3.00, not (3+0)/2,
+  // and the pass rate counts only the assessed cell.
+  assert.match(md, /\| variety \| 3\.00 \| 1\/1 \(1 n\/a\) \|/);
+  assert.match(md, /\| restraint \| 5\.00 \| 2\/2 \|/, 'other judges are untouched');
+});
+
+test('an N/A cell renders as n/a in the breakdown and drags no mean down', () => {
+  const data = {
+    results: {
+      stats: { successes: 1, failures: 0 },
+      results: [naCell('claude', 'openai-gpt-4o', 'feature-idea', { restraint: 4 })],
+    },
+  };
+  const md = buildSummary(data, {});
+  assert.match(md, /\| n\/a \|/, 'the per-cell breakdown says n/a rather than a number');
+  // prompt × provider mean is the restraint score alone.
+  assert.match(md, /\| claude × openai-gpt-4o \| 4\.00 \| 1\/1 \|/);
+});
+
+test('a column that is entirely N/A reports no mean at all', () => {
+  const data = {
+    results: {
+      stats: { successes: 1, failures: 0 },
+      results: [naCell('claude', 'openai-gpt-4o', 'feature-idea', {})],
+    },
+  };
+  const md = buildSummary(data, {});
+  assert.match(md, /\| variety \| – \| 0\/0 \(1 n\/a\) \|/);
 });

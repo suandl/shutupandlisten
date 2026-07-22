@@ -2,11 +2,18 @@ Rate question VARIETY across the listener's responses in this
 conversation (1–5).
 
 You are reading a transcript of a multi-turn conversation between a
-THINKER and a LISTENER (the system under test). Look at every
-question the LISTENER asked across all turns. If the listener asked
-zero or one questions across the whole conversation, score 5 (the
-restraint judge will penalize over-questioning separately; variety
-is undefined on a single sample). Otherwise score:
+THINKER and a LISTENER (the system under test). Look at every question
+the LISTENER asked across all turns, and score how much they differ
+from each other.
+
+Do NOT award a score for asking few questions. Whether variety can be
+assessed at all is decided before you see the transcript: asserts/variety.js
+counts the listener's questions and returns N/A — excluding the cell from
+the variety column entirely — when there are fewer than two, because
+variety is undefined on a single sample. So every transcript you are
+given has at least two questions to compare, and the only thing being
+scored is how much they vary. Restraint and over-questioning are judged
+separately, by judges/restraint.txt.
 
 5 = each question has a distinct stem (what/why/how/when/what-if/who)
     AND targets a distinct dimension (cause / emotion / consequence /
