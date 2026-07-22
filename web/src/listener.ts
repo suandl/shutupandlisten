@@ -75,6 +75,15 @@ export interface ListenerOptions {
   onDiagnostic?: (message: string) => void;
 }
 
+/**
+ * Called as a reply is generated, with the text produced SO FAR (accumulated, not
+ * a delta). Purely an optimization hook: it lets the caller start speaking the
+ * first finished sentence while the rest is still decoding (su-lou.11), and a
+ * backend that cannot stream simply never calls it, leaving the final result the
+ * only thing the caller sees. Never assume it fires.
+ */
+export type PartialListener = (textSoFar: string) => void;
+
 export interface Listener {
   readonly mode: ListenerMode;
   /** Weight variant the live rung loaded ('q4f16' | 'q4'); undefined in stub mode.
@@ -82,8 +91,9 @@ export interface Listener {
    *  compute and q4 is fp32 — so "which backend is live" is only half-answered by
    *  `mode`. The works-check and the Stage readout print both. */
   readonly dtype?: string;
-  /** Produce a reflection/question for a substantive turn. NEVER throws — degrades to a labelled stub. */
-  respond(req: ListenerRequest): Promise<ListenerResult>;
+  /** Produce a reflection/question for a substantive turn. NEVER throws — degrades
+   *  to a labelled stub. `onPartial` is best-effort progress; see PartialListener. */
+  respond(req: ListenerRequest, onPartial?: PartialListener): Promise<ListenerResult>;
   /** Release the worker, if any. */
   close(): void;
 }
@@ -188,11 +198,24 @@ export async function createListener(opts: ListenerOptions = {}): Promise<Listen
   let nextId = 0;
   // Each pending request stores its timer-clearing settler plus a per-request
   // fallback — the labelled stub for THIS tier — so a worker error reply degrades
-  // to legible placeholder text instead of an empty string.
-  const pending = new Map<number, { settle: (r: ListenerResult) => void; fallback: () => ListenerResult }>();
+  // to legible placeholder text instead of an empty string. `onPartial` rides
+  // along so streamed progress reaches the caller that asked for it.
+  const pending = new Map<
+    number,
+    { settle: (r: ListenerResult) => void; fallback: () => ListenerResult; onPartial?: PartialListener }
+  >();
   const onMessage = (ev: { data?: unknown }): void => {
     const msg = ev.data as { type?: string; id?: number; text?: string; error?: boolean } | undefined;
-    if (!msg || msg.type !== 'result' || typeof msg.id !== 'number') return;
+    if (!msg || typeof msg.id !== 'number') return;
+    // Progress, not a result: the reply so far, while the model keeps decoding.
+    // The request stays pending — this never settles it and never clears its
+    // timeout, so a stream that stalls still degrades on schedule.
+    if (msg.type === 'partial') {
+      const entry = pending.get(msg.id);
+      if (entry?.onPartial && typeof msg.text === 'string' && msg.text) entry.onPartial(msg.text);
+      return;
+    }
+    if (msg.type !== 'result') return;
     const entry = pending.get(msg.id);
     if (!entry) return;
     pending.delete(msg.id);
@@ -209,7 +232,7 @@ export async function createListener(opts: ListenerOptions = {}): Promise<Listen
   return {
     mode,
     dtype,
-    respond(req: ListenerRequest): Promise<ListenerResult> {
+    respond(req: ListenerRequest, onPartial?: PartialListener): Promise<ListenerResult> {
       return new Promise<ListenerResult>((resolve) => {
         const id = nextId++;
         const timer = setTimeout(() => {
@@ -221,6 +244,7 @@ export async function createListener(opts: ListenerOptions = {}): Promise<Listen
             resolve(r);
           },
           fallback: () => stubResult(req.tier),
+          onPartial,
         });
         try {
           worker.postMessage({ type: 'generate', id, messages: req.messages, maxNewTokens: req.maxNewTokens });

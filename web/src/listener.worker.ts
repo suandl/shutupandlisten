@@ -54,15 +54,24 @@ interface GenerateMessage {
   maxNewTokens?: number;
 }
 
-/** transformers.js text-generation pipeline call surface (only what we use). */
+/** transformers.js text-generation pipeline call surface (only what we use). The
+ *  pipeline is a callable OBJECT — `tokenizer` is the handle a streamer needs. */
 type TextGenOutput = Array<{ generated_text?: unknown }> | { generated_text?: unknown };
-type TextGenPipeline = (input: ChatMessage[], opts?: Record<string, unknown>) => Promise<TextGenOutput>;
+type TextGenPipeline = ((input: ChatMessage[], opts?: Record<string, unknown>) => Promise<TextGenOutput>) & {
+  tokenizer?: unknown;
+};
+/** transformers.js TextStreamer: decodes tokens as they are produced and hands
+ *  each newly-decoded piece to `callback_function`. Optional — see makeStreamer. */
+type StreamerCtor = new (tokenizer: unknown, opts: Record<string, unknown>) => unknown;
 type Engine = {
   pipeline: (task: string, model: string, opts?: Record<string, unknown>) => Promise<TextGenPipeline>;
   env?: Record<string, unknown>;
+  TextStreamer?: StreamerCtor;
 };
 
 let generator: TextGenPipeline | null = null;
+// Kept past init so handleGenerate can reach the engine's TextStreamer, if it has one.
+let engineRef: Engine | null = null;
 
 ctx.addEventListener('message', (ev: { data: unknown }) => {
   const msg = ev.data as InitMessage | GenerateMessage | undefined;
@@ -95,6 +104,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
     ctx.postMessage({ type: 'error', reason: 'engine import failed' });
     return;
   }
+  engineRef = engine;
 
   // Keep inference local. Best-effort: an engine without these env knobs ignores it.
   try {
@@ -187,14 +197,56 @@ async function handleGenerate(msg: GenerateMessage): Promise<void> {
     return;
   }
   try {
+    const streamer = makeStreamer(msg.id);
     const out = await generator(msg.messages, {
       max_new_tokens: msg.maxNewTokens ?? 64,
       do_sample: false, // greedy → deterministic, restrained; the prompt carries the register
       return_full_text: false,
+      ...(streamer ? { streamer } : {}),
     });
     ctx.postMessage({ type: 'result', id: msg.id, text: extractReply(out) });
   } catch {
     ctx.postMessage({ type: 'result', id: msg.id, text: '', error: true });
+  }
+}
+
+/**
+ * A streamer that posts the reply-so-far as it decodes, or null when this engine
+ * cannot stream.
+ *
+ * Why this exists (su-lou.11): the warmed loop was fully serial — await the whole
+ * generation, then the whole synthesis, then play — so perceived latency was the
+ * SUM of two slow on-device stages, and "the delay until actually spoken is huge"
+ * was the operator's verdict. With partials, the main thread can synthesize and
+ * speak the first finished sentence while the rest is still decoding.
+ *
+ * Strictly BEST-EFFORT, and deliberately so. An engine build without TextStreamer,
+ * a pipeline without a reachable tokenizer, or a constructor that throws all take
+ * the same exit: return null, and generation runs exactly as it did before with
+ * the final result as the only output. The failure mode is "no speedup", never a
+ * broken reply — this path cannot be exercised in CI (no GPU, no weights), so it
+ * must not be able to take the listener down with it.
+ *
+ * The ACCUMULATED text is posted, not the delta: idempotent for the reader, so a
+ * dropped or doubled message cannot corrupt what gets spoken.
+ */
+function makeStreamer(id: number): unknown {
+  const Streamer = engineRef?.TextStreamer;
+  const tokenizer = generator?.tokenizer;
+  if (!Streamer || !tokenizer) return null;
+  let acc = '';
+  try {
+    return new Streamer(tokenizer, {
+      skip_prompt: true, // the prompt is not the reply
+      skip_special_tokens: true,
+      callback_function: (delta: unknown): void => {
+        if (typeof delta !== 'string' || !delta) return;
+        acc += delta;
+        ctx.postMessage({ type: 'partial', id, text: acc });
+      },
+    });
+  } catch {
+    return null;
   }
 }
 

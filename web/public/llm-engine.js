@@ -24,7 +24,13 @@
 //
 // Pinned engine: @huggingface/transformers 3.8.1 (same version STT pins; its dist
 // self-contains the matching ort-wasm-simd-threaded.jsep.{mjs,wasm}).
-import { pipeline as runPipeline, env } from './llm/transformers/transformers.min.js';
+// Namespace import on purpose. A named import of something the bundle does not
+// export is a LINK error, which would take the whole engine (and with it the
+// listener) down; reading names off the namespace lets an optional one — see
+// TextStreamer below — simply be undefined.
+import * as transformers from './llm/transformers/transformers.min.js';
+
+const { pipeline: runPipeline, env } = transformers;
 
 // Resolve model weights from our origin and never from the hub. localModelPath is
 // the SAME ./models/ tree STT uses — a model id resolves under it identically.
@@ -47,5 +53,12 @@ if (env.backends?.onnx?.wasm) {
 export function pipeline(task, model, options = {}) {
   return runPipeline(task, model, { device: 'webgpu', dtype: 'q4f16', ...options });
 }
+
+// Token-by-token decoding, so the worker can post the reply-so-far and the loop
+// can start SPEAKING the first finished sentence while the rest still decodes
+// (su-lou.11 — the warmed loop used to await the whole generation, then the whole
+// synthesis, then play). Optional by contract: undefined here just means the
+// worker generates without a streamer, exactly as it did before.
+export const TextStreamer = transformers.TextStreamer;
 
 export { env };
