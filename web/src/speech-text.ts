@@ -37,6 +37,15 @@
  */
 const SENTENCE_END = /[.!?…]+["'”’)\]]?(?=\s|$)/g;
 
+/**
+ * The STREAMING variant: identical, but the lookahead demands real whitespace and
+ * refuses end-of-text. On a growing partial the `$` is a liar — the text can still
+ * grow through its last terminator, so "It held for 0." reads as a finished
+ * sentence one token before it becomes "It held for 0.5". Only whitespace after
+ * the terminator proves, within the partial, that the model has moved on.
+ */
+const SENTENCE_END_STREAMING = /[.!?…]+["'”’)\]]?(?=\s)/g;
+
 /** Sentences shorter than this are merged into their neighbour before synthesis:
  *  a two-word chunk on its own makes the VITS voice sound clipped and choppy. */
 export const MIN_CHUNK_CHARS = 24;
@@ -123,12 +132,18 @@ function tidy(t: string): string {
  * This is the streaming primitive: mid-generation, a complete sentence is the
  * only thing safe to hand to the voice, because everything after the last
  * terminator may still grow.
+ *
+ * `atEnd` (default true) decides whether end-of-text closes a sentence. For final
+ * text — `finish`, and every helper below — it does. For a growing partial it must
+ * not: pass `atEnd: false` so a terminator only counts when whitespace within the
+ * partial follows it (see SENTENCE_END_STREAMING).
  */
-export function completeSentencePrefix(text: string): string {
+export function completeSentencePrefix(text: string, { atEnd = true }: { atEnd?: boolean } = {}): string {
   const t = text.trim();
   if (!t) return '';
+  const re = atEnd ? SENTENCE_END : SENTENCE_END_STREAMING;
   let end = -1;
-  for (const m of t.matchAll(SENTENCE_END)) end = (m.index ?? 0) + m[0].length;
+  for (const m of t.matchAll(re)) end = (m.index ?? 0) + m[0].length;
   return end < 0 ? '' : t.slice(0, end).trim();
 }
 
@@ -218,7 +233,12 @@ export function createSpeechStream(): SpeechStream {
   let emitted = '';
   return {
     push(textSoFar: string): string[] {
-      const complete = completeSentencePrefix(sanitizeForSpeech(textSoFar));
+      // Streaming boundary only: a terminator at the edge of the partial is not a
+      // boundary, because the partial can grow through it — "It held for 0." would
+      // be spoken a token before it becomes "It held for 0.5", splitting the number
+      // mid-decimal. We wait for whitespace after the terminator to prove the
+      // sentence ended; the last sentence is left for `finish`, which always runs.
+      const complete = completeSentencePrefix(sanitizeForSpeech(textSoFar), { atEnd: false });
       // Sanitizing a growing string is prefix-stable in every shape we produce,
       // but if it ever isn't, saying part of the reply twice is far worse than
       // saying the tail once. Diverged ⇒ emit nothing and keep our word.

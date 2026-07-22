@@ -140,11 +140,14 @@ test('speechChunks merges sentences too short to synthesize on their own', () =>
 test('the stream emits each sentence as soon as it completes, and never twice', () => {
   const s = createSpeechStream();
   assert.deepEqual(s.push('The number is'), []); // no boundary yet — nothing safe to say
-  assert.deepEqual(s.push('The number is the hook you are removing.'), [
+  // A terminator at the very edge of a partial is NOT a boundary: the partial can
+  // still grow through it. The sentence emits only once a later partial carries
+  // whitespace after the terminator, proving the model moved on.
+  assert.deepEqual(s.push('The number is the hook you are removing.'), []);
+  assert.deepEqual(s.push('The number is the hook you are removing. So what'), [
     'The number is the hook you are removing.',
   ]);
-  assert.deepEqual(s.push('The number is the hook you are removing. So what'), []);
-  assert.deepEqual(s.push('The number is the hook you are removing. So what pulls them back?'), [
+  assert.deepEqual(s.push('The number is the hook you are removing. So what pulls them back? Then'), [
     'So what pulls them back?',
   ]);
   assert.deepEqual(s.finish('The number is the hook you are removing. So what pulls them back?'), []);
@@ -153,7 +156,9 @@ test('the stream emits each sentence as soon as it completes, and never twice', 
 
 test('the stream drops the fragment the token cap left behind', () => {
   const s = createSpeechStream();
-  assert.deepEqual(s.push('That is the tension.'), ['That is the tension.']);
+  // The completed sentence emits once whitespace after its terminator proves it,
+  // and the trailing "And the other ha" fragment is left for finish to drop.
+  assert.deepEqual(s.push('That is the tension. And the other ha'), ['That is the tension.']);
   assert.deepEqual(s.finish('That is the tension. And the other ha'), []);
   assert.equal(s.spoken, 'That is the tension.');
 });
@@ -162,7 +167,9 @@ test('a stage direction is never spoken, mid-stream or at the end', () => {
   const s = createSpeechStream();
   // The opening emote is still unclosed here — nothing may be spoken from it.
   assert.deepEqual(s.push('*pauses, letting the thought'), []);
-  assert.deepEqual(s.push('*pauses, letting the thought hang* You know, that is the tension.'), [
+  // Sanitizing removes the emote; the sentence emits once whitespace after its
+  // terminator proves the boundary.
+  assert.deepEqual(s.push('*pauses, letting the thought hang* You know, that is the tension. And'), [
     'You know, that is the tension.',
   ]);
   // …and the closing one is cut mid-word by the token cap, the shape that reached
@@ -186,9 +193,38 @@ test('a final text that contradicts what was already said is never spoken over i
   // timeout resolves the labelled stub instead. Saying the stub after the real
   // reply would be worse than saying nothing more.
   const s = createSpeechStream();
-  assert.deepEqual(s.push('That is the tension.'), ['That is the tension.']);
+  assert.deepEqual(s.push('That is the tension. And'), ['That is the tension.']);
   assert.deepEqual(s.finish('⟨listener: reflection — LLM not loaded⟩'), []);
   assert.equal(s.spoken, 'That is the tension.');
+});
+
+test('a terminator at a partial edge is not a boundary — the decimal is never split', () => {
+  const s = createSpeechStream();
+  // "It held for 0." looks like a finished sentence, but the partial ends exactly
+  // on the dot; the next token turns it into "0.5", and speaking the first form
+  // splits the number mid-decimal. Nothing may be said until whitespace after a
+  // terminator proves, within the partial, that the sentence really ended.
+  assert.deepEqual(s.push('It held for 0.'), []);
+  assert.deepEqual(s.push('It held for 0.5 seconds ago.'), []); // still no whitespace after the final dot
+  assert.deepEqual(s.push('It held for 0.5 seconds ago. And'), ['It held for 0.5 seconds ago.']);
+  assert.equal(s.spoken, 'It held for 0.5 seconds ago.');
+});
+
+test('a real sentence boundary waits for the whitespace that proves it', () => {
+  const s = createSpeechStream();
+  assert.deepEqual(s.push('That is the tension.'), []); // terminator at the edge — not yet safe
+  assert.deepEqual(s.push('That is the tension. And the rest arrived.'), ['That is the tension.']);
+  assert.equal(s.spoken, 'That is the tension.');
+});
+
+test('finish emits a last sentence that no push could prove', () => {
+  const s = createSpeechStream();
+  // A partial ending on the terminator proves nothing, so push says nothing; the
+  // final sentence is delivered by finish, where end-of-text genuinely is the end.
+  // Both sentences are short, so speechChunks merges them into one chunk.
+  assert.deepEqual(s.push('One thing.'), []);
+  assert.deepEqual(s.finish('One thing. Two things.'), ['One thing. Two things.']);
+  assert.equal(s.spoken, 'One thing. Two things.');
 });
 
 test('a reply that sanitizes away entirely says nothing', () => {
