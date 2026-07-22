@@ -1,17 +1,28 @@
-// smart-turn v3 end-of-utterance adapter (CPU/WASM).
+// smart-turn v3 end-of-utterance adapter (CPU/WASM, in a worker).
 //
 // Pipecat smart-turn v3 is an ~8M-param audio classifier (~8MB int8, ~12ms on CPU)
 // that answers "is this utterance complete?" — fed here as the asymmetric veto in
 // turn-detection.ts. It runs via onnxruntime-web on CPU/WASM, off the GPU (which the
 // plan reserves for the LLM + TTS in U5/U6).
 //
-// IT HAD NEVER RUN (su-lou.10.1). Until this unit there was no provisioner for the
+// IT HAD NEVER RUN (su-lou.10.1). Until that unit there was no provisioner for the
 // model, so `if (!opts.modelUrl) return heuristic` took every call and the live
 // harness has always been the duration heuristic below. That is why the 2000ms
 // silence floor carried ALL the patience alone — with no real end-of-utterance
-// signal, the timer WAS the decision. Dropping the floor to ~500-750ms (su-lou.10.5)
+// signal, the timer WAS the decision. Dropping the floor to ~500-750ms (su-lou.10.6)
 // only makes sense once this stage is real, so `npm run provision:smart-turn` +
 // this adapter are a prerequisite for that unit, not a nicety.
+//
+// AND THEN IT FROZE THE PAGE (su-viz2). Once it was real, it was also the only heavy
+// stage without a worker: `predict()` ran the log-Mel front-end and the ORT session on
+// the CALLING thread, and measurement (su-lou.10.5) found it held that thread for 100%
+// of every verdict — 691ms verdict → 691ms blocked, three for three, with zero
+// heartbeat ticks delivered. The await yielded no thread because there was no other
+// thread. Worse, the freeze also stalled main.ts's 90ms tick loop, which is what fires
+// the patience deadline, so the block ADDED to the latency rather than merely
+// accompanying it. This file is now the MAIN-THREAD HALF only — lifecycle, fallback
+// policy, timeouts — and everything from PCM to probability runs in
+// smart-turn.worker.ts. Per verdict the main thread does one postMessage.
 //
 // The heuristic REMAINS, on purpose: an un-provisioned deploy, a fresh clone or CI
 // has no model to load, and the harness must still run. What is NOT acceptable is
@@ -22,9 +33,8 @@
 //
 // The input contract is NOT raw audio: v3 is a Whisper-tiny encoder, so it takes the
 // Whisper log-Mel spectrogram of the last 8 seconds ([1, 80, 800]). That front-end
-// lives in whisper-mel.ts, conformance-tested against the canonical implementation.
-
-import { N_FRAMES, N_MELS, whisperFeatures } from './whisper-mel.ts';
+// lives in whisper-mel.ts and is applied inside the worker, conformance-tested
+// against the canonical implementation.
 
 export type SmartTurnMode = 'model' | 'heuristic';
 
@@ -34,16 +44,12 @@ export interface SmartTurnResult {
   mode: SmartTurnMode;
 }
 
-/**
- * Structural view of the ONNX session the adapter needs — one feature tensor in,
- * one score out. Injectable so the model path is unit-testable without ORT, a
- * browser, or the 8MB provisioned asset.
- */
-export interface FeatureClassifier {
-  /** Run the classifier on `[1, N_MELS, N_FRAMES]` feature data. */
-  run(features: Float32Array): Promise<ArrayLike<number>>;
-  /** Release the session. */
-  close(): void;
+/** Minimal structural Worker shape so the adapter is unit-testable with a fake. */
+export interface WorkerLike {
+  postMessage(message: unknown): void;
+  terminate(): void;
+  addEventListener(type: string, listener: (ev: { data?: unknown }) => void): void;
+  removeEventListener(type: string, listener: (ev: { data?: unknown }) => void): void;
 }
 
 export interface SmartTurnOptions {
@@ -59,21 +65,24 @@ export interface SmartTurnOptions {
   heuristicShortSegmentMs?: number;
   /** Per-call ms before a wedged session degrades THIS verdict to the heuristic. */
   timeoutMs?: number;
-  /** Budget for the load-time warmup run. Separate from `timeoutMs`: the first
-   *  inference compiles and specializes the graph, so it is far slower than a
+  /** Budget for the worker's load-time warmup run. Separate from `timeoutMs`: the
+   *  first inference compiles and specializes the graph, so it is far slower than a
    *  steady-state call (~1s vs ~60ms in headless Chromium). */
   initTimeoutMs?: number;
+  /** Ms before a worker that never answers the init handshake is given up on. See
+   *  DEFAULT_LOAD_TIMEOUT_MS for why this is generous and why it exists at all. */
+  loadTimeoutMs?: number;
   /** Where a degrade is reported. Defaults to `console.warn`; injectable for tests. */
   onDiagnostic?: (message: string) => void;
-  /** Inject the classifier (tests / custom hosting). Defaults to onnxruntime-web. */
-  createClassifier?: () => Promise<FeatureClassifier>;
+  /** Inject a worker (tests / custom hosting). Defaults to the bundled smart-turn.worker. */
+  createWorker?: () => WorkerLike;
 }
 
 export interface SmartTurn {
   readonly mode: SmartTurnMode;
   /** Classify a 16kHz mono speech segment. Never throws — degrades to heuristic. */
   predict(audio: Float32Array, sampleRate: number): Promise<SmartTurnResult>;
-  /** Release the ONNX session, if any. */
+  /** Release the worker, if any. */
   close(): void;
 }
 
@@ -84,12 +93,28 @@ const SAMPLE_RATE = 16000;
  * session degrades this call rather than hanging the promise chain. Roughly 7x the
  * ~270ms a warmed verdict measures in headless Chromium (front-end + inference; the
  * model card's ~12ms is a native-CPU figure, not a wasm one), so this catches a
- * stall, not a slow machine.
+ * stall, not a slow machine. Now measured off the message round-trip, which is the
+ * number that actually matters to the caller: the worker hop is part of the wait.
  */
 const DEFAULT_TIMEOUT_MS = 2000;
 
-/** Budget for the load-time warmup — a cold first inference, not a steady-state one. */
+/** Budget for the worker's warmup — a cold first inference, not a steady-state one. */
 const DEFAULT_INIT_TIMEOUT_MS = 30000;
+
+/**
+ * Backstop for a worker that never answers `init` at all.
+ *
+ * The worker reports every failure it can OBSERVE as an `error` reply, so this only
+ * fires when it is stuck somewhere it cannot report from — a module that never
+ * finishes loading, an ORT session create that never settles. Without it,
+ * `createSmartTurn()` would hang, and it is awaited inside `MicAudioSource.start()`,
+ * so the microphone would never open and the UI would never say why. (The pre-worker
+ * code had the same hazard and no backstop: the model download was unbounded.)
+ *
+ * Generous on purpose — it spans a ~21MB model + runtime download plus the warmup, and
+ * a slow link must read as slow, not as a broken stage.
+ */
+const DEFAULT_LOAD_TIMEOUT_MS = 60000;
 
 // ── Default self-hosted smart-turn config (`npm run provision:smart-turn`) ──
 //
@@ -107,35 +132,10 @@ function diag(opts: SmartTurnOptions, reason: string): void {
 }
 
 /**
- * Map the model's raw output to P(complete).
- *
- * smart-turn v3 ends in a Sigmoid, so its single `logits` output is ALREADY a
- * probability — applying sigmoid again would squash every verdict into [0.5, 0.73]
- * and quietly destroy the threshold knob. A value outside [0,1] therefore means the
- * export is a raw-logit variant, and only then is sigmoid correct. A two-value
- * output is a 2-class head (index 1 = complete).
- */
-export function completionProbFrom(data: ArrayLike<number>): number {
-  if (data.length === 0) throw new Error('classifier returned no output');
-  let prob: number;
-  if (data.length === 1) {
-    const raw = data[0];
-    prob = raw >= 0 && raw <= 1 ? raw : sigmoid(raw);
-  } else {
-    prob = softmaxComplete(data);
-  }
-  // A NaN score must NOT be clamped into a plausible-looking verdict: clamp01(NaN)
-  // is NaN, and `NaN >= completionThreshold` is false, so it would reach the
-  // detector as a silent, permanent "incomplete" veto. Throw instead — the caller
-  // degrades to the heuristic and reports why.
-  if (!Number.isFinite(prob)) throw new Error(`classifier returned a non-finite score (${data[0]})`);
-  return clamp01(prob);
-}
-
-/**
- * Load smart-turn. Attempts the real ONNX model when a URL is given; otherwise (or
- * on any failure) returns a heuristic implementation. Resolves quickly so the
- * harness never blocks on a model download.
+ * Load smart-turn. Spins up the EOU worker when a model URL is given (or a worker is
+ * injected) and, only if the worker reports it loaded AND warmed a graph that can
+ * score, returns a worker-backed classifier; on any failure it returns the labelled
+ * duration heuristic. Resolves quickly so the harness never blocks on a model download.
  */
 export async function createSmartTurn(opts: SmartTurnOptions = {}): Promise<SmartTurn> {
   const shortMs = opts.heuristicShortSegmentMs ?? 700;
@@ -156,68 +156,113 @@ export async function createSmartTurn(opts: SmartTurnOptions = {}): Promise<Smar
     },
   };
 
-  if (!opts.createClassifier && !opts.modelUrl) return heuristic;
+  if (!opts.createWorker && !opts.modelUrl) return heuristic;
 
-  let classifier: FeatureClassifier;
+  let worker: WorkerLike;
   try {
-    classifier = await (opts.createClassifier ?? (() => ortClassifier(opts)))();
+    worker = opts.createWorker ? opts.createWorker() : defaultWorker();
   } catch (err) {
-    diag(opts, `model failed to load (${errText(err)})`);
+    diag(opts, `the EOU worker failed to start (${errText(err)})`);
     return heuristic;
   }
 
-  // Warm the graph once, here, before any speech. Two reasons, both load-bearing:
-  //
-  //   1. ORT compiles and specializes on the FIRST run — ~1s in headless Chromium
-  //      against ~60ms warm. createSmartTurn() is awaited at mic start, so that cost
-  //      belongs here and not inside the silence floor of the user's first
-  //      utterance, where it would be the very lag this unit exists to remove.
-  //   2. It makes `mode` an assertion rather than a hope. A graph that cannot
-  //      produce a usable score — wrong input shape, corrupt weights, an export
-  //      whose output this adapter can't map — is reported as a FAILED LOAD, so the
-  //      adapter never reports `model` for something that would degrade on every
-  //      call. That false-green is exactly what su-lou.7/.8/.9 each turned out to be.
-  try {
-    completionProbFrom(
-      await withTimeout(classifier.run(new Float32Array(N_MELS * N_FRAMES)), opts.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS),
-    );
-  } catch (err) {
-    try {
-      classifier.close();
-    } catch {
-      /* already gone */
-    }
-    diag(opts, `model loaded but could not score (${errText(err)})`);
+  // The handshake carries the load-time assertion across the worker boundary: the
+  // worker answers `ready` ONLY after it has warmed the graph and mapped a real score
+  // out of it, so `model` below is an assertion and not a hope. A graph that loads but
+  // cannot score comes back as an `error` with its reason, exactly as it did when this
+  // ran in-process (su-lou.10.1) — the false-green su-lou.7/.8/.9 each turned out to
+  // be must not sneak back in through the hop off-thread (su-viz2).
+  const failure = await initWorker(worker, opts);
+  if (failure !== null) {
+    terminateQuietly(worker);
+    diag(opts, failure);
     return heuristic;
   }
 
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  // A wedged ORT session does not degrade ONE call — it degrades every call after it.
-  // The stalled WASM run keeps the thread, so later inferences queue behind it and
+  // A wedged session does not degrade ONE call — it degrades every call after it. The
+  // stalled WASM run keeps the worker's thread, so later inferences queue behind it and
   // time out too; the load-time warmup by construction cannot catch a session that
   // dies mid-flight. Reporting only the first failure and still swearing `model`
   // while every verdict silently comes from the heuristic is precisely the false-green
   // su-lou.7/.8/.9 each turned out to be — a stage dead behind a mode nobody rechecked.
   //
   // So count CONSECUTIVE failures and, once the session has plainly stopped
-  // recovering, ABANDON it: close it, say so once, and route every later call
-  // straight to the heuristic without touching the classifier again — which also
-  // stops piling fresh calls onto the wedged thread. A single clean verdict resets
-  // the count: one slow call is not a dead session, and only a run of them is.
+  // recovering, ABANDON it: terminate the worker, say so once, and route every later
+  // call straight to the heuristic. Terminating is strictly stronger than the
+  // `session.release()` this used to do on the main thread — it actually kills the
+  // wedged wasm run and reclaims its heap, instead of leaving it holding a thread. A
+  // single clean verdict resets the count: one slow call is not a dead session, and
+  // only a run of them is.
   const MAX_CONSECUTIVE_FAILURES = 3;
 
   let degraded = false; // report a per-call degrade once, not once per utterance
   let abandoned = false; // the session was given up on — every verdict is the heuristic now
   let consecutiveFailures = 0;
+  let nextId = 0;
 
-  const closeClassifier = () => {
+  const pending = new Map<number, { settle: (err: Error | null, prob: number) => void }>();
+
+  const onMessage = (ev: { data?: unknown }): void => {
+    const msg = ev.data as { type?: string; id?: number; completionProb?: number; error?: string } | undefined;
+    if (!msg || msg.type !== 'result' || typeof msg.id !== 'number') return;
+    const entry = pending.get(msg.id);
+    if (!entry) return; // a reply for a verdict we already timed out on — drop it
+    pending.delete(msg.id);
+    if (typeof msg.error === 'string') entry.settle(new Error(msg.error), 0);
+    // Finite-checked at the boundary, not just inside the worker. The worker maps its
+    // output through completionProbFrom, which throws on a non-finite score, so this
+    // should be unreachable — but a NaN that DID slip through would reach the detector
+    // as a silent, permanent "incomplete" veto (`NaN >= completionThreshold` is false)
+    // and hold every turn open. Cheap to check; invisible if it ever failed.
+    else if (typeof msg.completionProb === 'number' && Number.isFinite(msg.completionProb)) {
+      entry.settle(null, msg.completionProb);
+    } else entry.settle(new Error('the worker returned no usable probability'), 0);
+  };
+  worker.addEventListener('message', onMessage);
+
+  /** Tear the worker down and fail every verdict still in flight — none of them can
+   *  land now, and a promise nobody settles would hang `classify()` forever. */
+  const teardown = (): void => {
+    const inFlight = [...pending.values()];
+    pending.clear();
+    for (const entry of inFlight) entry.settle(new Error('the EOU worker was shut down'), 0);
     try {
-      classifier.close();
+      worker.removeEventListener('message', onMessage);
+      worker.terminate();
     } catch {
       /* already gone */
     }
   };
+
+  const classifyInWorker = (audio: Float32Array): Promise<number> =>
+    new Promise<number>((resolve, reject) => {
+      const id = nextId++;
+      const timer = setTimeout(() => {
+        if (pending.delete(id)) reject(new Error(`timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      pending.set(id, {
+        settle: (err, prob) => {
+          clearTimeout(timer);
+          if (err) reject(err);
+          else resolve(prob);
+        },
+      });
+      try {
+        // No transfer list: structured-clone the samples. vad.ts hands the SAME
+        // Float32Array to the STT worker on the next line, so transferring it here
+        // would detach the buffer out from under transcription. The copy is a
+        // sub-millisecond memcpy of ≤512KB against a verdict measured in hundreds of
+        // ms — the wrong thing to optimize, and the right thing not to break.
+        worker.postMessage({ type: 'classify', id, audio });
+      } catch (err) {
+        if (pending.delete(id)) {
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+    });
 
   return {
     // `mode` must track reality, not the load-time hope: after abandonment every
@@ -233,12 +278,11 @@ export async function createSmartTurn(opts: SmartTurnOptions = {}): Promise<Smar
       try {
         if (sampleRate !== SAMPLE_RATE) {
           // The VAD hands segments over at exactly 16kHz; resampling silently here
-          // would change verdict quality without anyone knowing.
+          // would change verdict quality without anyone knowing. Checked BEFORE the
+          // postMessage so nothing crosses to the model at the wrong rate.
           throw new Error(`expected ${SAMPLE_RATE}Hz audio, got ${sampleRate}Hz`);
         }
-        const features = whisperFeatures(audio);
-        const data = await withTimeout(classifier.run(features), timeoutMs);
-        const completionProb = completionProbFrom(data); // throws before we count it a success
+        const completionProb = await classifyInWorker(audio);
         consecutiveFailures = 0; // a clean verdict clears the run — the session lives
         return { completionProb, mode: 'model' };
       } catch (err) {
@@ -246,108 +290,89 @@ export async function createSmartTurn(opts: SmartTurnOptions = {}): Promise<Smar
           degraded = true;
           diag(opts, `classification failed (${errText(err)})`);
         }
-        if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        // Guarded on `abandoned`: teardown fails every in-flight verdict, and those
+        // rejections land right here. Without the guard they would re-escalate and
+        // report the abandonment once per stranded call.
+        if (!abandoned && ++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           abandoned = true;
-          closeClassifier();
+          teardown();
           diag(opts, `${MAX_CONSECUTIVE_FAILURES} consecutive failures — abandoning the model for this session`);
         }
         return heuristic.predict(audio, sampleRate);
       }
     },
     close() {
-      if (!abandoned) closeClassifier();
+      if (!abandoned) teardown();
     },
   };
 }
 
 /**
- * The real backend: onnxruntime-web, CPU/WASM only.
+ * Run the worker's init handshake. Posts an `init` and waits for `ready` or fails
+ * closed on `error`, a worker crash, a malformed reply, or timeout.
  *
- * The `/wasm` entrypoint is deliberate — the default bundle also carries the WebGPU
- * (jsep) backend, whose wasm binary is twice the size (26.8MB vs 13.5MB in dist/)
- * and would contend with the LLM/TTS for the GPU this stage promises not to touch.
+ * Returns `null` when the worker is live, or the reason it is not — relayed verbatim
+ * from the worker where there is one, so `model loaded but could not score (...)`
+ * still reaches the operator's console across the thread boundary.
  */
-async function ortClassifier(opts: SmartTurnOptions): Promise<FeatureClassifier> {
-  const ort = await import('onnxruntime-web/wasm');
-
-  // Pin the runtime binary to the one the BUNDLER emitted from the very
-  // onnxruntime-web this module imports. Same-origin by construction (so first
-  // speech never triggers a cross-origin fetch — onnxruntime-web's own fallback is
-  // a jsdelivr CDN, which would break the no-egress posture silently), and
-  // version-coherent by construction (the binary and the JS come from one install,
-  // so they cannot drift). It is also the asset Vite emits anyway, so pointing at
-  // it costs nothing: provisioning a second copy would just add ~13MB of bytes
-  // that are downloaded and never used.
-  //
-  // `?url` is Vite-only, so it is resolved HERE — inside the lazily-imported real
-  // backend — and never at module scope, where it would break `node --test`. If a
-  // non-Vite bundler leaves it unresolved, `wasmPaths` stays unset and ORT falls
-  // back to its own resolution rather than failing.
-  const wasmUrl = opts.wasmPath ?? (await bundledWasmUrl());
-  if (wasmUrl) ort.env.wasm.wasmPaths = { wasm: wasmUrl };
-
-  const session = await ort.InferenceSession.create(opts.modelUrl!, { executionProviders: ['wasm'] });
-  // v3 names its input `input_features`; bind by name when present and fall back to
-  // position, because export tensor names have varied across the v3.x line.
-  const inputName = session.inputNames.includes('input_features') ? 'input_features' : session.inputNames[0];
-  const outputName = session.outputNames[0];
-
-  return {
-    async run(features: Float32Array): Promise<ArrayLike<number>> {
-      const tensor = new ort.Tensor('float32', features, [1, N_MELS, N_FRAMES]);
-      const out = await session.run({ [inputName]: tensor });
-      return out[outputName].data as Float32Array;
-    },
-    close() {
-      void session.release?.();
-    },
-  };
+function initWorker(worker: WorkerLike, opts: SmartTurnOptions): Promise<string | null> {
+  const loadTimeoutMs = opts.loadTimeoutMs ?? DEFAULT_LOAD_TIMEOUT_MS;
+  return new Promise<string | null>((resolve) => {
+    let settled = false;
+    // The worker reports outcomes as `message` posts (`ready` / `error`); a failed
+    // model load must fail the handshake at once, not hang the timeout. The `error`
+    // EVENT is the separate worker-crash signal.
+    const onMessage = (ev: { data?: unknown }): void => {
+      const msg = ev.data as { type?: string; reason?: string } | undefined;
+      if (!msg) return;
+      if (msg.type === 'ready') done(null);
+      else if (msg.type === 'error') done(msg.reason || 'the EOU worker reported a failed load');
+    };
+    const onError = (): void => done('the EOU worker crashed while loading');
+    const done = (reason: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.removeEventListener('message', onMessage);
+      worker.removeEventListener('error', onError);
+      resolve(reason);
+    };
+    const timer = setTimeout(() => done(`the EOU worker did not load within ${loadTimeoutMs}ms`), loadTimeoutMs);
+    worker.addEventListener('message', onMessage);
+    worker.addEventListener('error', onError);
+    try {
+      worker.postMessage({
+        type: 'init',
+        modelUrl: opts.modelUrl,
+        wasmPath: opts.wasmPath,
+        initTimeoutMs: opts.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS,
+      });
+    } catch (err) {
+      done(`the EOU worker rejected its init message (${errText(err)})`);
+    }
+  });
 }
 
 /**
- * URL of the ONNX Runtime wasm binary as emitted by the bundler, or undefined when
- * the `?url` form is unavailable (a non-Vite bundler, a bare-module runtime) — in
- * which case the caller leaves ORT to resolve the binary itself.
+ * The bundled smart-turn worker. Vite recognises this exact `new Worker(new URL(...))`
+ * form and bundles smart-turn.worker.ts as an ES worker (vite.config worker.format).
+ * Only reached in the browser when a model is configured — never in the node tests,
+ * which inject `createWorker` or run the heuristic.
  */
-async function bundledWasmUrl(): Promise<string | undefined> {
-  try {
-    return (await import('onnxruntime-web/ort-wasm-simd-threaded.wasm?url')).default;
-  } catch {
-    return undefined;
-  }
+function defaultWorker(): WorkerLike {
+  return new Worker(new URL('./smart-turn.worker.ts', import.meta.url), { type: 'module' }) as unknown as WorkerLike;
 }
 
-/** Reject after `ms` so one wedged call cannot hold a turn open. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
-    promise.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    );
-  });
+function terminateQuietly(worker: WorkerLike): void {
+  try {
+    worker.terminate();
+  } catch {
+    /* already gone */
+  }
 }
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
-}
-
-function sigmoid(x: number): number {
-  return 1 / (1 + Math.exp(-x));
-}
-
-function softmaxComplete(logits: ArrayLike<number>): number {
-  // Convention: index 1 = "complete".
-  const max = Math.max(logits[0], logits[1]);
-  const a = Math.exp(logits[0] - max);
-  const b = Math.exp(logits[1] - max);
-  return b / (a + b);
 }
 
 function clamp01(x: number): number {

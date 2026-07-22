@@ -118,8 +118,12 @@ export class MicAudioSource implements AudioSource {
         // the log-Mel front-end plus inference — not the ~12ms this comment used to
         // claim from the model card, which is a native-CPU number. Comfortable
         // inside today's 2000ms floor; a real constraint on the 500-750ms floor
-        // su-lou.10.5 is aiming for. STT runs on the SAME released segment,
+        // su-lou.10.5 is aiming for. Since su-viz2 that wait is spent in a worker,
+        // so it no longer freezes the page — and, just as load-bearing here, no
+        // longer stalls main.ts's 90ms tick loop, which is what fires the patience
+        // deadline this verdict has to beat. STT runs on the SAME released segment,
         // independently — it feeds the transcript display only, never the detector.
+        // Neither adapter transfers the buffer, so both see intact samples.
         const t = this.now();
         this.onEvent({ t, type: 'speech-end' });
         void this.classify(audio);
@@ -135,11 +139,13 @@ export class MicAudioSource implements AudioSource {
     // reports "mic failed". transcribe() runs only after vad.start() (on real
     // speech), by which point this is set. (su-0hi #3)
     this.transcriber = await createTranscriber(this.sttOptions);
-    // Same reasoning, same place: the EOU classifier now downloads ~21MB (model +
-    // ONNX Runtime wasm) and warms an inference session, so a mic that never opens
-    // must not pay for it — before su-lou.10.1 this loaded first, when it was a
-    // no-op that returned the heuristic. classify() runs only after vad.start(),
-    // and MicVAD.new() emits nothing until then, so nothing can outrun this.
+    // Same reasoning, same place: the EOU classifier now spins up a worker that
+    // downloads ~21MB (model + ONNX Runtime wasm) and warms an inference session, so
+    // a mic that never opens must not pay for it — before su-lou.10.1 this loaded
+    // first, when it was a no-op that returned the heuristic. classify() runs only
+    // after vad.start(), and MicVAD.new() emits nothing until then, so nothing can
+    // outrun this. The await here is the worker handshake (its warmup doubles as the
+    // load-time assertion), not an on-thread model load. (su-viz2)
     this.smartTurn = await createSmartTurn(this.smartTurnOptions);
     this.vad.start();
     this._info = `denoise (${this.denoiser.mode}) → Silero VAD + smart-turn (${this.smartTurn.mode}) + STT (${this.transcriber.mode})`;
