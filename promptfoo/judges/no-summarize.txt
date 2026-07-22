@@ -35,6 +35,14 @@ mirror rather than listening.
 
 Silence, or an absent listener turn, is never a B3 violation.
 
+The transcript contains a marker line:
+
+[THE THINKER HAS NOW FINISHED LAYING OUT THE IDEA — anything below this line is after the idea landed]
+
+This is a harness annotation, not a turn by either speaker — it marks
+where the thinker finished laying the idea out. Do not score it as a
+listener turn or read it as playback.
+
 Score the conversation as a whole:
 
 5 = no listener turn reflects the thinker's thought back at them; every

@@ -20,6 +20,12 @@ const MultiTurnProvider = require('../providers/multi-turn.js');
 const { LANDING_MARKER, phaseDirective } = MultiTurnProvider;
 
 const RESTRAINT_JUDGE = path.resolve(__dirname, '..', 'judges', 'restraint.txt');
+// Every judge reads the same transcript, so every judge that anchors on the
+// landing boundary — or just has to explain the bracketed meta line to itself —
+// must quote the SAME marker the provider emits.
+const MARKER_JUDGES = ['restraint.txt', 'probing-depth.txt', 'no-summarize.txt'].map((f) =>
+  path.resolve(__dirname, '..', 'judges', f),
+);
 
 // A run wired to stubs: the simulator emits numbered thinker turns, the
 // listener emits whatever `listenerText(turn)` returns. Both record the exact
@@ -174,3 +180,18 @@ test('judges/restraint.txt anchors on the marker the provider emits', () => {
   );
   assert.match(rubric, /If no marker is present/, 'and must define the fallback when it is absent');
 });
+
+// The marker appears mid-transcript for EVERY judge, not just restraint. A judge
+// that was never told the line exists sees an unexplained bracketed meta line;
+// each of these judges quotes it so it reads as a harness boundary, not a turn.
+// Pin every copy to LANDING_MARKER: a silently drifted quote in any one of them
+// re-introduces the same un-anchored line the marker was added to remove.
+for (const judgePath of MARKER_JUDGES) {
+  test(`judges/${path.basename(judgePath)} quotes the marker the provider emits verbatim`, () => {
+    const rubric = fs.readFileSync(judgePath, 'utf8');
+    assert.ok(
+      rubric.includes(LANDING_MARKER),
+      `${path.basename(judgePath)} must quote providers/multi-turn.js LANDING_MARKER verbatim`,
+    );
+  });
+}
