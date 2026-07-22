@@ -23,10 +23,11 @@
 // validation plan's pipeline flowchart. The routing rules mirror the only existing
 // prototype, promptfoo/providers/reduced-role.js (`_shouldEscalate`), and extend
 // it with the audio+timing signal that a live browser gate has but a transcript
-// gate does not: the detector's turn-end reason (smart-turn EOU / patience veto) —
-// exactly the "live-gate-vs-text-gate gap" that reduced-role.js's header flags.
+// gate does not: the EOU classifier's completion probability and the pause's timing
+// (`EvalContext`) — exactly the "live-gate-vs-text-gate gap" that reduced-role.js's
+// header flags.
 //
-// PURE — no DOM, no model, no I/O. `decideTier` is a `(turn, history) -> decision`
+// PURE — no DOM, no model, no I/O. `decideTier` is an `(EvalContext) -> decision`
 // reducer in the same discipline as turn-detection.ts and transcript.ts, so the
 // escalate-slowly policy is pinned by unit tests and only the *wording* of a
 // substantive reply (never whether the listener over-steps) depends on the model.
@@ -85,16 +86,39 @@ export const DEFAULT_SUBSTANTIVE_WORDS = 12;
  */
 export const DEFAULT_QUESTION_COOLDOWN_TURNS = 2;
 
+/**
+ * `EvalContext.completionProb` at/above this reads as a finished thought; below it
+ * the EOU classifier called the pause INCOMPLETE and rule 2 holds silence. Higher ⇒
+ * more patient. Mirrors the detector's own knob (turn-detection.ts
+ * `DEFAULT_KNOBS.completionThreshold`) — the same comparison that used to be
+ * collapsed into the `extended` turn-end reason before the gate ever saw it.
+ *
+ * STAGE-2 DRIFT HAZARD (two knobs, one probability). Today the bridge feeds the gate
+ * a synthetic 0/1 (`completionProbFromTurnEnd`), so this value is inert for any
+ * threshold in (0, 1] and cannot disagree with the detector. When stage 2 threads the
+ * classifier's REAL score to both, these become two independently-overridable knobs
+ * thresholding the SAME probability: let them diverge and the detector can call a
+ * pause `extended` while the gate reads it complete (or the reverse). Sharing this
+ * default constant across the modules would NOT close that gap — runtime configs
+ * still drift — and would couple this deliberately standalone gate to the detector
+ * (this module imports nothing; see header). The question stage 2 must actually
+ * settle is whether the two should collapse into ONE knob; that is left to stage 2,
+ * not pre-judged here.
+ */
+export const DEFAULT_COMPLETION_THRESHOLD = 0.5;
+
 export interface GateConfig {
   substantiveWords: number;
   acks: readonly string[];
   questionCooldownTurns: number;
+  completionThreshold: number;
 }
 
 export const DEFAULT_GATE_CONFIG: GateConfig = {
   substantiveWords: DEFAULT_SUBSTANTIVE_WORDS,
   acks: DEFAULT_ACKS,
   questionCooldownTurns: DEFAULT_QUESTION_COOLDOWN_TURNS,
+  completionThreshold: DEFAULT_COMPLETION_THRESHOLD,
 };
 
 // ── Gate I/O ──
@@ -102,26 +126,90 @@ export const DEFAULT_GATE_CONFIG: GateConfig = {
 /** How the detector ended a turn — mirrors transcript.ts TurnEndMark.reason. */
 export type TurnEndReason = 'floor' | 'extended';
 
-/** The just-completed turn the gate decides on. */
-export interface GateTurn {
-  /** Detector turn number (1-based). */
-  turn: number;
-  /** The turn's transcribed text (joined segments). Empty ⇒ nothing was transcribed. */
-  text: string;
-  /**
-   * How the detector ended the turn:
-   *  - 'floor'    — ended at the bare patience floor: a clean finish.
-   *  - 'extended' — smart-turn read the pause as INCOMPLETE and held the floor
-   *                 open; the thinker was mid-thought. The audio+timing signal a
-   *                 transcript gate lacks; it biases hard toward silence (B1).
-   */
-  endReason: TurnEndReason;
-}
-
 /** A prior turn's decision — the history the escalate-slowly policy reads. */
 export interface PriorDecision {
   turn: number;
   tier: Tier;
+}
+
+/**
+ * Everything the gate is allowed to look at when it evaluates a pause.
+ *
+ * This is deliberately WIDER than the policy below reads, and that is the point.
+ * The gate's input used to be `endReason: 'floor' | 'extended'`, and rule 2 read
+ * that one boolean as its ENTIRE B1 safety signal. The boolean existed only as a
+ * SIDE EFFECT of smart-turn having extended the patience timer, so it threw away
+ * the probability behind it, how long the pause had actually run, and how recently
+ * the companion itself last spoke.
+ *
+ * Carrying the underlying signals instead is what makes the deferred stage 2 — let
+ * the EOU verdict SHORTEN patience: reply sooner on a confident `complete`,
+ * backchannel during a pause without taking the floor, grade restraint continuously
+ * — a policy edit inside `decideTier` rather than a second round of state-machine
+ * surgery. Every one of those is a decision INSIDE this module.
+ *
+ * STAGE 2 IS NOT AUTHORISED HERE. `decideTier` reproduces the previous behaviour
+ * exactly; `msSinceSpeechEnd` and `msSinceWeLastSpoke` are carried but deliberately
+ * UNREAD, and response-hierarchy.equivalence.test.ts pins that against a frozen copy
+ * of the pre-refactor gate.
+ */
+export interface EvalContext {
+  /**
+   * Utterance identity (1-based) — which THOUGHT this is, not which evaluation tick
+   * fired. The ack rotation and the question cooldown are spacing rules about
+   * utterances, so they must not be keyed on a tick that can repeat within one
+   * pause. Today the detector's turn number is both (one evaluation per turn); when
+   * su-lou.10.4 splits them, only this field's SOURCE changes — not this contract.
+   */
+  utteranceIndex: number;
+  /**
+   * The WHOLE utterance transcribed so far — NOT the fragment since the last
+   * evaluation. Rules 4/5 ask "how big is this thought?", so a re-evaluation of a
+   * still-growing utterance has to see all of it. Empty ⇒ nothing was transcribed.
+   */
+  utteranceTextSoFar: string;
+  /**
+   * The EOU classifier's P(complete) for this pause: the real number, not a boolean.
+   * Below `GateConfig.completionThreshold` the classifier read the thinker as
+   * mid-thought. Non-finite (no usable verdict) is treated as incomplete — see
+   * rule 2; widening a two-valued reason into a real number admits NaN, and the
+   * safe reading of "no EOU evidence" is to stay quiet.
+   */
+  completionProb: number;
+  /**
+   * How long this pause has run (ms since the last speech-end in the turn). `NaN`
+   * when the turn had no speech-end to measure from (no segments at all) — the "no
+   * measurement" sentinel, kept distinct from a real 0-length pause, and to be read
+   * the same fail-safe way a non-finite `completionProb` is (above): no evidence ⇒
+   * grant no license. Carried; unread in stage 1.
+   */
+  msSinceSpeechEnd: number;
+  /**
+   * How long since the companion last RELEASED THE FLOOR (ms), `Infinity` if it never
+   * has. This is the detector's response-window close / barge-in — the moment it
+   * handed the conversational turn back — NOT when its TTS audio literally stopped
+   * (a clip can out- or under-run that window). That floor boundary is the meaningful
+   * one for a restraint/spacing signal, not a stand-in for audio end. The signal the
+   * gate could not previously see at all. Carried; unread in stage 1.
+   */
+  msSinceWeLastSpoke: number;
+  /** The history the escalate-slowly policy reads. */
+  priorDecisions: readonly PriorDecision[];
+}
+
+/**
+ * `completionProb` for a caller that only has the detector's two-valued turn-end
+ * reason.
+ *
+ * STAGE-1 BRIDGE. transcript.ts's `TurnEndMark` carries `reason`, not the score
+ * behind it, so main.ts cannot yet hand the gate a real P(complete). `extended` ⇒
+ * certainly incomplete, `floor` ⇒ certainly complete, which reproduces the old
+ * rule-2 boolean exactly for any threshold in (0, 1]. Stage 2 deletes this and
+ * threads the classifier's actual score through instead — at which point the gate
+ * gains resolution without the contract changing again.
+ */
+export function completionProbFromTurnEnd(reason: TurnEndReason): number {
+  return reason === 'extended' ? 0 : 1;
 }
 
 export interface GateDecision {
@@ -145,38 +233,51 @@ export function wordCount(text: string): number {
 const TRAILING_OFF = /[…,\-—]$/;
 
 /**
- * Decide the response tier for a completed turn under the "escalate slowly"
+ * Decide the response tier for an evaluated pause under the "escalate slowly"
  * policy. Pure: same inputs → same output.
  *
  * Order matters — the restraint checks come FIRST so an unfinished thought can
  * never be escalated:
  *  1. no words                          → silence   (nothing to respond to)
- *  2. detector held the turn (extended) → silence   (mid-thought; B1 — never interrupt)
+ *  2. EOU says incomplete               → silence   (mid-thought; B1 — never interrupt)
  *  3. text trails off (…, — ,)          → silence   (mid-thought; the reduced-role cue)
  *  4. short finished aside              → acknowledge (rules-only rotating backchannel)
  *  5. substantive / a direct question   → reflection, or question when a question
  *                                          is EARNED (invited, or substantive after
  *                                          the cooldown and not the opening turn)
+ *
+ * These five rules, in this order, are the STAGE-1 policy: byte-for-byte the
+ * behaviour that shipped before `EvalContext` widened the input contract. The extra
+ * signals the context now carries are available to rules that do not exist yet.
  */
-export function decideTier(
-  turn: GateTurn,
-  history: readonly PriorDecision[] = [],
-  config: Partial<GateConfig> = {},
-): GateDecision {
+export function decideTier(ctx: EvalContext, config: Partial<GateConfig> = {}): GateDecision {
   const cfg: GateConfig = { ...DEFAULT_GATE_CONFIG, ...config };
-  const text = turn.text.trim();
+  const text = ctx.utteranceTextSoFar.trim();
   const words = wordCount(text);
+  const history = ctx.priorDecisions;
 
   // 1. Nothing transcribed — there is nothing to respond to.
   if (words === 0) {
     return { tier: 'silence', callModel: false, reason: 'no transcript — holding silence' };
   }
 
-  // 2. The detector held the turn open past the floor: smart-turn read the pause
-  //    as incomplete. This is the audio+timing evidence the thinker is mid-thought.
+  // 2. The EOU classifier scored this pause below the completion threshold: the
+  //    thinker is mid-thought. This is the audio+timing evidence a transcript gate
+  //    lacks — previously reaching the gate only as the `extended` turn-end reason,
+  //    i.e. as the side effect of that same comparison having lengthened the timer.
   //    B1 (usefulness bar): interrupting an unfinished thought is the cardinal
   //    failure. Hold silence regardless of what the words say.
-  if (turn.endReason === 'extended') {
+  //
+  //    Written as `!(prob >= threshold)` rather than `prob < threshold` so a
+  //    non-finite probability — a verdict the classifier could not produce, which
+  //    the old two-valued reason could not express — falls to silence rather than
+  //    slipping through as "complete". Identical to `<` for every real number.
+  //
+  //    The wording below is preserved verbatim from the pre-widening gate: it is
+  //    user-visible (the transcript's reply tooltip) and asserted by the equivalence
+  //    tests, so stage 1 leaves it alone even though the gate now reads the score
+  //    rather than the timer's reaction to it.
+  if (!(ctx.completionProb >= cfg.completionThreshold)) {
     return { tier: 'silence', callModel: false, reason: 'detector held turn open (incomplete) — holding silence' };
   }
 
@@ -192,7 +293,7 @@ export function decideTier(
   // 4. A short, finished, non-question aside → minimal acknowledgment. Rules only,
   //    no model. Rotate the ack by turn number so a gated run doesn't stick.
   if (!invited && !substantive) {
-    const ackText = cfg.acks[((turn.turn % cfg.acks.length) + cfg.acks.length) % cfg.acks.length];
+    const ackText = cfg.acks[((ctx.utteranceIndex % cfg.acks.length) + cfg.acks.length) % cfg.acks.length];
     return { tier: 'acknowledge', callModel: false, ackText, reason: `brief turn (${words}w) — minimal acknowledgment` };
   }
 
@@ -207,7 +308,7 @@ export function decideTier(
     (acc, d) => (d.tier === 'question' ? (acc === null ? d.turn : Math.max(acc, d.turn)) : acc),
     null,
   );
-  const sinceLastQuestion = lastQuestionTurn === null ? Infinity : turn.turn - lastQuestionTurn;
+  const sinceLastQuestion = lastQuestionTurn === null ? Infinity : ctx.utteranceIndex - lastQuestionTurn;
   const questionEarned =
     invited || (substantive && priorTurns >= 1 && sinceLastQuestion >= cfg.questionCooldownTurns);
 
