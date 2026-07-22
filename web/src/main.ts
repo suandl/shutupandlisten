@@ -343,6 +343,12 @@ function beginSpeech(entry: TurnResponse): SpeechSession | null {
   const queue: string[] = [];
   let draining = false;
   let started = false;
+  // The stub speaker returns the SAME placeholder tone for every sentence (tts.ts
+  // stubResult), so a multi-sentence reply used to play it back-to-back once the
+  // reply began streaming sentence by sentence (su-lou.11). The tone only signals
+  // "the loop closed audibly" — one per reply says that; the rest are noise. Track
+  // whether it has sounded this session and swallow repeats (real speech always plays).
+  let tonePlayed = false;
 
   const drain = async (): Promise<void> => {
     if (draining) return;
@@ -371,6 +377,9 @@ function beginSpeech(entry: TurnResponse): SpeechSession | null {
         // playback, so synthesis and speech overlap instead of alternating.
         const ahead = queue.shift();
         if (ahead !== undefined) pending = sp.synthesize(ahead);
+        // Drain the queue in order either way, but only voice a stub tone once.
+        if (res.mode === 'stub' && tonePlayed) continue;
+        if (res.mode === 'stub') tonePlayed = true;
         await playPcm(res.audio, res.sampleRate, epoch);
       }
     } catch {
