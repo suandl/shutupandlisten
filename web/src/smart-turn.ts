@@ -230,11 +230,37 @@ export async function createSmartTurn(opts: SmartTurnOptions = {}): Promise<Smar
     for (const entry of inFlight) entry.settle(new Error('the EOU worker was shut down'), 0);
     try {
       worker.removeEventListener('message', onMessage);
+      worker.removeEventListener('error', onCrash);
       worker.terminate();
     } catch {
       /* already gone */
     }
   };
+
+  // A worker that dies MID-SESSION is a different failure from one that never loads:
+  // initWorker owns the load-time crash and drops its own `error` listener the instant
+  // the handshake settles, so past `ready` nothing is watching the worker at all. Left
+  // to the failure counter alone a steady-state crash is caught only slowly — the dead
+  // worker just stops answering, so every verdict burns the full timeoutMs and it takes
+  // MAX_CONSECUTIVE_FAILURES of them (~6s of degraded turn-taking) before abandonment
+  // finally trips. So watch for the crash directly and give up at once: the same
+  // terminal state the counter would reach, minus the wait. The `abandoned` guard makes
+  // this idempotent with close() and with itself — a crash that arrives after a
+  // deliberate shutdown, or a second `error` event, is nothing new and is not re-reported.
+  const onCrash = (ev: { data?: unknown }): void => {
+    if (abandoned) return;
+    abandoned = true;
+    // The crash IS the report. The verdicts teardown() is about to strand each land in
+    // predict()'s catch, so claim the once-only per-call degrade here too or they would
+    // add a second, redundant line for a failure already named.
+    degraded = true;
+    teardown();
+    // An `error` event is an ErrorEvent, whose `message` names the fault; the structural
+    // WorkerLike type only promises `data`, so read the name off the side.
+    const message = (ev as unknown as { message?: string }).message;
+    diag(opts, `the EOU worker crashed (${message || 'no message'})`);
+  };
+  worker.addEventListener('error', onCrash);
 
   const classifyInWorker = (audio: Float32Array): Promise<number> =>
     new Promise<number>((resolve, reject) => {
@@ -302,7 +328,17 @@ export async function createSmartTurn(opts: SmartTurnOptions = {}): Promise<Smar
       }
     },
     close() {
-      if (!abandoned) teardown();
+      // Mark the session abandoned BEFORE teardown, not merely release the worker.
+      // teardown() rejects every in-flight verdict, and those rejections land in
+      // predict()'s catch — where, with `abandoned` still false, three-plus stranded
+      // verdicts at close time would trip the failure counter and log an "abandoning"
+      // escalation for a shutdown that was deliberate. Setting the flag first lets the
+      // catch's `!abandoned` guard swallow it. Still guarded so close() stays idempotent
+      // and an already-abandoned adapter does not double-terminate.
+      if (!abandoned) {
+        abandoned = true;
+        teardown();
+      }
     },
   };
 }

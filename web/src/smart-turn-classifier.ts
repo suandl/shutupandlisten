@@ -85,7 +85,12 @@ export function completionProbFrom(data: ArrayLike<number>): number {
   // is NaN, and `NaN >= completionThreshold` is false, so it would reach the
   // detector as a silent, permanent "incomplete" veto. Throw instead — the caller
   // degrades to the heuristic and reports why.
-  if (!Number.isFinite(prob)) throw new Error(`classifier returned a non-finite score (${data[0]})`);
+  if (!Number.isFinite(prob)) {
+    // Name the WHOLE raw output, not `data[0]`: a 2-class output like [1, Infinity]
+    // softmaxes to NaN, but `data[0]` is an innocent 1 — reporting "(1)" hides the
+    // Infinity that actually broke the score. The caller relays this reason verbatim.
+    throw new Error(`classifier returned a non-finite score from output [${Array.from(data).join(', ')}]`);
+  }
   return clamp01(prob);
 }
 

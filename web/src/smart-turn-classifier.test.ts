@@ -89,6 +89,10 @@ test('a non-finite score is an error, not a clamped-looking verdict', () => {
   // open forever. It must surface as a degrade instead.
   assert.throws(() => completionProbFrom([NaN]), /non-finite/);
   assert.throws(() => completionProbFrom([Infinity, 1]), /non-finite/);
+  // And the message must NAME the offending value: [Infinity, 1] softmaxes to NaN
+  // via the Infinity, but data[0] is an innocent 1 — reporting "(1)" would point at
+  // the wrong number and hide the one that broke the score.
+  assert.throws(() => completionProbFrom([Infinity, 1]), /Infinity/);
 });
 
 // ── the feature contract ───────────────────────────────────────────────────────

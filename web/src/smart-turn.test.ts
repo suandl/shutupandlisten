@@ -58,6 +58,13 @@ function fakeWorker(
     for (const listener of [...(listeners.get('message') ?? [])]) listener({ data });
   };
 
+  // A worker crash is an `error` EVENT, not a `message` post, so it needs its own
+  // firing path: the adapter's steady-state crash listener registers under 'error', and
+  // emit() above only ever reaches 'message' listeners.
+  const emitError = (event: { message?: string } = {}): void => {
+    for (const listener of [...(listeners.get('error') ?? [])]) listener(event as { data?: unknown });
+  };
+
   const worker: WorkerLike = {
     postMessage(message: unknown) {
       const msg = message as { type?: string; id?: number; audio?: Float32Array };
@@ -102,6 +109,8 @@ function fakeWorker(
     terminatedCount: () => terminated,
     /** Push a message the adapter did not ask for — a late reply, a stray shape. */
     emit,
+    /** Fire an `error` event — a worker that crashed out from under the session. */
+    emitError,
   };
 }
 
@@ -353,6 +362,78 @@ test('a clean verdict resets the failure run, so scattered failures never escala
   assert.equal(fake.terminatedCount(), 0, 'a live worker is not terminated mid-run');
   assert.equal(diagnostics.filter((m) => /abandoning/.test(m)).length, 0, 'no escalation without a consecutive run');
   st.close();
+});
+
+test('a worker that crashes mid-session is abandoned at once, not after three slow timeouts', async () => {
+  // initWorker() drops its load-time `error` listener the moment the handshake settles,
+  // so past `ready` a steady-state crash has nobody watching. Left to the failure counter
+  // the dead worker would simply stop answering — every verdict burning the full
+  // timeoutMs, three of them (~6s of degraded turn-taking) before abandonment finally
+  // trips. The persistent crash listener collapses that to a single event: the session
+  // flips to the heuristic the instant the worker dies. timeoutMs is deliberately long
+  // here so a test that passes proves the crash — not a timeout — did the abandoning.
+  const diagnostics: string[] = [];
+  const fake = fakeWorker({ classify: () => 'silent' }); // a verdict is in flight when the crash lands
+  const st = await withWorker(fake, { timeoutMs: 5000, onDiagnostic: (m: string) => diagnostics.push(m) });
+  assert.equal(st.mode, 'model');
+
+  const inFlight = st.predict(segment(1200), SR); // posted, and will never be answered
+  fake.emitError({ message: 'RuntimeError: memory access out of bounds' }); // the worker dies
+
+  const r = await inFlight;
+  assert.equal(r.mode, 'heuristic', 'the stranded verdict settles to the heuristic instead of hanging the turn');
+  assert.equal(st.mode, 'heuristic', 'a dead worker cannot be `model` — mode tells the truth at once');
+  assert.equal(fake.terminatedCount(), 1, 'the crashed worker is torn down, not left to time out call after call');
+  assert.equal(diagnostics.length, 1, 'the crash is named exactly once — not once per stranded verdict too');
+  assert.match(diagnostics[0], /crashed/);
+  assert.match(diagnostics[0], /memory access out of bounds/, 'the crash names itself so the console says why');
+
+  // Every later verdict is the heuristic and never reaches the dead worker again — the
+  // same guarantee abandonment-by-counter gives, arrived at without the wait.
+  const before = fake.classifyCalls();
+  const later = await st.predict(segment(1200), SR);
+  assert.equal(later.mode, 'heuristic');
+  assert.equal(fake.classifyCalls(), before, 'no later verdict is piled onto the crashed worker');
+  st.close();
+  assert.equal(fake.terminatedCount(), 1, 'close() after a crash does not double-terminate');
+});
+
+test('a second crash after abandonment does not double-report', async () => {
+  // A worker can emit more than one `error`, and a crash can arrive after close() has
+  // already given up on the session. Either way the terminal state was reached once, so
+  // a repeat event must be a no-op: no second diagnostic, no second terminate.
+  const diagnostics: string[] = [];
+  const fake = fakeWorker();
+  const st = await withWorker(fake, { onDiagnostic: (m: string) => diagnostics.push(m) });
+  fake.emitError({ message: 'first crash' });
+  fake.emitError({ message: 'second crash' });
+  assert.equal(diagnostics.length, 1, 'only the first crash is reported');
+  assert.equal(fake.terminatedCount(), 1, 'the worker is terminated once, not once per event');
+  st.close();
+  assert.equal(fake.terminatedCount(), 1, 'close() after a crash is still a no-op');
+});
+
+test('close() with verdicts in flight settles them to the heuristic without a spurious abandonment', async () => {
+  // A deliberate shutdown must not read as a dead session. close() rejects every in-flight
+  // verdict via teardown(), and those rejections land in predict()'s catch; before the fix
+  // they arrived with `abandoned` still false, so three-plus of them tripped the failure
+  // counter and logged "abandoning the model" AFTER a clean close. close() now marks the
+  // session abandoned first, so the catch's `!abandoned` guard swallows the escalation.
+  const diagnostics: string[] = [];
+  const fake = fakeWorker({ classify: () => 'silent' }); // nothing answers; all three sit in flight
+  const st = await withWorker(fake, { timeoutMs: 5000, onDiagnostic: (m: string) => diagnostics.push(m) });
+  const inFlight = [
+    st.predict(segment(1200), SR),
+    st.predict(segment(1200), SR),
+    st.predict(segment(1200), SR),
+  ]; // three stranded verdicts — the count at which the old bug escalated
+  st.close(); // a deliberate shutdown, not a failing session
+
+  const results = await Promise.all(inFlight);
+  for (const r of results) assert.equal(r.mode, 'heuristic', 'a stranded verdict settles to the heuristic, not a hang');
+  assert.equal(diagnostics.filter((m) => /abandoning/.test(m)).length, 0, 'a deliberate close is not an abandonment');
+  st.close();
+  assert.equal(fake.terminatedCount(), 1, 'the idempotent close terminates exactly once');
 });
 
 test('audio at the wrong rate degrades loudly rather than being silently resampled', async () => {

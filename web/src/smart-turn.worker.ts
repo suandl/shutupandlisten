@@ -49,6 +49,9 @@ interface ClassifyMessage {
 }
 
 let classifier: SmartTurnClassifier | null = null;
+// Latches while a load is in flight so a concurrent second init cannot start a competing
+// session; released again if that load fails so a fresh init can retry.
+let initStarted = false;
 
 ctx.addEventListener('message', (ev: { data: unknown }) => {
   const msg = ev.data as InitMessage | ClassifyMessage | undefined;
@@ -58,6 +61,18 @@ ctx.addEventListener('message', (ev: { data: unknown }) => {
 });
 
 async function handleInit(msg: InitMessage): Promise<void> {
+  // The handshake is single-shot: the adapter sends exactly one 'init'. But a second
+  // one must never reload — `createSmartTurnClassifier` would build a fresh ONNX session
+  // and orphan the live one, leaking its wasm heap with no owner left to close it. So a
+  // repeated init (or one racing an in-flight load) is answered as an idempotent no-op:
+  // re-send `ready` if we already hold a classifier, and refuse to start a second load
+  // while the first is still running.
+  if (classifier) {
+    ctx.postMessage({ type: 'ready' });
+    return;
+  }
+  if (initStarted) return;
+
   if (!msg.modelUrl) {
     ctx.postMessage({ type: 'error', reason: 'no model url' });
     return;
@@ -72,6 +87,9 @@ async function handleInit(msg: InitMessage): Promise<void> {
     return;
   }
 
+  // Latch now — right before the first await — so a second init that arrives while this
+  // load is in flight sees the guard and bows out instead of starting a rival session.
+  initStarted = true;
   try {
     classifier = await createSmartTurnClassifier({
       createClassifier: () => ortClassifier({ modelUrl, wasmPath: msg.wasmPath }),
@@ -81,6 +99,9 @@ async function handleInit(msg: InitMessage): Promise<void> {
     // The thrown message IS the diagnostic — `model failed to load (...)` or
     // `model loaded but could not score (...)`. The adapter prints it verbatim, so a
     // degrade still names itself (su-lou.7's lesson) across the worker boundary.
+    // Nothing was retained — no session to leak — so release the latch to leave a fresh
+    // init free to try again.
+    initStarted = false;
     ctx.postMessage({ type: 'error', reason: errText(err) });
     return;
   }
