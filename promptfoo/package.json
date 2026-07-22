@@ -5,6 +5,7 @@
   "scripts": {
     "validate": "promptfoo validate",
     "test": "node --test test/*.test.js",
+    "test:judges": "../scripts/eval-keys.sh env RUN_JUDGE_ACCEPTANCE=1 node --test test/judge-acceptance.test.js",
     "eval": "if [ -f ../.env.local ]; then promptfoo eval --env-file ../.env.local; else ../scripts/eval-keys.sh npx promptfoo eval; fi",
     "eval:smoke": "if [ -f ../.env.local ]; then promptfoo eval --env-file ../.env.local --filter-pattern feature-idea --filter-providers openai --filter-prompts claude; else ../scripts/eval-keys.sh npx promptfoo eval --filter-pattern feature-idea --filter-providers openai --filter-prompts claude; fi",
     "eval:smoke:ondevice": "if [ -f ../.env.local ]; then promptfoo eval --env-file ../.env.local --filter-pattern feature-idea --filter-providers ollama-llama3.2-3b-full --filter-prompts chatgpt; else ../scripts/eval-keys.sh npx promptfoo eval --filter-pattern feature-idea --filter-providers ollama-llama3.2-3b-full --filter-prompts chatgpt; fi",

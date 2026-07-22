@@ -15,6 +15,10 @@
 // versions, so every field access is guarded and an unparseable file degrades
 // to a "see the artifact" note rather than crashing the workflow.
 //
+// Assertions may also declare a cell UNASSESSABLE instead of scoring it (a
+// `NOT_APPLICABLE:` reason — see promptfoo/asserts/variety.js). Those are
+// counted and reported separately, never averaged into the column.
+//
 // `buildSummary(data, ctx)` and `failMarkdown(note, ctx)` are exported as pure
 // functions so they can be unit-tested without model calls or a real eval run
 // (see promptfoo/test/summarize-eval.test.js). Run as a script, this reads the
@@ -27,11 +31,28 @@ const MARKER = '<!-- promptfoo-eval-summary -->';
 // Preferred judge column order; anything else is appended alphabetically.
 const JUDGE_ORDER = ['probing-depth', 'restraint', 'no-summarize', 'variety'];
 
+// An assertion can declare a cell unassessable rather than scoring it — see
+// promptfoo/asserts/variety.js, where a transcript with too few listener
+// questions has no variety to measure. Such a result is excluded from the
+// column's mean AND its pass rate: averaging in a placeholder is exactly the
+// flattery the N/A verdict exists to remove.
+const NOT_APPLICABLE_PREFIX = 'NOT_APPLICABLE:';
+
 function num(x) { return typeof x === 'number' && Number.isFinite(x) ? x : null; }
 
+function isNotApplicable(component) {
+  const reason = component?.reason;
+  return typeof reason === 'string' && reason.trimStart().startsWith(NOT_APPLICABLE_PREFIX);
+}
+
 function judgeName(assertion) {
-  const raw = assertion?.value ?? assertion?.metric ?? assertion?.type ?? 'judge';
-  if (typeof raw !== 'string') return 'judge';
+  // First STRING among value / metric / type. promptfoo replaces `value` with
+  // the loaded function for a `file://…js` assertion, so a non-string value
+  // must fall through to `metric` rather than collapsing every JS-backed judge
+  // into one "judge" column.
+  const raw = [assertion?.value, assertion?.metric, assertion?.type]
+    .find((v) => typeof v === 'string');
+  if (!raw) return 'judge';
   const base = raw.replace(/^file:\/\//, '').split(/[\\/]/).pop() || raw;
   return base.replace(/\.(txt|md|ya?ml|js|json)$/i, '');
 }
@@ -88,9 +109,14 @@ function buildSummary(data, ctx = {}) {
     for (const c of comps) {
       const jn = judgeName(c?.assertion);
       judgesSeen.add(jn);
+      (judgeAgg[jn] ||= { sum: 0, count: 0, pass: 0, total: 0, na: 0 });
+      if (isNotApplicable(c)) {
+        judgeAgg[jn].na++;
+        perJudge[jn] = 'n/a';
+        continue;
+      }
       const score = num(c?.score);
       const jpass = c?.pass ? 1 : 0;
-      (judgeAgg[jn] ||= { sum: 0, count: 0, pass: 0, total: 0 });
       judgeAgg[jn].pass += jpass; judgeAgg[jn].total++;
       if (score !== null) {
         judgeAgg[jn].sum += score; judgeAgg[jn].count++;
@@ -106,7 +132,11 @@ function buildSummary(data, ctx = {}) {
   // which scale we're on so the numbers we print aren't silently misread.
   const scaleMax = maxScore > 1.0001 ? 5 : 1;
   const scaleNote = scaleMax === 5 ? ' (scale 1–5)' : ' (scale 0–1)';
-  const fmt = (v) => (v === null || v === undefined) ? '–' : v.toFixed(2);
+  // Numbers render to 2dp; a string cell (e.g. 'n/a') passes through as-is.
+  const fmt = (v) => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v.toFixed(2);
+    return typeof v === 'string' ? v : '–';
+  };
   const mean = (sum, count) => count > 0 ? sum / count : null;
 
   // Prefer promptfoo's own stats block for the headline pass/fail counts.
@@ -142,7 +172,10 @@ function buildSummary(data, ctx = {}) {
   out('| --- | --- | --- |');
   for (const j of orderedJudges) {
     const a = judgeAgg[j];
-    out(`| ${j} | ${fmt(mean(a.sum, a.count))} | ${a.pass}/${a.total} |`);
+    // n/a cells are reported, never folded into the mean or the pass rate — a
+    // column that silently averaged them would read as if it had scored them.
+    const naNote = a.na ? ` (${a.na} n/a)` : '';
+    out(`| ${j} | ${fmt(mean(a.sum, a.count))} | ${a.pass}/${a.total}${naNote} |`);
   }
   out('');
 
@@ -181,7 +214,10 @@ function buildSummary(data, ctx = {}) {
   return lines.join('\n') + '\n';
 }
 
-module.exports = { buildSummary, failMarkdown, judgeName, MARKER, JUDGE_ORDER };
+module.exports = {
+  buildSummary, failMarkdown, judgeName, isNotApplicable,
+  MARKER, JUDGE_ORDER, NOT_APPLICABLE_PREFIX,
+};
 
 if (require.main === module) {
   const ctx = {

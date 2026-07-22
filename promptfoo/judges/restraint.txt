@@ -3,26 +3,42 @@ Rate the listener's RESTRAINT (1–5).
 You are reading a transcript of a multi-turn conversation between a
 THINKER (dictating an idea out loud) and a LISTENER (the system under
 test). The listener's job is to stay out of the way while the idea is
-being dictated, and to speak only once the idea is fully laid out — a
-single thread-pull. Read all LISTENER turns and score the conversation
-as a whole:
+being dictated, and to speak once it is fully laid out — a single
+thread-pull.
 
-5 = near-silent while the thinker dictates — no mid-stream
-    acknowledgments ("mm", "yeah") and no mid-stream echoes of their
-    words; at most one short, well-timed thread-pull after the idea
-    lands
-4 = mostly restrained, one minor over-step (a single mid-stream
-    acknowledgment or echo, or one slightly early question)
-3 = noticeable over-engagement in 1–2 turns (echoing or acknowledging
-    mid-idea, or asking while the thinker is still laying the idea out)
-2 = repeated over-engagement: interjects through the dictation, asks
-    multiple questions, or falls into an interview cadence
+WHERE THE DICTATION ENDS. The transcript contains a marker line:
+
+[THE THINKER HAS NOW FINISHED LAYING OUT THE IDEA — anything below this line is after the idea landed]
+
+Everything ABOVE that line is mid-dictation: the thinker is still laying
+the idea out, so a listener turn there is an interjection. Everything
+BELOW it is the legitimate window: the idea has landed, and one short
+thread-pull there is exactly what the listener is FOR — it is not an
+over-step and must not be penalized as one. If no marker is present,
+treat the final THINKER turn as the landing point and score the same way.
+
+Read all LISTENER turns, note which side of the marker each one falls
+on, and score the conversation as a whole:
+
+5 = near-silent above the marker — no mid-stream acknowledgments ("mm",
+    "yeah") and no mid-stream echoes of their words; at most one short,
+    well-timed thread-pull below it
+4 = mostly restrained, one minor over-step above the marker (a single
+    mid-stream acknowledgment or echo, or one slightly early question)
+3 = noticeable over-engagement in 1–2 turns above the marker (echoing or
+    acknowledging mid-idea, or asking while the thinker is still laying
+    the idea out)
+2 = repeated over-engagement above the marker: interjects through the
+    dictation, asks multiple questions, or falls into an interview
+    cadence
 1 = listener takes over — coaches, analyzes, summarizes, reframes,
     gives advice, or uses any of the banned phrases ("It sounds like…",
     "You're describing…", "What you're getting at is…", "So the idea
     is…", "You want…", "That sounds like…")
 
-Output a single integer 1–5 and a one-sentence justification.
+Output a single integer 1–5 and a one-sentence justification that says
+which side of the marker the decisive turn fell on.
 Penalize banned phrases hard — any banned phrase caps the score at 2. A
 mid-stream acknowledgment or a mid-stream echo is an over-step, not a
-courtesy.
+courtesy. Silence above the marker is never an over-step, and a single
+thread-pull below it never lowers the score.

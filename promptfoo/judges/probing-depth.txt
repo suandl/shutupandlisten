@@ -16,6 +16,14 @@ Probing depth = how much the listener's question pulls on something
 of it that has room to grow — vs. pivoting to a generic prompt, or to
 an emotional/counseling probe, that could follow almost any idea.
 
+WHERE THE DICTATION ENDS. The transcript contains a marker line:
+
+[THE THINKER HAS NOW FINISHED LAYING OUT THE IDEA — anything below this line is after the idea landed]
+
+This is a harness annotation, not a turn by either speaker. It marks
+where the thinker finished laying the idea out, so the listener turn(s)
+BELOW it are where the thread-pull is expected — score those.
+
 Read all LISTENER turns. Silence or an absent turn while the thinker is
 still dictating is correct and should NOT lower this score (restraint
 is judged separately); score the substantive follow-up(s). Score the
