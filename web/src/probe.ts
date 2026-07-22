@@ -35,6 +35,12 @@ import { createListener } from './listener.ts';
 import { createTranscriber } from './stt.ts';
 import { createSpeaker } from './tts.ts';
 import { createSmartTurn } from './smart-turn.ts';
+import {
+  measureBusyControl,
+  measureIdle,
+  measureOccupancy,
+  type OccupancyReport,
+} from './main-thread-occupancy.ts';
 
 /** PCM fixture handed in by the driver (decoded from web/test/fixtures/*.wav). */
 export interface ProbeFixture {
@@ -83,6 +89,34 @@ export interface SmartTurnStageReport {
    * never gated: a slow CI box is not a regression.
    */
   smoke: { mode: string; completionProb: number; ms: number; warmMs: number } | null;
+  /**
+   * MAIN-THREAD OCCUPANCY of the warm verdict (su-lou.10.5) — the question the
+   * latency numbers above cannot answer. ~270ms of waiting is a tuning question;
+   * ~270ms of FROZEN PAGE on every pause is jank the operator feels, and no floor
+   * value fixes it. Null when the smoke-run never ran.
+   *
+   * Three readings, because one alone proves nothing:
+   *   `idle`   — an equally long window with the thread free. The noise floor of
+   *              this machine and this page.
+   *   `busy`   — a deliberate `busyMs` synchronous block. Proves the instrument can
+   *              see blocking HERE, so a quiet `predictRuns` means off-thread rather
+   *              than blind.
+   *   `predictRuns` — the real measurement, one entry per warm `smartTurn.predict()`.
+   *              Several, not one: this number is the pivot for how far the silence
+   *              floor can drop, and a single sample on a shared box is not evidence.
+   *              Each entry's `windowMs` IS that call's wall time, so duration and
+   *              occupancy are read off the same record and cannot disagree.
+   *
+   * Reported, never gated — same rule as the latency numbers: this is evidence for
+   * a design decision, and a slow or contended CI box is not a regression.
+   */
+  occupancy: {
+    idle: OccupancyReport;
+    busy: OccupancyReport;
+    /** Length of the deliberate block in the `busy` control. */
+    busyMs: number;
+    predictRuns: OccupancyReport[];
+  } | null;
   error: string | null;
 }
 
@@ -151,6 +185,16 @@ const LISTENER_SMOKE_TOKENS = 16;
 const LISTENER_INIT_TIMEOUT_MS = 420000;
 const LISTENER_GENERATE_TIMEOUT_MS = 240000;
 
+/** Idle window for the occupancy noise floor — a little longer than a warm verdict
+ *  (~270ms measured), so the control and the measurement span comparable spans. */
+const OCCUPANCY_IDLE_MS = 300;
+/** The deliberate block in the positive control. Long enough to be unmistakable
+ *  against timer slop, short enough to be free next to a 21MB model load. */
+const OCCUPANCY_BUSY_MS = 150;
+/** Warm verdicts measured. Enough to see the spread on a shared box — the floor
+ *  arithmetic turns on this number — without adding seconds to the gate. */
+const OCCUPANCY_WARM_RUNS = 3;
+
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 function rmsOf(audio: Float32Array): number {
@@ -218,7 +262,14 @@ async function runTts(): Promise<TtsStageReport> {
  * correct, which is a tuning question for the operator feel-test.
  */
 async function runSmartTurn(fixture: ProbeFixture): Promise<SmartTurnStageReport> {
-  const report: SmartTurnStageReport = { loadMode: 'heuristic', loadMs: 0, diagnostics: [], smoke: null, error: null };
+  const report: SmartTurnStageReport = {
+    loadMode: 'heuristic',
+    loadMs: 0,
+    diagnostics: [],
+    smoke: null,
+    occupancy: null,
+    error: null,
+  };
   try {
     const t0 = performance.now();
     const smartTurn = await createSmartTurn({
@@ -232,14 +283,28 @@ async function runSmartTurn(fixture: ProbeFixture): Promise<SmartTurnStageReport
       const t1 = performance.now();
       const result = await smartTurn.predict(samples, fixture.sampleRate);
       const ms = Math.round(performance.now() - t1);
-      const t2 = performance.now();
-      await smartTurn.predict(samples, fixture.sampleRate);
+
+      // The controls run BETWEEN the cold and warm verdicts, not before the load:
+      // the idle floor has to be measured with the page in the state the real
+      // measurement will see it in (session created, wasm heap resident), or it
+      // would be a noise floor for a different page.
+      const idle = await measureIdle(OCCUPANCY_IDLE_MS);
+      const busy = await measureBusyControl(OCCUPANCY_BUSY_MS);
+
+      const predictRuns: OccupancyReport[] = [];
+      for (let i = 0; i < OCCUPANCY_WARM_RUNS; i++) {
+        const { occupancy } = await measureOccupancy(() => smartTurn.predict(samples, fixture.sampleRate));
+        predictRuns.push(occupancy);
+      }
       report.smoke = {
         mode: result.mode,
         completionProb: Number(result.completionProb.toFixed(4)),
         ms,
-        warmMs: Math.round(performance.now() - t2),
+        // The first warm run's own window — the same number the previous shape
+        // reported, now read off the measured record instead of a second clock.
+        warmMs: Math.round(predictRuns[0].windowMs),
       };
+      report.occupancy = { idle, busy, busyMs: OCCUPANCY_BUSY_MS, predictRuns };
     } finally {
       smartTurn.close();
     }
