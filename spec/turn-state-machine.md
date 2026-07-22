@@ -103,6 +103,16 @@ pause. Defaults bias to "keep listening".
 | `responseDurationMs` | `1500` | Length of the stubbed canned response (timing-only milestone). |
 | `useSmartTurn` | `true` | `false` ⇒ patience-only baseline arm (ignore all EOU verdicts). |
 
+`completionThreshold` has a SECOND reader outside this machine. The
+response-hierarchy gate thresholds the same `P(complete)` for its own rule 2
+(hold silence when the thinker read as mid-thought), so the two must agree: they
+share one default (`web/src/completion-threshold.ts`) and the live app derives
+the gate's runtime value from this knob (`gateConfigFromTurnKnobs`). Retuning it
+therefore moves both boundaries at once — which is the point. Letting them
+diverge yields a companion that holds the turn open and then answers anyway, or
+ends the turn and then refuses to speak. Nothing about this machine's own
+behaviour or its golden vectors changes.
+
 The VAD's own thresholds (positive/negative speech probability, redemption
 frames) are adapter-level knobs documented in `web/src/vad.ts`; they shape the
 `speech-start` / `speech-end` event stream this machine consumes, but are not
