@@ -29,6 +29,10 @@ The prompt is meant to be pasted into:
 - `ios/` — the native iOS app: the same spec and response hierarchy,
   with on-device STT/TTS and Claude as the listener. See
   [`ios/README.md`](ios/README.md).
+- `server/` — the account-backed proxy for the customer build of the
+  iOS app: Sign in with Apple, metered listener/coverage endpoints,
+  the Anthropic key held server-side. Contract in
+  [`server/API.md`](server/API.md).
 
 ## Iterating on the prompt
 
