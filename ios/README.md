@@ -68,6 +68,29 @@ substantive tiers (a short reflection, or one anchored question) reach Claude.
   `silence` decision — the prompt tells it silence is usually correct, and
   declining is free (spec §4a).
 
+## The customer build
+
+The app is a product, not a developer harness — no API key required:
+
+- **Onboarding** teaches the one non-obvious contract up front: the app
+  deliberately does not respond when you pause. A self-running patience-bar
+  demo shows a pause filling the window, speech resetting it, and the single
+  thread-pull arriving only when the idea lands. A first-session tip
+  reinforces it live the first time the machine visibly waits.
+- **Account mode** — Sign in with Apple exchanges an identity token with the
+  proxy (`server/`, contract in `server/API.md`) for a session token stored in
+  the Keychain. The proxy holds the Anthropic key; the app never sees it, and
+  the server never sees audio or the running transcript — only the rare
+  substantive-tier requests the gate escalates, and explicit coverage checks.
+  `ListenerService` is the seam: `ProxyClient` (account) and `ClaudeClient`
+  (developer mode, the original BYOK path, now tucked into a Settings
+  disclosure) are interchangeable behind it.
+- **Session library** — every session is saved (SwiftData): title derived
+  from the first words, full transcript, coverage snapshot, and the session
+  audio (AAC, recorded off the same mic tap). The library is the home screen:
+  search, swipe-to-delete, per-session detail with audio playback and a
+  Markdown export via the share sheet.
+
 ### Beyond idea-dictation
 
 - **Pull a thread now** — the upon-prompting path: a button that requests the
@@ -114,8 +137,10 @@ is free), a rules-only backchannel, and one anchored thread-pull:
 
 Open `ios/ShutUpAndListen.xcodeproj` in Xcode 16+, set your signing team, and
 run on an iOS 17+ device (the mic + speech pipeline is best exercised on
-hardware). On first launch: grant microphone and speech-recognition access,
-then add a Claude API key in Settings.
+hardware). The Sign in with Apple capability is wired via
+`App/ShutUpAndListen.entitlements`; point the app at your proxy deployment in
+Settings → Server (or skip sign-in and use developer mode with a personal
+Claude API key under Settings → Developer mode).
 
 ## Tests
 

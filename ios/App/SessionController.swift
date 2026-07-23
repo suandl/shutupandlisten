@@ -22,6 +22,7 @@
 import AVFoundation
 import ClaudeClient
 import Foundation
+import SwiftData
 import SwiftUI
 import TurnEngine
 
@@ -49,6 +50,10 @@ final class SessionController: ObservableObject {
     // Coverage mode
     @Published private(set) var coverageResult: CoverageResult?
     @Published private(set) var coverageChecking = false
+
+    /// The id of the SessionRecord saved by the last `stopSession`, for the
+    /// "Saved to library" confirmation. Nil when nothing was worth saving.
+    @Published private(set) var lastSavedRecordID: UUID?
 
     // ── live-tunable knobs (mirrors web/src/knobs.ts; defaults bias to "keep listening") ──
     @Published var knobs = TurnKnobs.defaults {
@@ -85,6 +90,21 @@ final class SessionController: ObservableObject {
     /// The reply text currently holding (or about to hold) the floor.
     private var pendingReply: (text: String, tier: Tier)?
 
+    // ── app context (late-bound from the SwiftUI environment) ──
+    private var modelContext: ModelContext?
+    private var accountStore: AccountStore?
+    /// Wall-clock start of the running session, for the saved record.
+    private var sessionStartDate: Date?
+    /// File name of the in-progress recording under RecordingStorage.
+    private var recordingFileName: String?
+
+    /// Hand in the SwiftData container and the account layer. Idempotent —
+    /// the root view calls this on appear.
+    func configure(modelContext: ModelContext, accountStore: AccountStore) {
+        self.modelContext = modelContext
+        self.accountStore = accountStore
+    }
+
     private func nowMs() -> Double {
         (ProcessInfo.processInfo.systemUptime - clockOrigin) * 1000
     }
@@ -109,6 +129,8 @@ final class SessionController: ObservableObject {
         }
 
         clockOrigin = ProcessInfo.processInfo.systemUptime
+        sessionStartDate = Date()
+        lastSavedRecordID = nil
         lastEouProb = .nan
         lastSpeechEndMs = .nan
         lastFloorReleaseMs = .infinity
@@ -169,6 +191,15 @@ final class SessionController: ObservableObject {
         }
         transcriber.start()
 
+        // Record the session audio (best-effort — the session runs regardless).
+        let fileName = UUID().uuidString + ".m4a"
+        do {
+            try pipeline.startRecording(to: RecordingStorage.url(for: fileName))
+            recordingFileName = fileName
+        } catch {
+            recordingFileName = nil
+        }
+
         tickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.onTick() }
         }
@@ -182,6 +213,7 @@ final class SessionController: ObservableObject {
         tickTimer?.invalidate()
         tickTimer = nil
         speech.stop()
+        pipeline.stopRecording()
         transcriber.stop()
         pipeline.stop()
         // Abandon the conversation: the next session opens a fresh turn. An
@@ -192,6 +224,47 @@ final class SessionController: ObservableObject {
         isRunning = false
         machineState = .listening
         patienceProgress = nil
+        persistSession()
+    }
+
+    /// Save the finished session to the library — only when something was
+    /// actually said; an empty session's orphan audio file is deleted.
+    private func persistSession() {
+        let started = sessionStartDate ?? Date()
+        sessionStartDate = nil
+        let fileName = recordingFileName
+        recordingFileName = nil
+
+        let stored = transcript
+            .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map {
+                StoredEntry(
+                    speaker: $0.speaker == .thinker ? "thinker" : "listener",
+                    text: $0.text,
+                    tier: $0.tier?.rawValue,
+                    turn: $0.turn
+                )
+            }
+        guard !stored.isEmpty,
+              let modelContext,
+              let transcriptJSON = try? JSONEncoder().encode(stored)
+        else {
+            if let fileName { RecordingStorage.delete(fileName: fileName) }
+            return
+        }
+
+        let record = SessionRecord(
+            startedAt: started,
+            duration: Date().timeIntervalSince(started),
+            title: SessionRecord.deriveTitle(from: stored),
+            transcriptJSON: transcriptJSON,
+            criteriaText: coverageCriteriaText,
+            coverageJSON: coverageResult.flatMap { try? JSONEncoder().encode($0) },
+            audioFileName: fileName
+        )
+        modelContext.insert(record)
+        try? modelContext.save()
+        lastSavedRecordID = record.id
     }
 
     // ── the decision loop ──
@@ -303,7 +376,7 @@ final class SessionController: ObservableObject {
     /// Call Claude for a substantive tier, then answer the (possibly stale)
     /// evaluation when the reply lands.
     private func requestModelReply(tier: Tier, turn: Int, utterance: String) {
-        guard let client = makeClient() else {
+        guard let client = makeService() else {
             decisionsByTurn[turn] = .silence
             feed(.decision(t: nowMs(), outcome: .silence))
             return
@@ -349,7 +422,7 @@ final class SessionController: ObservableObject {
             } catch {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    self.lastError = error.localizedDescription
+                    self.lastError = self.friendlyMessage(for: error)
                     self.decisionsByTurn[turn] = .silence
                     self.feed(.decision(t: self.nowMs(), outcome: .silence))
                 }
@@ -383,7 +456,7 @@ final class SessionController: ObservableObject {
             return
         }
         decisionsByTurn[turn] = .question
-        guard let client = makeClient() else { return }
+        guard let client = makeService() else { return }
         let request = buildListenerRequest(
             systemPrompt: ListenerPrompt.systemPrompt,
             tier: .question,
@@ -412,7 +485,8 @@ final class SessionController: ObservableObject {
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    self?.lastError = error.localizedDescription
+                    guard let self else { return }
+                    self.lastError = self.friendlyMessage(for: error)
                 }
             }
         }
@@ -425,7 +499,7 @@ final class SessionController: ObservableObject {
             lastError = "Add checklist topics in Settings first."
             return
         }
-        guard let client = makeClient() else { return }
+        guard let client = makeService() else { return }
         let text = transcriber.fullText
         coverageChecking = true
         Task { [weak self] in
@@ -440,8 +514,9 @@ final class SessionController: ObservableObject {
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    self?.lastError = error.localizedDescription
-                    self?.coverageChecking = false
+                    guard let self else { return }
+                    self.lastError = self.friendlyMessage(for: error)
+                    self.coverageChecking = false
                 }
             }
         }
@@ -449,13 +524,38 @@ final class SessionController: ObservableObject {
 
     // ── helpers ──
 
-    private func makeClient() -> ClaudeClient? {
-        let key = KeychainStore.apiKey ?? ""
-        guard !key.isEmpty else {
-            lastError = "No Claude API key configured. Add one in Settings."
-            return nil
+    /// Resolve the listener backend for this call: the account proxy when
+    /// signed in, the developer-mode key otherwise. Nil (with a friendly
+    /// lastError) when neither is configured.
+    private func makeService() -> (any ListenerService)? {
+        if let service = accountStore?.makeListenerService(devAPIKey: KeychainStore.apiKey) {
+            return service
         }
-        return ClaudeClient(config: ClaudeConfig(apiKey: key))
+        // No account store injected (e.g. previews): the dev key alone.
+        if accountStore == nil,
+           let key = KeychainStore.apiKey,
+           !key.trimmingCharacters(in: .whitespaces).isEmpty {
+            return ClaudeClient(config: ClaudeConfig(apiKey: key))
+        }
+        lastError = "Sign in — or add a developer API key in Settings — so the "
+            + "listener's rare question can reach the model."
+        return nil
+    }
+
+    /// User-facing text for a failed model call. The proxy's auth/quota
+    /// errors get plain-language guidance; everything else passes through.
+    private func friendlyMessage(for error: Error) -> String {
+        if let proxyError = error as? ProxyError {
+            switch proxyError {
+            case .unauthorized:
+                return "Your sign-in has expired. Sign in again in Settings."
+            case .quotaExceeded:
+                return "You've reached today's usage cap. It resets tomorrow."
+            default:
+                return proxyError.localizedDescription
+            }
+        }
+        return error.localizedDescription
     }
 
     private func conversationHistory(before turn: Int) -> [ConversationTurn] {

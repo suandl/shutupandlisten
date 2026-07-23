@@ -1,52 +1,87 @@
-// The one-screen session UI: a live transcript, a state strip that shows the
+// The live session UI: a live transcript, a state strip that shows the
 // patience window filling, and three actions — listen/stop, "pull a thread
 // now" (the upon-prompting path), and the coverage check.
+//
+// Pushed from LibraryView, which owns the NavigationStack.
 
+import SwiftData
 import SwiftUI
 import TurnEngine
 
 struct SessionView: View {
     @EnvironmentObject private var controller: SessionController
+    @EnvironmentObject private var accountStore: AccountStore
+    @Environment(\.modelContext) private var modelContext
     @State private var showSettings = false
     @State private var showKnobs = false
     @State private var showCoverage = false
 
+    // First-session coaching: shown the first time the machine visibly waits.
+    @AppStorage("seenPatienceTip") private var seenPatienceTip = false
+    @State private var showPatienceTip = false
+
+    // "Saved to library" confirmation after a stop that persisted a record.
+    @State private var showSavedToast = false
+
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                stateStrip
-                transcriptList
-                controls
+        VStack(spacing: 0) {
+            stateStrip
+            if showPatienceTip {
+                patienceTip
             }
-            .navigationTitle("shutupandlisten")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { showKnobs = true } label: {
-                        Image(systemName: "slider.horizontal.3")
-                    }
-                    .accessibilityLabel("Patience knobs")
+            transcriptList
+            controls
+        }
+        .navigationTitle("shutupandlisten")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { showKnobs = true } label: {
+                    Image(systemName: "slider.horizontal.3")
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSettings = true } label: {
-                        Image(systemName: "gearshape")
-                    }
-                    .accessibilityLabel("Settings")
-                }
+                .accessibilityLabel("Patience knobs")
             }
-            .sheet(isPresented: $showSettings) { SettingsView() }
-            .sheet(isPresented: $showKnobs) { KnobsView() }
-            .sheet(isPresented: $showCoverage) { CoverageView() }
-            .alert(
-                "Something went wrong",
-                isPresented: Binding(
-                    get: { controller.lastError != nil },
-                    set: { if !$0 { controller.lastError = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(controller.lastError ?? "")
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showSettings = true } label: {
+                    Image(systemName: "gearshape")
+                }
+                .accessibilityLabel("Settings")
+            }
+        }
+        .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showKnobs) { KnobsView() }
+        .sheet(isPresented: $showCoverage) { CoverageView() }
+        .alert(
+            "Something went wrong",
+            isPresented: Binding(
+                get: { controller.lastError != nil },
+                set: { if !$0 { controller.lastError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(controller.lastError ?? "")
+        }
+        .overlay(alignment: .bottom) {
+            if showSavedToast {
+                savedToast
+            }
+        }
+        .onAppear {
+            controller.configure(modelContext: modelContext, accountStore: accountStore)
+        }
+        .onChange(of: controller.machineState) { _, state in
+            if state == .pending && !seenPatienceTip {
+                seenPatienceTip = true
+                withAnimation { showPatienceTip = true }
+            }
+        }
+        .onChange(of: controller.lastSavedRecordID) { _, id in
+            guard id != nil else { return }
+            withAnimation { showSavedToast = true }
+            Task {
+                try? await Task.sleep(nanoseconds: 2_200_000_000)
+                withAnimation { showSavedToast = false }
             }
         }
     }
@@ -101,6 +136,44 @@ struct SessionView: View {
         case .deciding: return .purple
         case .responding: return .pink
         }
+    }
+
+    // ── first-session coaching ──
+
+    private var patienceTip: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "hourglass")
+                .foregroundStyle(.orange)
+            Text(
+                "It's waiting on purpose — the bar is the patience window. "
+                + "Keep thinking; it won't jump in."
+            )
+            .font(.footnote)
+            Spacer()
+            Button {
+                withAnimation { showPatienceTip = false }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityLabel("Dismiss tip")
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.1))
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    // ── saved confirmation ──
+
+    private var savedToast: some View {
+        Label("Saved to library", systemImage: "checkmark.circle.fill")
+            .font(.footnote.weight(.medium))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: Capsule())
+            .padding(.bottom, 108)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     // ── transcript ──

@@ -45,6 +45,14 @@ final class AudioPipeline {
     private var lastVoiceMs: Double = 0
     private var clockOrigin: TimeInterval = 0
 
+    // ── optional recording sink (session audio → .m4a) ──
+    // Written on the audio thread inside `process(_:)`; started/stopped on the
+    // main thread — hence the lock. AVAudioFile transcodes to AAC on write
+    // because it is opened with AAC settings and a `commonFormat:` processing
+    // format matching the tap buffers (float32, deinterleaved).
+    private let recordingLock = NSLock()
+    private var recordingFile: AVAudioFile?
+
     private func nowMs() -> Double {
         (ProcessInfo.processInfo.systemUptime - clockOrigin) * 1000
     }
@@ -77,6 +85,7 @@ final class AudioPipeline {
 
     func stop() {
         guard running else { return }
+        stopRecording() // safety net; the host normally stops recording first
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         running = false
@@ -85,10 +94,57 @@ final class AudioPipeline {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
+    // ── recording sink ──
+
+    /// Start writing the tapped input to an AAC .m4a file at `url`. Call after
+    /// `start()` so the input format is known. The session runs fine without a
+    /// recording — callers may treat a throw as non-fatal.
+    func startRecording(to url: URL) throws {
+        let input = engine.inputNode.outputFormat(forBus: 0)
+        // Mono by design (the voice-processed input node is mono); if the tap
+        // ever carries a second channel we match it so the write guard in
+        // `process(_:)` still passes. AAC caps out at stereo for our purposes.
+        let channels = min(max(Int(input.channelCount), 1), 2)
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: input.sampleRate,
+            AVNumberOfChannelsKey: channels,
+            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
+        ]
+        // The processing format is pinned to the tap's PCM layout (float32,
+        // deinterleaved, input sample rate); AVAudioFile encodes to AAC on
+        // each write.
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: settings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
+        recordingLock.lock()
+        recordingFile = file
+        recordingLock.unlock()
+    }
+
+    /// Close the recording file (AVAudioFile finalizes on release).
+    func stopRecording() {
+        recordingLock.lock()
+        recordingFile = nil
+        recordingLock.unlock()
+    }
+
     // ── audio thread ──
 
     private func process(_ buffer: AVAudioPCMBuffer) {
         onBuffer?(buffer)
+
+        // Recording sink: write the tap buffer straight through. Guarded by
+        // the file's processing format — if the input layout ever differs
+        // (e.g. a multichannel interface), we skip rather than corrupt.
+        recordingLock.lock()
+        if let file = recordingFile, file.processingFormat == buffer.format {
+            try? file.write(from: buffer)
+        }
+        recordingLock.unlock()
 
         guard let channel = buffer.floatChannelData?[0] else { return }
         let n = Int(buffer.frameLength)
