@@ -22,5 +22,6 @@ let package = Package(
         .target(name: "ClaudeClient", dependencies: ["TurnEngine"]),
         .executableTarget(name: "sul-demo", dependencies: ["TurnEngine", "ClaudeClient"]),
         .testTarget(name: "TurnEngineTests", dependencies: ["TurnEngine"]),
+        .testTarget(name: "ClaudeClientTests", dependencies: ["ClaudeClient"]),
     ]
 )
