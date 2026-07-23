@@ -97,7 +97,7 @@ pause. Defaults bias to "keep listening".
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `silenceFloorMs` | `2000` | Patience window: min silence before a pause may end the turn. |
+| `silenceFloorMs` | `200` | Patience window: min silence before a pause may end the turn. |
 | `incompleteExtensionMs` | `4000` | Extra patience added when the EOU verdict is `incomplete`. |
 | `completionThreshold` | `0.5` | smart-turn P(complete) ≥ threshold ⇒ `complete`, else `incomplete`. Higher ⇒ more pauses read as `incomplete` ⇒ more patient. |
 | `responseDurationMs` | `1500` | Length of the stubbed canned response (timing-only milestone). |
@@ -167,9 +167,11 @@ Two invariants hold this together:
 
 What did **not** change: the asymmetric veto (§2) and the deadline equation. An
 `incomplete` verdict may only lengthen patience, never shorten it. With the floor
-at its 2000 ms default there is exactly one evaluation per utterance, so a host
+at 2000 ms there is exactly one evaluation per utterance, so a host
 that always answers `speak` reproduces the collapsed machine's emitted stream
-event-for-event, plus the `evaluate` itself.
+event-for-event, plus the `evaluate` itself. (At the 200 ms default, a single
+utterance routinely draws several evaluations — which is why §4b splits the
+utterance id from the evaluation-tick id.)
 
 ---
 

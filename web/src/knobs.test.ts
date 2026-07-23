@@ -112,7 +112,7 @@ test('vadKnobParam builds the ?vad<Knob> name from a knob key', () => {
 //   10. blank / non-numeric / non-finite / unknown params keep the default
 //   11. the toggle reads on/off (not just true/false)
 //   12. every rung of the sweep ladder is reachable through the slider's own range
-//   13. THIS UNIT CHANGES NO DEFAULT — silenceFloorMs is still 2000
+//   13. the floor default is 200ms — su-lou.10.6's ratified feel-test verdict
 
 test('no query → DEFAULT_KNOBS, as a fresh (non-shared) object', () => {
   assert.deepEqual(resolveTurnKnobs(''), DEFAULT_KNOBS);
@@ -148,7 +148,7 @@ test('the whole sweep configuration resolves from one URL', () => {
 
 test('out-of-range values clamp rather than reverting to the default', () => {
   // A fat-fingered floor should give the most patient harness the slider can
-  // express — silently reverting to 2000 would look like the URL was ignored.
+  // express — silently reverting to the default would look like the URL was ignored.
   assert.equal(resolveTurnKnobs(qs({ silenceFloorMs: '50000' })).silenceFloorMs, 6000);
   assert.equal(resolveTurnKnobs(qs({ silenceFloorMs: '0' })).silenceFloorMs, 200);
   assert.equal(resolveTurnKnobs(qs({ completionThreshold: '2' })).completionThreshold, 1);
@@ -190,12 +190,13 @@ test('every sweep rung is reachable through the slider that drives it', () => {
   assert.deepEqual([...FLOOR_SWEEP_MS].sort((a, b) => b - a), [...FLOOR_SWEEP_MS]);
 });
 
-test('this unit changes NO default — the floor is still 2000ms', () => {
-  // su-lou.10.5 builds the harness and produces the evidence; su-lou.10.6 picks the
-  // value. If this ever fails, someone tuned in the unit that promised not to.
-  assert.equal(DEFAULT_KNOBS.silenceFloorMs, 2000);
+test('the floor default is 200ms — su-lou.10.6 landed the feel-test verdict', () => {
+  // su-lou.10.5 built the harness and produced the evidence; su-lou.10.6's operator
+  // feel-test ratified 200ms (down from 2000ms), with no B1 regression. This guard now
+  // pins the new default — if it drifts, someone retuned the floor without the evidence.
+  assert.equal(DEFAULT_KNOBS.silenceFloorMs, 200);
   assert.equal(DEFAULT_KNOBS.incompleteExtensionMs, 4000);
-  assert.equal(defaultTurnKnobs().silenceFloorMs, 2000);
+  assert.equal(defaultTurnKnobs().silenceFloorMs, 200);
 });
 
 // ── the completion threshold: one constant, two readers ──

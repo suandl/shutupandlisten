@@ -89,8 +89,8 @@ const ttsOptions = resolveTtsOptions(location.search, location.href);
 // remembered slider position:
 //   ?silenceFloorMs=<200..6000> · ?incompleteExtensionMs=<0..8000>
 //   ?completionThreshold=<0..1> · ?responseDurationMs=<200..4000> · ?useSmartTurn=<on|off>
-// DEFAULTS ARE UNCHANGED by this unit: silenceFloorMs stays 2000 until su-lou.10.6's
-// feel-test picks a value, so a plain load behaves exactly as it did.
+// The DEFAULT floor is now 200ms — su-lou.10.6's ratified feel-test verdict (down from
+// 2000ms); the URL params above still override it, so a link pins any value per session.
 const turnKnobs: TurnKnobs = resolveTurnKnobs(location.search);
 // VAD segmentation knobs (Silero via @ricky0123/vad-web). The browser APM
 // (noiseSuppression/echoCancellation/autoGainControl) is already forced on by

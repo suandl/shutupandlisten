@@ -64,7 +64,11 @@ export interface TurnKnobs {
 }
 
 export const DEFAULT_KNOBS: TurnKnobs = {
-  silenceFloorMs: 2000,
+  // 200ms: operator feel-test verdict (su-lou.10.6), down from 2000ms — the shortest
+  // floor the sweep offered. It held B1 with the smart-turn veto on and read as clearly
+  // better, so a plain load is responsive without cutting thinkers off. Runtime-tunable
+  // as always via TURN_KNOBS / ?silenceFloorMs=.
+  silenceFloorMs: 200,
   incompleteExtensionMs: 4000,
   completionThreshold: DEFAULT_COMPLETION_THRESHOLD,
   responseDurationMs: 1500,

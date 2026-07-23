@@ -92,9 +92,9 @@ export const TURN_KNOBS: KnobSpec[] = [
  * Spaced wide at the top and tight at the bottom because that is where the decision
  * lives: everything at/above ~1000ms is known-comfortable (it is the shipped
  * behaviour, minus a little), and the interesting question is where it starts to
- * cut people off. 200ms is deliberately past the point the measured EOU cost can
- * fit inside — the veto CANNOT land in time there, so it is the rung that shows the
- * operator what losing the classifier feels like, not a candidate default.
+ * cut people off. 200ms is the bottom rung — the shortest floor in the sweep, down
+ * at the edge of the measured EOU cost. The feel-test (su-lou.10.6) landed here: it
+ * held B1 with the veto on and read as clearly better, so 200ms is now the default.
  */
 export const FLOOR_SWEEP_MS: readonly number[] = [1500, 1000, 750, 500, 350, 200];
 
