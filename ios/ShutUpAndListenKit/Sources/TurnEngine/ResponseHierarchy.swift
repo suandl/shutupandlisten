@@ -203,8 +203,14 @@ public func decideTier(_ ctx: EvalContext, config: GateConfig = .defaults) -> Ga
     let substantive = words >= cfg.substantiveWords
 
     // 4. A short, finished, non-question aside → minimal acknowledgment.
-    //    Rules only, no model. Rotate the ack by turn number.
+    //    Rules only, no model. Rotate the ack by turn number. An empty ack set
+    //    (a config choice, not the default) degrades to silence — the more
+    //    restrained rung, per §1's tie-breaking rule.
     if !invited && !substantive {
+        guard !cfg.acks.isEmpty else {
+            return GateDecision(tier: .silence, callModel: false, ackText: nil,
+                                reason: "brief turn (\(words)w), no acks configured — holding silence")
+        }
         let n = cfg.acks.count
         let ack = cfg.acks[((ctx.utteranceIndex % n) + n) % n]
         return GateDecision(tier: .acknowledge, callModel: false, ackText: ack,

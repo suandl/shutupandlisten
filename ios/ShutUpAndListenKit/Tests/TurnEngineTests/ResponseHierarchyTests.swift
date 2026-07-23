@@ -49,6 +49,13 @@ final class ResponseHierarchyTests: XCTestCase {
         XCTAssertEqual(d.ackText, defaultAcks[3 % defaultAcks.count])
     }
 
+    func testRule4_emptyAckSetDegradesToSilence() {
+        let d = decideTier(ctx(turn: 3, text: "okay let me think."),
+                           config: GateConfig(acks: []))
+        XCTAssertEqual(d.tier, .silence)
+        XCTAssertNil(d.ackText)
+    }
+
     func testRule5_substantiveOpeningTurnIsReflectionNotQuestion() {
         let text = "So the idea is a reading app that hides every progress number so you read to read"
         let d = decideTier(ctx(turn: 1, text: text, prior: []))
