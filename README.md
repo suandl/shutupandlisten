@@ -22,6 +22,13 @@ The prompt is meant to be pasted into:
 - `promptfoo/` — the evaluation harness used to iterate on the prompts.
   Scenarios, a user-simulator, and three LLM-rubric judges (probing
   depth, variety, restraint).
+- `spec/` — the runtime-agnostic turn state machine spec and its golden
+  vectors: the cross-runtime contract every build reimplements.
+- `web/` — the browser build of the full pipeline (VAD → smart-turn →
+  STT → listener LLM → TTS) and the live tuning harness.
+- `ios/` — the native iOS app: the same spec and response hierarchy,
+  with on-device STT/TTS and Claude as the listener. See
+  [`ios/README.md`](ios/README.md).
 
 ## Iterating on the prompt
 
