@@ -27,3 +27,6 @@ output/
 .beads/*
 !.beads/.gitignore
 !.beads/config.yaml
+
+# SwiftPM build artifacts (ios/)
+.build/

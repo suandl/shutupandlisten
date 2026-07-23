@@ -15,10 +15,12 @@ let package = Package(
     products: [
         .library(name: "TurnEngine", targets: ["TurnEngine"]),
         .library(name: "ClaudeClient", targets: ["ClaudeClient"]),
+        .executable(name: "sul-demo", targets: ["sul-demo"]),
     ],
     targets: [
         .target(name: "TurnEngine"),
         .target(name: "ClaudeClient", dependencies: ["TurnEngine"]),
+        .executableTarget(name: "sul-demo", dependencies: ["TurnEngine", "ClaudeClient"]),
         .testTarget(name: "TurnEngineTests", dependencies: ["TurnEngine"]),
     ]
 )

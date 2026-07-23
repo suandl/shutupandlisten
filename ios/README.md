@@ -79,6 +79,37 @@ substantive tiers (a short reflection, or one anchored question) reach Claude.
   important gap. When a checklist is set, an earned thread-pull may also steer
   toward an untouched topic — but never before the current thought is out.
 
+## Try it without a device
+
+The decision loop is demonstrable from a terminal on macOS or Linux — no
+Xcode, no microphone:
+
+```sh
+cd ios/ShutUpAndListenKit
+swift run sul-demo               # deterministic replay, canned listener replies
+swift run sul-demo --realtime    # paced replay — feel the silences
+ANTHROPIC_API_KEY=… swift run sul-demo --live   # real Claude replies
+```
+
+It replays a scripted thinking-out-loud session (the reading-app idea from
+`prompts/claude.md`) through the exact production path — detector → gate →
+listener — and prints the timeline. The run walks every branch: a sub-floor
+breath pause waited out, an "and…" pause the veto extends, a patience window
+that closes mid-thought and is **declined** (same turn continues — declining
+is free), a rules-only backchannel, and one anchored thread-pull:
+
+```
+[ 17.80s]         ⏸ pause  (EOU heuristic: P(complete) = 0.05)
+[ 23.80s] ⏱ patience window closed (evaluation 1, extended, deadline) → should the listener speak?
+[ 23.80s]    gate: detector held turn open (incomplete) — holding silence → silence
+[ 23.80s]    ↳ declined — the thinker was never interrupted (free)
+[ 24.60s] thinker ▶ “so this one just hides all of it. …”
+   …
+[ 54.00s]    gate: substantive turn (46w), question cooldown elapsed → question
+[ 54.00s]    listener ✦ (thread-pull) “You said you start reading to move the number —
+            with the number gone, what makes someone open the app again tomorrow?”
+```
+
 ## Building
 
 Open `ios/ShutUpAndListen.xcodeproj` in Xcode 16+, set your signing team, and
