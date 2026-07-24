@@ -1,0 +1,103 @@
+// Metering store: one counter per user per UTC day.
+//
+// Two implementations: an in-memory store for tests, and a JSON-file-backed
+// store persisted under DATA_DIR (atomic tmp+rename writes, loaded lazily).
+
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import path from "node:path";
+
+export interface Store {
+  /** Current count for a user on a UTC day (YYYY-MM-DD). */
+  getCount(userId: string, day: string): Promise<number>;
+  /** Increments and returns the new count. */
+  increment(userId: string, day: string): Promise<number>;
+}
+
+/** UTC day key (YYYY-MM-DD) for a given instant. */
+export function utcDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+export class MemoryStore implements Store {
+  private counts = new Map<string, number>();
+
+  private key(userId: string, day: string): string {
+    return `${day}\u0000${userId}`;
+  }
+
+  async getCount(userId: string, day: string): Promise<number> {
+    return this.counts.get(this.key(userId, day)) ?? 0;
+  }
+
+  async increment(userId: string, day: string): Promise<number> {
+    const next = (this.counts.get(this.key(userId, day)) ?? 0) + 1;
+    this.counts.set(this.key(userId, day), next);
+    return next;
+  }
+}
+
+type UsageData = Record<string, Record<string, number>>; // day -> userId -> count
+
+export class FileStore implements Store {
+  private readonly filePath: string;
+  private readonly dir: string;
+  private data: UsageData | null = null;
+  private chain: Promise<unknown> = Promise.resolve();
+
+  constructor(dataDir: string) {
+    this.dir = dataDir;
+    this.filePath = path.join(dataDir, "usage.json");
+  }
+
+  /** Serializes all operations so concurrent increments can't lose updates. */
+  private enqueue<T>(op: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(op, op);
+    this.chain = next.catch(() => {});
+    return next;
+  }
+
+  private async load(): Promise<UsageData> {
+    if (this.data !== null) return this.data;
+    try {
+      const raw = await readFile(this.filePath, "utf8");
+      const parsed: unknown = JSON.parse(raw);
+      this.data =
+        typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+          ? (parsed as UsageData)
+          : {};
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        console.error(`store: failed to load ${this.filePath}:`, err);
+      }
+      this.data = {};
+    }
+    return this.data;
+  }
+
+  private async persist(data: UsageData): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    const tmp = path.join(this.dir, `.usage.${randomBytes(6).toString("hex")}.tmp`);
+    await writeFile(tmp, JSON.stringify(data), "utf8");
+    await rename(tmp, this.filePath);
+  }
+
+  async getCount(userId: string, day: string): Promise<number> {
+    return this.enqueue(async () => {
+      const data = await this.load();
+      return data[day]?.[userId] ?? 0;
+    });
+  }
+
+  async increment(userId: string, day: string): Promise<number> {
+    return this.enqueue(async () => {
+      const data = await this.load();
+      const forDay = (data[day] ??= {});
+      const next = (forDay[userId] ?? 0) + 1;
+      forDay[userId] = next;
+      await this.persist(data);
+      return next;
+    });
+  }
+}

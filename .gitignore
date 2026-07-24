@@ -27,3 +27,15 @@ output/
 .beads/*
 !.beads/.gitignore
 !.beads/config.yaml
+
+# SwiftPM build artifacts (ios/)
+.build/
+.swiftpm/
+
+# Cached Swift toolchain tarball (post-create-project.sh; survives rebuilds)
+.devcontainer/.swift-cache/
+
+# Xcode per-user state + auto-generated embedded workspace (ios/)
+xcuserdata/
+*.xcuserstate
+**/*.xcodeproj/project.xcworkspace/
