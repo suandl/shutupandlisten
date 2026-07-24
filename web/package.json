@@ -16,6 +16,7 @@
     "provision:denoise": "node scripts/provision-denoise.mjs",
     "provision:smart-turn": "node scripts/provision-smart-turn.mjs",
     "measure": "node src/measure.ts",
+    "measure:race": "node src/measure-race.ts",
     "measure:loop": "node scripts/loop-latency.mjs",
     "demo:capture": "node e2e/capture.ts",
     "demo:u6": "node e2e/capture.ts e2e/demos/u6-warmed-loop.md",
