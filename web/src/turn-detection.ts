@@ -65,9 +65,13 @@ export interface TurnKnobs {
 
 export const DEFAULT_KNOBS: TurnKnobs = {
   // 200ms: operator feel-test verdict (su-lou.10.6), down from 2000ms — the shortest
-  // floor the sweep offered. It held B1 with the smart-turn veto on and read as clearly
-  // better, so a plain load is responsive without cutting thinkers off. Runtime-tunable
-  // as always via TURN_KNOBS / ?silenceFloorMs=.
+  // floor the sweep offered, and the ratified default. Mechanism caveat: 200ms is BELOW
+  // the measured ~270ms warmed EOU cost (smart-turn.ts), so at this floor the verdict is
+  // still null when the deadline fires — the smart-turn veto (extended(), which only
+  // lengthens the floor on `incomplete`) cannot gate the FIRST evaluation of a pause. The
+  // late verdict lands as EVIDENCE (spec §4b) that can supersede an in-flight `deciding`,
+  // not as the veto; see su-lou.10.8 for the open blind-first-evaluation race. Runtime-
+  // tunable as always via TURN_KNOBS / ?silenceFloorMs=.
   silenceFloorMs: 200,
   incompleteExtensionMs: 4000,
   completionThreshold: DEFAULT_COMPLETION_THRESHOLD,
