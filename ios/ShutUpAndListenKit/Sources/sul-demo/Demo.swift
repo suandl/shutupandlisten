@@ -104,11 +104,16 @@ struct Demo {
 
         print("""
         shutupandlisten — decision-loop demo (\(useLive ? "live Claude" : "canned replies")\(realtime ? ", realtime pacing" : ""))
-        knobs: floor 2000ms · incomplete extension 4000ms · threshold 0.5 · EOU heuristic on
+        knobs: floor 2000ms (script-pinned; shipped default is 200) · incomplete extension 4000ms · threshold 0.5 · EOU heuristic on
         ────────────────────────────────────────────────────────────────────────
         """)
 
-        let knobs = TurnKnobs.defaults
+        // The script's pauses and annotated deadlines were authored against a
+        // 2000ms floor, so pin it here — the shipped default dropped to 200ms
+        // (su-lou.10.6) and would turn the "sub-floor breath" beat into an
+        // evaluation, breaking the timeline's teaching narrative.
+        var knobs = TurnKnobs.defaults
+        knobs.silenceFloorMs = 2000
         let detector = TurnDetector(knobs: knobs)
 
         // Host state, exactly as SessionController keeps it.

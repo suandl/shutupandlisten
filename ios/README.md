@@ -116,7 +116,9 @@ ANTHROPIC_API_KEY=… swift run sul-demo --live   # real Claude replies
 
 It replays a scripted thinking-out-loud session (the reading-app idea from
 `prompts/claude.md`) through the exact production path — detector → gate →
-listener — and prints the timeline. The run walks every branch: a sub-floor
+listener — and prints the timeline. (The demo pins the 2000 ms floor its
+script was authored against; the shipped default is 200 ms — see Knobs.)
+The run walks every branch: a sub-floor
 breath pause waited out, an "and…" pause the veto extends, a patience window
 that closes mid-thought and is **declined** (same turn continues — declining
 is free), a rules-only backchannel, and one anchored thread-pull:
@@ -160,8 +162,10 @@ locally before relying on changes to the engine.
 
 ## Knobs
 
-Defaults bias to "keep listening" (2 s floor, +4 s incomplete extension,
-threshold 0.5), matching `web/src/knobs.ts`. The silence floor, extension, and
+Defaults match `web/src/knobs.ts`: a 200 ms silence floor (the su-lou.10.6
+operator feel-test verdict — responsive, with the asymmetric EOU veto carrying
+the don't-cut-thinkers-off guarantee), +4 s incomplete extension, threshold
+0.5. The silence floor, extension, and
 completion threshold are live-tunable mid-session from the sliders sheet; the
 completion threshold moves the detector *and* the gate together — one slider,
 both readers.

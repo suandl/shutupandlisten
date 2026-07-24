@@ -68,7 +68,11 @@ public struct TurnKnobs: Equatable, Sendable {
     public var useSmartTurn: Bool
 
     public init(
-        silenceFloorMs: Double = 2000,
+        // 200ms: the operator feel-test verdict (su-lou.10.6), down from 2000ms —
+        // mirrors web DEFAULT_KNOBS. It held B1 with the EOU veto on; here the veto
+        // is the synchronous transcript heuristic, so it always lands inside the
+        // floor. Runtime-tunable via KnobsView, same as ?silenceFloorMs= on web.
+        silenceFloorMs: Double = 200,
         incompleteExtensionMs: Double = 4000,
         completionThreshold: Double = defaultCompletionThreshold,
         responseDurationMs: Double = 1500,
