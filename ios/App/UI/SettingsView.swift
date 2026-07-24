@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage("speakAcknowledgments") private var speakAcknowledgments = true
     @AppStorage("coverageCriteria") private var coverageCriteriaText = ""
     @AppStorage("proxyBaseURL") private var proxyBaseURL = "https://api.shutupandlisten.sh"
+    @AppStorage("hasOnboarded") private var hasOnboarded = false
 
     @State private var signingIn = false
     @State private var signInError: String?
@@ -153,13 +154,20 @@ struct SettingsView: View {
                 SecureField("sk-ant-…", text: $apiKey)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                Button("Replay onboarding") {
+                    KeychainStore.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    hasOnboarded = false
+                    dismiss()
+                }
             }
         } footer: {
             Text(
                 "A personal Claude API key, stored in the Keychain on this "
                 + "device only. It bypasses the account backend — calls go "
                 + "straight to Anthropic. Signing in takes precedence when "
-                + "both are set."
+                + "both are set.\n\nReplay onboarding shows the intro again on "
+                + "the next return to the library. You stay signed in — only "
+                + "the intro reappears."
             )
         }
     }
