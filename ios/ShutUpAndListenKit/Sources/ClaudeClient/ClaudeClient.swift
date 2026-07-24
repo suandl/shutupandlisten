@@ -70,7 +70,11 @@ public final class ClaudeClient: @unchecked Sendable {
         let text = try await complete(
             system: request.system,
             messages: request.messages.map { ["role": $0.role.rawValue, "content": $0.content] },
-            maxTokens: request.maxTokens
+            maxTokens: request.maxTokens,
+            // A text-less reply is the model choosing silence — a valid outcome
+            // the host maps to `.silence` (declining is free). Only the coverage
+            // path, which must decode JSON, treats an empty body as an error.
+            allowEmpty: true
         )
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -106,7 +110,8 @@ public final class ClaudeClient: @unchecked Sendable {
         system: String,
         messages: [[String: String]],
         maxTokens: Int,
-        outputSchema: [String: Any]? = nil
+        outputSchema: [String: Any]? = nil,
+        allowEmpty: Bool = false
     ) async throws -> String {
         guard !config.apiKey.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw ClaudeClientError.missingAPIKey
@@ -151,6 +156,10 @@ public final class ClaudeClient: @unchecked Sendable {
             throw ClaudeClientError.refusal
         }
         guard let text = decoded.content.first(where: { $0.type == "text" })?.text else {
+            // No text block: the model returned nothing. For the listener path
+            // that is a valid "silence" reply; only callers that require content
+            // (coverage) treat it as an error.
+            if allowEmpty { return "" }
             throw ClaudeClientError.emptyResponse
         }
         return text
