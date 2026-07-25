@@ -25,6 +25,7 @@ import Foundation
 import SwiftData
 import SwiftUI
 import TurnEngine
+import UIKit
 
 struct TranscriptEntry: Identifiable, Equatable {
     enum Speaker: Equatable { case thinker, listener }
@@ -33,6 +34,40 @@ struct TranscriptEntry: Identifiable, Equatable {
     var text: String
     var tier: Tier?
     var turn: Int
+    /// Utterance timing in ms since session start (the machine's clock — the
+    /// same origin the recording starts on). `endMs` stays nil while the
+    /// utterance is still open.
+    var startMs: Double?
+    var endMs: Double?
+
+    init(
+        speaker: Speaker,
+        text: String,
+        tier: Tier?,
+        turn: Int,
+        startMs: Double? = nil,
+        endMs: Double? = nil
+    ) {
+        self.speaker = speaker
+        self.text = text
+        self.tier = tier
+        self.turn = turn
+        self.startMs = startMs
+        self.endMs = endMs
+    }
+}
+
+/// Why the last error happened, typed so the UI can respond specifically
+/// rather than parse a message string. `.accountRequired` in particular
+/// should render as a sign-in invitation, not a raw error alert.
+enum SessionErrorKind: Equatable {
+    /// No proxy session and no developer key: the listener's substantive
+    /// tiers cannot reach the model until the user signs in.
+    case accountRequired
+    /// The proxy rejected our session token — signing in again fixes it.
+    case signInExpired
+    /// Everything else; `lastError` carries the human-readable text.
+    case general
 }
 
 @MainActor
@@ -45,7 +80,18 @@ final class SessionController: ObservableObject {
     @Published private(set) var transcript: [TranscriptEntry] = []
     @Published private(set) var inputLevelDb: Float = -70
     @Published private(set) var isThinking = false // a model call is in flight
-    @Published var lastError: String?
+    /// Human-readable error text. Clearing it (the alert's dismiss path) also
+    /// clears `lastErrorKind`, so the two never disagree.
+    @Published var lastError: String? {
+        didSet { if lastError == nil { lastErrorKind = nil } }
+    }
+    /// Typed companion to `lastError` — see `SessionErrorKind`. Set whenever
+    /// `lastError` is set by the controller; nil whenever `lastError` is nil.
+    @Published private(set) var lastErrorKind: SessionErrorKind?
+    /// True while the system holds the mic (phone call, Siri, alarm). The
+    /// session is parked, its checkpoint written; it resumes or finalizes
+    /// when the interruption ends.
+    @Published private(set) var isInterrupted = false
 
     // Coverage mode
     @Published private(set) var coverageResult: CoverageResult?
@@ -97,12 +143,27 @@ final class SessionController: ObservableObject {
     private var sessionStartDate: Date?
     /// File name of the in-progress recording under RecordingStorage.
     private var recordingFileName: String?
+    /// The record the running session checkpoints into: inserted on the first
+    /// checkpoint, updated in place thereafter (idempotent upsert), released
+    /// on final persist. Nil between sessions.
+    private var activeRecord: SessionRecord?
+    /// Ticks (0.1 s each) since the last heartbeat checkpoint.
+    private var ticksSinceCheckpoint = 0
+    /// Crash recovery runs once per launch, on the first `configure`.
+    private var didRunRecovery = false
 
     /// Hand in the SwiftData container and the account layer. Idempotent —
-    /// the root view calls this on appear.
+    /// the root view calls this on appear. The first call also adopts any
+    /// recording a crashed session left orphaned on disk (this is the
+    /// earliest moment we hold a ModelContext, and it is guaranteed to be
+    /// before any new session starts recording).
     func configure(modelContext: ModelContext, accountStore: AccountStore) {
         self.modelContext = modelContext
         self.accountStore = accountStore
+        if !didRunRecovery {
+            didRunRecovery = true
+            SessionRecovery.adoptOrphanedRecordings(in: modelContext)
+        }
     }
 
     private func nowMs() -> Double {
@@ -120,11 +181,11 @@ final class SessionController: ObservableObject {
         lastError = nil
 
         guard await AVAudioApplication.requestRecordPermission() else {
-            lastError = "Microphone access is required to listen."
+            fail("Microphone access is required to listen.")
             return
         }
         guard await SpeechTranscriber.requestAuthorization() else {
-            lastError = "Speech recognition access is required to transcribe."
+            fail("Speech recognition access is required to transcribe.")
             return
         }
 
@@ -138,6 +199,9 @@ final class SessionController: ObservableObject {
         pendingReply = nil
         transcript = []
         coverageResult = nil
+        activeRecord = nil
+        ticksSinceCheckpoint = 0
+        isInterrupted = false
 
         detector = TurnDetector(knobs: knobs)
 
@@ -158,6 +222,11 @@ final class SessionController: ObservableObject {
         pipeline.onBuffer = { [weak self] buffer in self?.transcriber.append(buffer) }
         pipeline.onLevel = { [weak self] db in
             MainActor.assumeIsolated { self?.inputLevelDb = db }
+        }
+        // The pipeline reports; we decide. See `handleInterruption` for the
+        // policy (park + checkpoint on began, resume or finalize on ended).
+        pipeline.onInterruption = { [weak self] event in
+            MainActor.assumeIsolated { self?.handleInterruption(event) }
         }
 
         transcriber.onTranscriptUpdate = { [weak self] in
@@ -186,7 +255,7 @@ final class SessionController: ObservableObject {
         do {
             try pipeline.start(clockOrigin: clockOrigin)
         } catch {
-            lastError = "Could not start the microphone: \(error.localizedDescription)"
+            fail("Could not start the microphone: \(error.localizedDescription)")
             return
         }
         transcriber.start()
@@ -206,6 +275,10 @@ final class SessionController: ObservableObject {
 
         isRunning = true
         machineState = .listening
+        // Thinking out loud means long stretches of not touching the screen —
+        // don't let auto-lock read that as absence. Background audio makes a
+        // lock survivable, but mid-session lock is still a jolt.
+        UIApplication.shared.isIdleTimerDisabled = true
     }
 
     func stopSession() {
@@ -222,49 +295,190 @@ final class SessionController: ObservableObject {
         detector?.dropTurn()
         detector = nil
         isRunning = false
+        isInterrupted = false
         machineState = .listening
         patienceProgress = nil
-        persistSession()
+        UIApplication.shared.isIdleTimerDisabled = false
+        persistSession(final: true)
     }
 
-    /// Save the finished session to the library — only when something was
-    /// actually said; an empty session's orphan audio file is deleted.
-    private func persistSession() {
-        let started = sessionStartDate ?? Date()
-        sessionStartDate = nil
-        let fileName = recordingFileName
-        recordingFileName = nil
+    // ── lifecycle: interruptions & scene phase ──
 
-        let stored = transcript
+    /// Policy for the pipeline's interruption events. The stance throughout:
+    /// a session must survive locking, calls, and route flaps — and when it
+    /// truly cannot continue, it must *finalize*, never evaporate.
+    private func handleInterruption(_ event: AudioPipeline.Interruption) {
+        guard isRunning else { return }
+        switch event {
+        case .began:
+            // The system took the mic (call, Siri, alarm). Park everything
+            // cleanly and checkpoint — if the session never comes back,
+            // nothing said so far is lost. The transcriber is left `running`:
+            // its duty-cycle restart loop treats the audio gap like any other
+            // task death, committing the partial and waiting for buffers.
+            isInterrupted = true
+            speech.stop()
+            pipeline.suspend()
+            parkTurnMachine()
+            persistSession(final: false)
+
+        case .ended(let shouldResume):
+            guard isInterrupted else { return }
+            isInterrupted = false
+            guard shouldResume else {
+                // The system says the mic is not ours to take back (e.g. the
+                // user moved on to another audio app mid-call). Finish
+                // honestly rather than pretend to listen to a dead mic.
+                stopSession()
+                return
+            }
+            do {
+                // Re-taps at the current input format; committed transcript
+                // text carried across the gap, and the next words open a
+                // fresh turn (the park dropped the old one) — re-anchored.
+                try pipeline.resume()
+            } catch {
+                stopSession()
+                fail("The microphone could not be restarted after the interruption. The session was saved.")
+            }
+
+        case .routeLost:
+            // Headphones unplugged / AirPods case shut. Keep the session
+            // alive: re-tap whatever input is current — the built-in mic.
+            do {
+                try pipeline.resume()
+            } catch {
+                stopSession()
+                fail("The microphone route was lost. The session was saved.")
+            }
+
+        case .mediaServicesReset:
+            // The audio daemon died under us; every audio object is invalid.
+            // Checkpoint first, then rebuild the engine from scratch.
+            persistSession(final: false)
+            do {
+                try pipeline.resume(rebuild: true)
+            } catch {
+                stopSession()
+                fail("Audio services were reset. The session was saved.")
+            }
+        }
+    }
+
+    /// Answer any outstanding evaluation with `silence` and drop the open
+    /// turn — when audio returns, the next words start a fresh turn (which
+    /// also re-anchors the transcriber's utterance offset via `turnStart`).
+    private func parkTurnMachine() {
+        detector?.input(.decision(t: nowMs(), outcome: .silence))
+        detector?.dropTurn()
+        lastEouProb = .nan
+        patienceProgress = nil
+        machineState = detector?.state ?? .listening
+    }
+
+    /// Forwarded from the App's `scenePhase`. Backgrounding checkpoints the
+    /// running session (the audio background mode keeps it alive, but jetsam
+    /// does not knock first) and releases the idle-timer hold — background
+    /// audio makes a lock survivable, so we don't fight the lock there.
+    func scenePhaseChanged(_ phase: ScenePhase) {
+        switch phase {
+        case .background:
+            if isRunning { persistSession(final: false) }
+            UIApplication.shared.isIdleTimerDisabled = false
+        case .active:
+            UIApplication.shared.isIdleTimerDisabled = isRunning
+        default:
+            break
+        }
+    }
+
+    // ── persistence ──
+
+    /// Write the running session's state to the library now (idempotent
+    /// upsert). Cheap by design — one JSON encode and a SwiftData save.
+    func checkpoint() {
+        guard isRunning else { return }
+        persistSession(final: false)
+    }
+
+    /// Upsert the session into the library. Non-final calls (checkpoints —
+    /// interruptions, backgrounding, the 30 s heartbeat) insert the record
+    /// once and update it in place thereafter, so a crash at any moment loses
+    /// at most the last few seconds of words. The final call (stop) is the
+    /// full-quality path: by then the recording sink has closed, so the .m4a
+    /// is finalized and playable. If we die before the final call, the
+    /// checkpointed record still points at the partially-written file —
+    /// whatever of it is readable is kept, and a session that died before its
+    /// FIRST checkpoint gets its audio adopted by `SessionRecovery` on the
+    /// next launch.
+    ///
+    /// Only sessions where something was actually said are kept; an empty
+    /// session's orphan audio file is deleted on the final call.
+    private func persistSession(final: Bool) {
+        let started = sessionStartDate ?? Date()
+        let stored = storedEntries()
+
+        guard let modelContext,
+              !stored.isEmpty,
+              let transcriptJSON = try? JSONEncoder().encode(stored)
+        else {
+            if final {
+                if let fileName = recordingFileName {
+                    RecordingStorage.delete(fileName: fileName)
+                }
+                sessionStartDate = nil
+                recordingFileName = nil
+                activeRecord = nil
+            }
+            return
+        }
+
+        let record: SessionRecord
+        if let activeRecord {
+            record = activeRecord
+            record.duration = Date().timeIntervalSince(started)
+            record.title = SessionRecord.deriveTitle(from: stored)
+            record.transcriptJSON = transcriptJSON
+            record.criteriaText = coverageCriteriaText
+            record.coverageJSON = coverageResult.flatMap { try? JSONEncoder().encode($0) }
+        } else {
+            record = SessionRecord(
+                startedAt: started,
+                duration: Date().timeIntervalSince(started),
+                title: SessionRecord.deriveTitle(from: stored),
+                transcriptJSON: transcriptJSON,
+                criteriaText: coverageCriteriaText,
+                coverageJSON: coverageResult.flatMap { try? JSONEncoder().encode($0) },
+                audioFileName: recordingFileName
+            )
+            modelContext.insert(record)
+            activeRecord = record
+        }
+        try? modelContext.save()
+
+        if final {
+            lastSavedRecordID = record.id
+            sessionStartDate = nil
+            recordingFileName = nil
+            activeRecord = nil
+        }
+    }
+
+    /// The transcript flattened for storage, with per-utterance timing. An
+    /// utterance still open at write time keeps `endMs` nil.
+    private func storedEntries() -> [StoredEntry] {
+        transcript
             .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
             .map {
                 StoredEntry(
                     speaker: $0.speaker == .thinker ? "thinker" : "listener",
                     text: $0.text,
                     tier: $0.tier?.rawValue,
-                    turn: $0.turn
+                    turn: $0.turn,
+                    startMs: $0.startMs.map { Int($0.rounded()) },
+                    endMs: $0.endMs.map { Int($0.rounded()) }
                 )
             }
-        guard !stored.isEmpty,
-              let modelContext,
-              let transcriptJSON = try? JSONEncoder().encode(stored)
-        else {
-            if let fileName { RecordingStorage.delete(fileName: fileName) }
-            return
-        }
-
-        let record = SessionRecord(
-            startedAt: started,
-            duration: Date().timeIntervalSince(started),
-            title: SessionRecord.deriveTitle(from: stored),
-            transcriptJSON: transcriptJSON,
-            criteriaText: coverageCriteriaText,
-            coverageJSON: coverageResult.flatMap { try? JSONEncoder().encode($0) },
-            audioFileName: fileName
-        )
-        modelContext.insert(record)
-        try? modelContext.save()
-        lastSavedRecordID = record.id
     }
 
     // ── the decision loop ──
@@ -279,6 +493,16 @@ final class SessionController: ObservableObject {
 
     private func onTick() {
         guard let detector else { return }
+
+        // Crash-safety heartbeat: ~every 30 s of session time, checkpoint the
+        // transcript (cheap — one JSON encode) so an uncaught death costs
+        // half a minute of words at most.
+        ticksSinceCheckpoint += 1
+        if ticksSinceCheckpoint >= 300 {
+            ticksSinceCheckpoint = 0
+            persistSession(final: false)
+        }
+
         let now = nowMs()
         feed(.tick(t: now))
         let snapshot = detector.peek(now: now)
@@ -301,33 +525,47 @@ final class SessionController: ObservableObject {
 
     private func handle(_ event: OutputEvent) {
         switch event {
-        case .turnStart(_, let turn):
+        case .turnStart(let t, let turn):
             transcriber.markUtteranceStart()
-            transcript.append(TranscriptEntry(speaker: .thinker, text: "", tier: nil, turn: turn))
+            transcript.append(TranscriptEntry(
+                speaker: .thinker, text: "", tier: nil, turn: turn, startMs: t
+            ))
 
         case .evaluate(_, let turn, _, let reason, _):
             evaluate(turn: turn, reason: reason)
 
-        case .turnEnd(_, let turn, _, _):
-            _ = turn // transcript entry is already up to date via partials
+        case .turnEnd(let t, let turn, _, _):
+            // Text is already up to date via partials; stamp when it closed.
+            if let idx = transcript.lastIndex(where: { $0.speaker == .thinker && $0.turn == turn }) {
+                transcript[idx].endMs = t
+            }
 
-        case .responseStart:
+        case .responseStart(let t, _):
             if let reply = pendingReply, !reply.text.isEmpty {
                 pendingReply = nil
                 speech.speak(reply.text)
                 transcript.append(TranscriptEntry(
                     speaker: .listener, text: reply.text, tier: reply.tier,
-                    turn: detector?.currentTurn ?? 0
+                    turn: detector?.currentTurn ?? 0, startMs: t
                 ))
             }
 
         case .responseEnd(let t, _, _):
             lastFloorReleaseMs = t
+            closeListenerEntry(at: t)
 
         case .bargeIn(let t, _):
             // The yield is instant: cut the clip at t, not at its natural end.
             speech.stop()
             lastFloorReleaseMs = t
+            closeListenerEntry(at: t)
+        }
+    }
+
+    /// Stamp the end of the listener utterance currently holding the floor.
+    private func closeListenerEntry(at t: Double) {
+        if let idx = transcript.lastIndex(where: { $0.speaker == .listener && $0.endMs == nil }) {
+            transcript[idx].endMs = t
         }
     }
 
@@ -422,7 +660,7 @@ final class SessionController: ObservableObject {
             } catch {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    self.lastError = self.friendlyMessage(for: error)
+                    self.report(error)
                     self.decisionsByTurn[turn] = .silence
                     self.feed(.decision(t: self.nowMs(), outcome: .silence))
                 }
@@ -452,7 +690,7 @@ final class SessionController: ObservableObject {
             ? transcriber.fullText
             : transcriber.currentUtteranceText
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
-            lastError = "Nothing has been said yet."
+            fail("Nothing has been said yet.")
             return
         }
         decisionsByTurn[turn] = .question
@@ -479,14 +717,14 @@ final class SessionController: ObservableObject {
                         self.speech.speak(reply)
                         self.transcript.append(TranscriptEntry(
                             speaker: .listener, text: reply, tier: .question,
-                            turn: self.detector?.currentTurn ?? 0
+                            turn: self.detector?.currentTurn ?? 0,
+                            startMs: self.nowMs()
                         ))
                     }
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.lastError = self.friendlyMessage(for: error)
+                    self?.report(error)
                 }
             }
         }
@@ -496,7 +734,7 @@ final class SessionController: ObservableObject {
 
     func checkCoverage() {
         guard !coverageCriteria.isEmpty else {
-            lastError = "Add checklist topics in Settings first."
+            fail("Add checklist topics in Settings first.")
             return
         }
         guard let client = makeService() else { return }
@@ -515,7 +753,7 @@ final class SessionController: ObservableObject {
             } catch {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    self.lastError = self.friendlyMessage(for: error)
+                    self.report(error)
                     self.coverageChecking = false
                 }
             }
@@ -537,9 +775,29 @@ final class SessionController: ObservableObject {
            !key.trimmingCharacters(in: .whitespaces).isEmpty {
             return ClaudeClient(config: ClaudeConfig(apiKey: key))
         }
-        lastError = "Sign in — or add a developer API key in Settings — so the "
-            + "listener's rare question can reach the model."
+        // Typed as `.accountRequired` so the UI can offer sign-in instead of
+        // showing a raw error — the user most likely just skipped onboarding.
+        fail(
+            "Sign in — or add a developer API key in Settings — so the "
+                + "listener's rare question can reach the model.",
+            kind: .accountRequired
+        )
         return nil
+    }
+
+    /// Surface an error to the UI: message + typed kind, set together so
+    /// they can never disagree.
+    private func fail(_ message: String, kind: SessionErrorKind = .general) {
+        lastErrorKind = kind
+        lastError = message
+    }
+
+    /// Surface a failed model call: friendly text plus a typed kind (an
+    /// expired proxy session is sign-in territory, like `.accountRequired`).
+    private func report(_ error: Error) {
+        let kind: SessionErrorKind = (error as? ProxyError) == .unauthorized
+            ? .signInExpired : .general
+        fail(friendlyMessage(for: error), kind: kind)
     }
 
     /// User-facing text for a failed model call. The proxy's auth/quota

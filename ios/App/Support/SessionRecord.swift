@@ -14,6 +14,28 @@ struct StoredEntry: Codable {
     let text: String
     let tier: String?
     let turn: Int
+    /// Utterance timing in ms since session start. The recording shares the
+    /// same clock origin, so these double as offsets into the session audio
+    /// (transcript↔audio seek). Optional on purpose: records saved before
+    /// timing shipped carry no keys and decode as nil.
+    let startMs: Int?
+    let endMs: Int?
+
+    init(
+        speaker: String,
+        text: String,
+        tier: String?,
+        turn: Int,
+        startMs: Int? = nil,
+        endMs: Int? = nil
+    ) {
+        self.speaker = speaker
+        self.text = text
+        self.tier = tier
+        self.turn = turn
+        self.startMs = startMs
+        self.endMs = endMs
+    }
 }
 
 @Model
@@ -67,6 +89,27 @@ final class SessionRecord {
         entries.contains { $0.tier == Tier.question.rawValue }
     }
 
+    /// The thread-pull the thinker left with: the LAST question the listener
+    /// asked. The listener's whole job was this one sentence — post-session it
+    /// becomes the record's durable hook and natural resume point.
+    var openQuestion: String? {
+        entries.last {
+            $0.speaker == "listener" && $0.tier == Tier.question.rawValue
+        }?.text
+    }
+
+    /// Whether the thinker said anything after the open question — i.e. the
+    /// question got at least an attempt, rather than ending the session cold.
+    var openQuestionAnsweredByThinker: Bool {
+        let all = entries
+        guard let idx = all.lastIndex(where: {
+            $0.speaker == "listener" && $0.tier == Tier.question.rawValue
+        }) else { return false }
+        return all[(idx + 1)...].contains {
+            $0.speaker == "thinker" && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+    }
+
     /// Everything said, joined — for library search.
     var searchableText: String {
         entries.map(\.text).joined(separator: " ")
@@ -84,13 +127,39 @@ final class SessionRecord {
 
     // ── export ──
 
-    /// Markdown export: title, date, transcript, coverage when present.
+    /// Markdown export, shaped for a PKM vault (Obsidian-style): YAML
+    /// frontmatter for the machine-readable facts, `[mm:ss]` stamps on entries
+    /// when timing was captured, coverage when a check ran, and the open
+    /// question called out at the end — the line worth coming back for.
     var markdown: String {
-        var lines: [String] = ["# \(title)", ""]
-        lines.append(startedAt.formatted(date: .abbreviated, time: .shortened))
+        var lines: [String] = []
+
+        // Frontmatter — properties, not prose.
+        lines.append("---")
+        lines.append("title: \"\(Self.yamlEscaped(title))\"")
+        lines.append("date: \(startedAt.formatted(.iso8601))")
+        lines.append("duration: \"\(Self.clock(ms: Int(duration * 1000)))\"")
+        let criteria = criteriaText
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        if !criteria.isEmpty {
+            lines.append("criteria:")
+            for topic in criteria {
+                lines.append("  - \"\(Self.yamlEscaped(topic))\"")
+            }
+        }
+        if let openQuestion {
+            lines.append("open_question: \"\(Self.yamlEscaped(openQuestion))\"")
+        }
+        lines.append("---")
+        lines.append("")
+
+        lines.append("# \(title)")
         lines.append("")
         for entry in entries where !entry.text.isEmpty {
-            lines.append("\(Self.markdownLabel(for: entry)) \(entry.text)")
+            let stamp = entry.startMs.map { "[\(Self.clock(ms: $0))] " } ?? ""
+            lines.append("\(stamp)\(Self.markdownLabel(for: entry)) \(entry.text)")
             lines.append("")
         }
         if let coverage {
@@ -108,7 +177,25 @@ final class SessionRecord {
             }
             lines.append("")
         }
+        if let openQuestion {
+            lines.append("## The question you left with")
+            lines.append("")
+            lines.append("> \(openQuestion)")
+            lines.append("")
+        }
         return lines.joined(separator: "\n")
+    }
+
+    /// `mm:ss` from ms; minutes are not capped, so a long session reads
+    /// naturally as e.g. `[75:12]`.
+    private static func clock(ms: Int) -> String {
+        String(format: "%02d:%02d", ms / 60_000, (ms / 1000) % 60)
+    }
+
+    /// Minimal escaping for double-quoted YAML scalars.
+    private static func yamlEscaped(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     private static func markdownLabel(for entry: StoredEntry) -> String {
