@@ -128,11 +128,7 @@ final class SessionController: ObservableObject {
     private var activeJustListen = false
 
     var coverageCriteria: [CoverageCriterion] {
-        coverageCriteriaText
-            .split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .map(CoverageCriterion.init(topic:))
+        Coverage.parseCriteria(coverageCriteriaText)
     }
 
     // ── internals ──

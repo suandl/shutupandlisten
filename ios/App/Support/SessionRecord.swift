@@ -84,11 +84,6 @@ final class SessionRecord {
         return try? JSONDecoder().decode(CoverageResult.self, from: coverageJSON)
     }
 
-    /// True when the listener asked at least one question in this session.
-    var hasThreadPull: Bool {
-        entries.contains { $0.tier == Tier.question.rawValue }
-    }
-
     /// The thread-pull the thinker left with: the LAST question the listener
     /// asked. The listener's whole job was this one sentence — post-session it
     /// becomes the record's durable hook and natural resume point.
@@ -108,11 +103,6 @@ final class SessionRecord {
         return all[(idx + 1)...].contains {
             $0.speaker == "thinker" && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty
         }
-    }
-
-    /// Everything said, joined — for library search.
-    var searchableText: String {
-        entries.map(\.text).joined(separator: " ")
     }
 
     /// Title from the first ~8 words of the first thinker turn.

@@ -99,7 +99,7 @@ struct SessionDetailView: View {
                     systemName: record.openQuestionAnsweredByThinker
                         ? "checkmark.circle" : "circle.dotted"
                 )
-                .foregroundStyle(Color.accentColor.opacity(0.8))
+                .foregroundStyle(Color.sulAccent.opacity(0.8))
                 Text(
                     record.openQuestionAnsweredByThinker
                         ? "You picked it up before stopping."
@@ -114,7 +114,7 @@ struct SessionDetailView: View {
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
         .overlay(
             RoundedRectangle(cornerRadius: 18)
-                .strokeBorder(Color.accentColor.opacity(0.18))
+                .strokeBorder(Color.sulAccent.opacity(0.18))
         )
         .accessibilityElement(children: .combine)
     }
@@ -323,14 +323,14 @@ private struct EntryRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("listener")
                         .font(.caption2.weight(.medium))
-                        .foregroundStyle(Color.accentColor.opacity(0.8))
+                        .foregroundStyle(Color.sulAccent.opacity(0.8))
                     Text(entry.text)
                         .font(
                             entry.tier == Tier.question.rawValue
                                 ? .system(.body, design: .serif).italic()
                                 : .callout.italic()
                         )
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(Color.sulAccent)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -339,7 +339,7 @@ private struct EntryRow: View {
         .padding(.horizontal, 8)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.accentColor.opacity(isCurrent ? 0.10 : 0))
+                .fill(Color.sulAccent.opacity(isCurrent ? 0.10 : 0))
         )
         .animation(.easeInOut(duration: 0.25), value: isCurrent)
         .contentShape(Rectangle())

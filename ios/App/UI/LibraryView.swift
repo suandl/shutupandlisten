@@ -1,7 +1,8 @@
-// The session library: past sessions, newest first, with search — and the one
-// prominent action, starting a new session (which pushes the live SessionView).
-// Search matches the title and what YOU said; the listener's few words never
-// pollute results.
+// The session library: past sessions, newest first, with search. Presented as
+// a sheet over the live session screen, so the one prominent action — "New
+// session" — simply dismisses back to the mic that is already waiting
+// underneath. Search matches the title and what YOU said; the listener's few
+// words never pollute results.
 
 import SwiftData
 import SwiftUI
@@ -13,8 +14,9 @@ struct LibraryView: View {
     @Query(sort: \SessionRecord.startedAt, order: .reverse)
     private var records: [SessionRecord]
 
+    @Environment(\.dismiss) private var dismiss
+
     @State private var searchText = ""
-    @State private var showLiveSession = false
     @State private var showSettings = false
     @State private var searchIndex = ThinkerSearchIndex()
 
@@ -44,9 +46,6 @@ struct LibraryView: View {
                     }
                     .accessibilityLabel("Settings")
                 }
-            }
-            .navigationDestination(isPresented: $showLiveSession) {
-                SessionView()
             }
             .navigationDestination(for: SessionRecord.self) { record in
                 SessionDetailView(record: record)
@@ -112,10 +111,12 @@ struct LibraryView: View {
 
     // ── new session ──
 
+    /// The library lives in a sheet over the live session screen — starting a
+    /// new session is just getting out of its way.
     private var newSessionButton: some View {
         VStack(spacing: 0) {
             Button {
-                showLiveSession = true
+                dismiss()
             } label: {
                 Label("New session", systemImage: "mic.fill")
                     .font(.headline)

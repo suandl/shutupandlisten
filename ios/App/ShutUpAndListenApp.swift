@@ -61,5 +61,11 @@ private struct RootView: View {
                 path.append(record)
             }
         }
+        // A session can start while a record's detail is showing (a Shortcut
+        // or Siri start) — surface the live screen rather than listening
+        // invisibly behind the stack.
+        .onChange(of: controller.isRunning) { _, running in
+            if running { path = NavigationPath() }
+        }
     }
 }

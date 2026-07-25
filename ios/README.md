@@ -19,7 +19,7 @@ ios/
     Audio/                    mic pipeline (VAD, AEC, interruptions), STT, TTS
     UI/                       session screen + patience ring, library, settings
     Support/                  SwiftData records, crash recovery, keychain, account
-    Intents/                  App Intents — Siri / Shortcuts / Action button (in flight)
+    Intents/                  App Intents — Siri / Shortcuts / Action button
   ShutUpAndListenKit/         Swift package: the pure core + Claude adapter
     Sources/TurnEngine/       spec ports — testable headlessly, no audio, no UI
     Sources/ClaudeClient/     raw-HTTP Messages API adapter
@@ -157,10 +157,14 @@ times.
   checklist is set, an earned thread-pull may also steer toward an untouched
   topic — but never before the current thought is out. A preset may
   *suggest* its paired mode; it never sets one silently.
-- **App Shortcuts** — App Intents for starting/stopping a session and
-  pulling a thread (Siri, Shortcuts, the Action button), with an
-  `AppShortcutsProvider`, are landing under `App/Intents/` in a parallel
-  work stream on this branch.
+- **App Shortcuts** — one zero-parameter hook, `StartListeningIntent`,
+  opens straight into a running session; `StopListeningIntent` and
+  `PullThreadIntent` act on the live session without foregrounding the
+  app, and `StartListeningWithModeIntent` takes a mode for custom
+  Shortcuts. All are registered by `SulAppShortcuts` with
+  dictation-friendly phrases, so Siri, Spotlight, the Shortcuts app,
+  the Action button, and Back Tap work with zero user setup
+  (`App/Intents/`).
 
 Design directions still under discussion — the Live Activity / Dynamic
 Island, threads & resume, ask-your-library, the on-demand idea page, and the
