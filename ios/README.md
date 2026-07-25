@@ -16,10 +16,15 @@ nothing.
 ios/
   ShutUpAndListen.xcodeproj   Xcode 16 project (file-system-synchronized)
   App/                        SwiftUI app target (iOS 17+)
+    Audio/                    mic pipeline (VAD, AEC, interruptions), STT, TTS
+    UI/                       session screen + patience ring, library, settings
+    Support/                  SwiftData records, crash recovery, keychain, account
+    Intents/                  App Intents — Siri / Shortcuts / Action button (in flight)
   ShutUpAndListenKit/         Swift package: the pure core + Claude adapter
     Sources/TurnEngine/       spec ports — testable headlessly, no audio, no UI
     Sources/ClaudeClient/     raw-HTTP Messages API adapter
-    Tests/TurnEngineTests/    golden-vector parity tests + gate tests
+    Tests/                    golden-vector parity, gate, mode & preset tests
+  mockups/                    self-contained HTML design mockups + identity spec
 ```
 
 ## How it maps to the repo's spec
@@ -35,7 +40,8 @@ the golden vectors with `web/src/`, not the code.
 | Response hierarchy gate (silence → ack → reflection → question; escalate slowly) | `web/src/response-hierarchy.ts` | `TurnEngine/ResponseHierarchy.swift` |
 | Shared completion threshold (one constant, two readers) | `web/src/completion-threshold.ts` | `TurnEngine/CompletionThreshold.swift` |
 | Listener system prompt | `prompts/claude.md` | embedded in `TurnEngine/ListenerPrompt.swift` (re-sync on change) |
-| Live knobs (silence floor, extension, threshold, baseline arm) | `web/src/knobs.ts` | `SessionController.knobs` + `KnobsView` |
+| Live knobs (silence floor, extension, threshold, baseline arm) | `web/src/knobs.ts` | `SessionController.knobs` + the Tuning sheet (Settings → Developer) |
+| Session modes & just-listen (prompt tints + gate cap on the same engine) | this branch | `TurnEngine/SessionMode.swift`, `ResponseHierarchy.GateConfig.justListen` |
 
 The pipeline is the repo's favored delivery architecture (CONCEPTS.md):
 endpointing → STT → text LLM → TTS, run in the **reduced role** — the rules
@@ -48,13 +54,17 @@ substantive tiers (a short reflection, or one anchored question) reach Claude.
   a ~380 ms hangover (mirroring the web VAD's redemption default), plus voice
   processing (AEC) on the input node so the companion's own speech never reads
   as thinker speech — which is what keeps barge-in honest. A Silero port can
-  replace it behind the same two callbacks.
+  replace it behind the same two callbacks. The pipeline also owns the
+  survival seam: `AVAudioSession` interruptions, route loss, and
+  media-services resets surface through one callback, and
+  `SessionController` decides whether to park, resume, or finalize.
 - **EOU** — there is no smart-turn v3 port on iOS yet, so
   `TurnEngine/LinguisticEOU.swift` stands in: a transcript-only P(complete)
   heuristic (trailing "and…"/comma ⇒ incomplete; terminal punctuation or a
   wrap-up phrase ⇒ complete). It feeds the same **asymmetric veto** (spec §2):
   a wrong reading can only make the companion *more* patient, never cut you
-  off. Toggle it off in the knobs for the patience-only baseline arm.
+  off. Toggle it off in the developer Tuning sheet for the patience-only
+  baseline arm.
 - **STT** — `SFSpeechRecognizer`, preferring on-device recognition (the
   repo's off-host economics). New partial words while a pause is being timed
   are fed to the machine as fresh EOU **evidence**, so re-evaluation stays
@@ -63,44 +73,99 @@ substantive tiers (a short reflection, or one anchored question) reach Claude.
   window from a duration estimate just before answering `speak`; a barge-in
   cuts the clip instantly (usefulness bar B2).
 - **Listener LLM** — Claude (`claude-opus-4-8`) over raw HTTP
-  (`ClaudeClient`), since Swift has no official SDK. Your API key lives in the
-  Keychain, entered in Settings. An empty reply from the model is treated as a
-  `silence` decision — the prompt tells it silence is usually correct, and
-  declining is free (spec §4a).
+  (`ClaudeClient`), since Swift has no official SDK. In developer mode your
+  API key lives in the Keychain (Settings → Developer). An empty reply from
+  the model is treated as a `silence` decision — the prompt tells it silence
+  is usually correct, and declining is free (spec §4a).
 
 ## The customer build
 
-The app is a product, not a developer harness — no API key required:
+The app is a product, not a developer harness — no API key required, and
+every operator surface (tuning sliders, BYOK, proxy URL, the baseline arm)
+is hidden behind a developer gate: tap the version row in Settings five
+times.
 
-- **Onboarding** teaches the one non-obvious contract up front: the app
-  deliberately does not respond when you pause. A self-running patience-bar
-  demo shows a pause filling the window, speech resetting it, and the single
-  thread-pull arriving only when the idea lands. A first-session tip
-  reinforces it live the first time the machine visibly waits.
+- **Talk-first root** — the app opens *into* the session screen: one tap to
+  talk. The stage is a single breathing **patience ring**
+  (`App/UI/PatienceRing.swift`) in one warm accent — an inner glow answers
+  the mic level while you talk, and the ring fills as the patience window
+  runs; resumed speech dissolves it. Three lowercase state words
+  (listening / waiting / speaking) replace status chrome; the transcript
+  collapses to a one-line peek (tap for the full flowing text). Library and
+  settings live behind toolbar icons.
+- **The question moment** — when the gate finally escalates, the one
+  anchored question arrives staged: a gentle haptic and a card
+  (`App/UI/QuestionCard.swift`) that stays pinned until you resume, spoken
+  aloud. No tier jargon anywhere on screen.
+- **Session survival** — a session must outlive real life. The audio
+  background mode keeps the pipeline alive with the screen locked or the app
+  backgrounded; interruptions (call, Siri, alarm) park the session and
+  auto-resume or finalize it; route loss falls back to the built-in mic. The
+  record is **checkpointed** to SwiftData on interruption, on backgrounding,
+  and every ~30 s, so a crash loses seconds, not the session — and on next
+  launch `App/Support/SessionRecovery.swift` adopts any orphaned recording
+  as a playable "Recovered recording". The idle timer is disabled while a
+  session runs.
+- **Onboarding** teaches the one non-obvious contract: the app deliberately
+  does not respond when you pause. Two pages — the promise, then the
+  self-running patience demo (a pause filling the window, speech resetting
+  it, the single thread-pull arriving only when the idea lands) — followed by
+  the mic + speech permission ask. A first-session tip reinforces the
+  contract live the first time the machine visibly waits. Sign-in is *not*
+  asked up front: it's offered contextually the first time a question
+  actually needs the model.
 - **Account mode** — Sign in with Apple exchanges an identity token with the
   proxy (`server/`, contract in `server/API.md`) for a session token stored in
   the Keychain. The proxy holds the Anthropic key; the app never sees it, and
   the server never sees audio or the running transcript — only the rare
   substantive-tier requests the gate escalates, and explicit coverage checks.
   `ListenerService` is the seam: `ProxyClient` (account) and `ClaudeClient`
-  (developer mode, the original BYOK path, now tucked into a Settings
-  disclosure) are interchangeable behind it.
-- **Session library** — every session is saved (SwiftData): title derived
-  from the first words, full transcript, coverage snapshot, and the session
-  audio (AAC, recorded off the same mic tap). The library is the home screen:
-  search, swipe-to-delete, per-session detail with audio playback and a
-  Markdown export via the share sheet.
+  (developer mode, the original BYOK path, now behind the developer gate)
+  are interchangeable behind it. A privacy panel in Settings states —
+  verbatim-checkable against the code — what leaves the device and when.
+- **Session library** — behind a toolbar icon (the session screen is home).
+  Every session is saved (SwiftData) with per-utterance **timestamps**:
+  title derived from the first words, full transcript, coverage snapshot,
+  and the session audio (AAC, recorded off the same mic tap). Rows lead with
+  the open question the listener left you with; the detail view headlines
+  "The question you left with", supports tap-to-seek between transcript and
+  audio, and shares the audio or a Markdown export with YAML frontmatter,
+  `[mm:ss]` stamps, and a closing open-question block. Search matches your
+  words only, never the listener's. Ending a session lands on the saved
+  record — the artifact, not a toast.
 
 ### Beyond idea-dictation
 
 - **Pull a thread now** — the upon-prompting path: a button that requests the
   one anchored question immediately, bypassing the gate's earned-question
   spacing (you invited it).
-- **Coverage mode** — enter a checklist (one topic per line) in Settings; the
-  checklist button evaluates the recording so far against it (structured
-  outputs, so results parse reliably) and returns one nudge toward the most
-  important gap. When a checklist is set, an earned thread-pull may also steer
-  toward an untouched topic — but never before the current thought is out.
+- **Session modes** — chosen on the session screen before you start and
+  frozen at session start (never inferred, never switched mid-thought):
+  `open` (the default — byte-identical to the base listener prompt,
+  test-pinned), `rehearsal` (the listener is your audience; its one question
+  is the one they would ask), `debrief` (the question targets the recall gap
+  you'll wish you'd captured). Tints on one prompt, not forks of the
+  listener.
+- **Just listen** — a questions-off toggle: the gate deterministically caps
+  every uninvited turn at a quiet acknowledgment — no model call can slip
+  through. Pull a thread still asks on demand.
+- **Coverage mode** — pick a named checklist preset in Settings (decision,
+  weekly retro, standup prep, Feynman study, pitch rehearsal, sales-call
+  debrief) or write a custom one, one topic per line. The check evaluates
+  the recording so far against it (structured outputs, so results parse
+  reliably) and returns one nudge toward the most important gap. When a
+  checklist is set, an earned thread-pull may also steer toward an untouched
+  topic — but never before the current thought is out. A preset may
+  *suggest* its paired mode; it never sets one silently.
+- **App Shortcuts** — App Intents for starting/stopping a session and
+  pulling a thread (Siri, Shortcuts, the Action button), with an
+  `AppShortcutsProvider`, are landing under `App/Intents/` in a parallel
+  work stream on this branch.
+
+Design directions still under discussion — the Live Activity / Dynamic
+Island, threads & resume, ask-your-library, the on-demand idea page, and the
+visual identity — live as self-contained HTML mockups in
+[`mockups/`](mockups/README.md).
 
 ## Try it without a device
 
@@ -139,10 +204,17 @@ is free), a rules-only backchannel, and one anchored thread-pull:
 
 Open `ios/ShutUpAndListen.xcodeproj` in Xcode 16+, set your signing team, and
 run on an iOS 17+ device (the mic + speech pipeline is best exercised on
-hardware). The Sign in with Apple capability is wired via
-`App/ShutUpAndListen.entitlements`; point the app at your proxy deployment in
-Settings → Server (or skip sign-in and use developer mode with a personal
-Claude API key under Settings → Developer mode).
+hardware). The target declares the `audio` background mode, and the Sign in
+with Apple capability is wired via `App/ShutUpAndListen.entitlements`. To
+point the app at your own proxy deployment, or to skip sign-in and use a
+personal Claude API key, unlock the Developer section first (tap the version
+row in Settings five times).
+
+Note: this branch has been validated headlessly only — the Kit test suite
+runs on Linux and every App file is parse-checked, but the app has not yet
+been built or run on a device or simulator. Background continuation,
+interruption recovery, haptics, and sign-in are device-only claims until a
+hardware pass confirms them.
 
 ## Tests
 
@@ -153,19 +225,21 @@ cd ios/ShutUpAndListenKit && swift test
 ```
 
 runs the golden-vector parity suite (all `spec/turn-vectors/scenarios/`
-vectors, exact-output) plus the gate's rule tests — on macOS or Linux; the
+vectors, exact-output) plus the gate's rule tests and the mode / just-listen
+/ coverage-preset tests (61 tests) — on macOS or Linux; the
 tests read the vectors from the repo checkout, so run them from a full clone.
 The Swift port's algorithm was additionally cross-checked against all 11
-scenario vectors via an instruction-level mirror at port time. No Swift
-toolchain was available in the authoring environment, so run `swift test`
-locally before relying on changes to the engine.
+scenario vectors via an instruction-level mirror at port time. The full
+suite runs green on Linux; the app target itself is not covered by it (see
+the Building note).
 
 ## Knobs
 
 Defaults match `web/src/knobs.ts`: a 200 ms silence floor (the su-lou.10.6
 operator feel-test verdict — responsive, with the asymmetric EOU veto carrying
 the don't-cut-thinkers-off guarantee), +4 s incomplete extension, threshold
-0.5. The silence floor, extension, and
-completion threshold are live-tunable mid-session from the sliders sheet; the
-completion threshold moves the detector *and* the gate together — one slider,
-both readers.
+0.5. The sliders are a developer surface now — consumers ship the defaults;
+the Tuning sheet (with the baseline-arm toggle) lives behind Settings →
+Developer. There, the silence floor, extension, and completion threshold are
+live-tunable mid-session, and the completion threshold moves the detector
+*and* the gate together — one slider, both readers.
