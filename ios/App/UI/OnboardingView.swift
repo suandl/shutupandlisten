@@ -1,32 +1,37 @@
-// First launch: three pages — what it is, the silence contract (with a small
-// self-running patience-bar demo), and the optional account. Copy stays in the
-// product's voice: quiet, specific, unhyped.
+// First launch: three pages that sell the promise, not the mechanics —
+// (1) finish a thought, (2) the silence contract shown live by the
+// self-running patience demo, (3) one honest sentence and the mic + speech
+// permission ask. No account page: sign-in happens contextually, the first
+// time the listener's question actually needs the model.
 
-import AuthenticationServices
+import AVFoundation
 import SwiftUI
 
 struct OnboardingView: View {
-    @EnvironmentObject private var accountStore: AccountStore
-    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("hasOnboarded") private var hasOnboarded = false
     @State private var page = 0
-    @State private var signingIn = false
-    @State private var signInError: String?
+    @State private var requestingPermissions = false
 
     var body: some View {
         TabView(selection: $page) {
-            whatItIs.tag(0)
+            promise.tag(0)
             silenceContract.tag(1)
-            account.tag(2)
+            permissions.tag(2)
         }
         .tabViewStyle(.page)
         .indexViewStyle(.page(backgroundDisplayMode: .always))
         .background(Color(.systemBackground))
+        .overlay(alignment: .topTrailing) {
+            Button("Skip") { hasOnboarded = true }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(20)
+        }
     }
 
-    // ── page 1: what it is ──
+    // ── page 1: the promise ──
 
-    private var whatItIs: some View {
+    private var promise: some View {
         VStack(spacing: 20) {
             Spacer()
             Image(systemName: "waveform")
@@ -34,13 +39,14 @@ struct OnboardingView: View {
                 .foregroundStyle(.tint)
             Text("shutupandlisten")
                 .font(.largeTitle.bold())
-            Text("A voice recorder that actually listens.")
+            Text("Finally, something that lets you finish a thought.")
                 .font(.title3.weight(.semibold))
+                .multilineTextAlignment(.center)
             Text(
                 """
-                Think out loud. It thinks with you, not at you — no summaries, \
-                no coaching, no taking over. When a thought has fully landed, \
-                it pulls on one thread of what you actually said.
+                Think out loud. It won't interrupt — no summaries, no \
+                coaching, no taking over. When a thought has fully landed, \
+                it asks one question about what you actually said.
                 """
             )
             .foregroundStyle(.secondary)
@@ -68,87 +74,67 @@ struct OnboardingView: View {
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
             Text("Most pauses never become questions.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.subheadline.weight(.medium))
             Spacer()
             Spacer()
         }
         .padding(.horizontal, 32)
     }
 
-    // ── page 3: account ──
+    // ── page 3: permissions ──
 
-    private var account: some View {
+    private var permissions: some View {
         VStack(spacing: 20) {
             Spacer()
-            Text("One quiet connection")
+            Image(systemName: "mic")
+                .font(.system(size: 44))
+                .foregroundStyle(.tint)
+            Text("It needs to hear you")
                 .font(.title2.bold())
             Text(
                 """
-                Sign in and the listener's rare question reaches the model \
-                through our server — no API key to manage.
+                It uses the microphone to listen and speech recognition to \
+                write down what you say — on this phone whenever your device \
+                supports it.
                 """
             )
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
 
-            SignInWithAppleButton(.signIn) { request in
-                request.requestedScopes = []
-            } onCompletion: { result in
-                handleSignIn(result)
+            Button {
+                requestPermissions()
+            } label: {
+                if requestingPermissions {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Text("Allow and start")
+                        .frame(maxWidth: .infinity)
+                }
             }
-            .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
-            .frame(height: 50)
-            .disabled(signingIn)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(requestingPermissions)
 
-            if signingIn {
-                ProgressView()
-            }
-            if let signInError {
-                Text(signInError)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-            }
-
-            Button("Set up later") {
+            Button("Not now") {
                 hasOnboarded = true
             }
             .font(.body.weight(.medium))
-
-            Text(
-                """
-                Dictation is transcribed on-device when available. Only the \
-                rare question round-trips.
-                """
-            )
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
             Spacer()
             Spacer()
         }
         .padding(.horizontal, 32)
     }
 
-    private func handleSignIn(_ result: Result<ASAuthorization, Error>) {
-        switch AppleSignIn.outcome(of: result) {
-        case .cancelled:
-            return
-        case .failed(let message):
-            signInError = message
-        case .token(let identityToken):
-            signingIn = true
-            signInError = nil
-            Task {
-                do {
-                    try await accountStore.completeSignIn(identityToken: identityToken)
-                    hasOnboarded = true
-                } catch {
-                    signInError = error.localizedDescription
-                }
-                signingIn = false
-            }
+    /// Ask for both permissions, then get out of the way. A denial is not a
+    /// dead end here — the session screen re-checks on the first mic tap.
+    private func requestPermissions() {
+        requestingPermissions = true
+        Task {
+            _ = await AVAudioApplication.requestRecordPermission()
+            _ = await SpeechTranscriber.requestAuthorization()
+            requestingPermissions = false
+            hasOnboarded = true
         }
     }
 }
@@ -186,8 +172,7 @@ private struct PatienceDemo: View {
             }
             .frame(height: 6)
             Text("“What makes someone open the app again tomorrow?”")
-                .font(.footnote.italic())
-                .foregroundStyle(.secondary)
+                .font(.subheadline.italic())
                 .opacity(landed ? 1 : 0)
         }
         .padding(16)
@@ -196,9 +181,9 @@ private struct PatienceDemo: View {
     }
 
     private var statusText: String {
-        if speaking { return "You're talking — staying out of the way" }
-        if landed { return "Thought landed — one thread-pull" }
-        return "Pause — waiting it out"
+        if speaking { return "You're talking — it stays out of the way" }
+        if landed { return "The idea landed — one question" }
+        return "A pause — it waits"
     }
 
     private func run() async {

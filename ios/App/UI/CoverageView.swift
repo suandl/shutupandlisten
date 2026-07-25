@@ -1,5 +1,6 @@
-// Coverage results: which checklist topics the recording has covered so far,
-// with the evidence, and one nudge toward the most important gap.
+// "Did you cover it?" — which checklist topics the recording has touched so
+// far, with the line that proves it, and one quiet nudge toward the biggest
+// gap. Plain language throughout; no internal vocabulary, no raw dumps.
 
 import SwiftUI
 import TurnEngine
@@ -15,39 +16,51 @@ struct CoverageView: View {
                     List {
                         if !result.nudge.isEmpty {
                             Section {
-                                Label(result.nudge, systemImage: "arrow.turn.down.right")
+                                Text(result.nudge)
                                     .font(.body.weight(.medium))
+                            } header: {
+                                Text("Still open")
                             }
                         }
-                        Section("Topics") {
+                        Section {
                             ForEach(result.topics, id: \.topic) { topic in
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Label(
-                                        topic.topic,
-                                        systemImage: topic.covered
+                                    Label {
+                                        Text(topic.topic)
+                                    } icon: {
+                                        Image(systemName: topic.covered
                                             ? "checkmark.circle.fill"
-                                            : "circle"
-                                    )
+                                            : "circle")
+                                            .foregroundStyle(topic.covered
+                                                ? AnyShapeStyle(.tint)
+                                                : AnyShapeStyle(.quaternary))
+                                    }
                                     .foregroundStyle(topic.covered ? .primary : .secondary)
                                     if topic.covered && !topic.evidence.isEmpty {
                                         Text("“\(topic.evidence)”")
-                                            .font(.caption)
+                                            .font(.footnote.italic())
                                             .foregroundStyle(.secondary)
                                             .padding(.leading, 28)
                                     }
                                 }
+                                .padding(.vertical, 2)
                             }
+                        } header: {
+                            Text("Your checklist")
                         }
                     }
                 } else {
                     ContentUnavailableView(
-                        "No coverage check yet",
+                        "Nothing checked yet",
                         systemImage: "checklist",
-                        description: Text("Run a check from the session screen.")
+                        description: Text(
+                            "Run a check from the session screen to see "
+                            + "which topics you've gotten to."
+                        )
                     )
                 }
             }
-            .navigationTitle("Coverage")
+            .navigationTitle("Did you cover it?")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
