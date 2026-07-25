@@ -68,6 +68,43 @@ providers:
       maxTurns: 5
       simulatorSystemPath: simulators/thinker.md
 
+  # ---- Disfluent-input cells (the U2→U5 handoff gap) ---------------------
+  # Every cell above scores the listener on the simulator's CLEAN prose — a
+  # clean-text upper bound vs live STT input, and the reason the reduced-role
+  # gate escalated 4/4 turns (docs/findings/on-device-text-quality.md §5–6).
+  # These cells measure the same listeners on live-shaped input, two ways:
+  #
+  #   * disfluency — the simulator still writes clean prose, but a seeded,
+  #     deterministic STT-noise layer (lib/disfluency.js) transforms every
+  #     thinker turn before the listener sees it AND before it enters the
+  #     transcript, so the judges score exactly what the listener saw. Same
+  #     seed → same noise, run to run; the seed rides in result metadata.
+  #   * replay — providers/replay.js drops the simulator entirely and replays
+  #     a captured session (fixtures/README.md) verbatim: real thinker turns,
+  #     zero simulator calls. The current fixtures are HAND-AUTHORED
+  #     placeholders; swap in real iOS SFSpeechRecognizer exports as they land.
+  #
+  # Replay ignores the scenario's starting_turn/topic — the fixture IS the
+  # thinker — so a replay cell produces the same conversation for every
+  # scenario. Filter to one scenario to avoid paying for duplicate cells
+  # (npm run eval:smoke:replay does).
+  - id: file://providers/multi-turn.js
+    label: openai-gpt-4o-disfluent
+    config:
+      targetModel: openai:gpt-4o
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+      disfluency: { seed: 42, level: medium }
+  - id: file://providers/replay.js
+    label: replay-reading-app
+    config:
+      targetModel: anthropic:claude-haiku-4-5
+      fixturePath: fixtures/hand-authored-reading-app.json
+      # gate: true  # optional — answer light turns from the reduced-role
+      #             # rules gate (lib/gate.js) with no model call, reporting
+      #             # listenerModelCalls like the reduced-role cells do.
+
   # ---- On-device-class candidates (U2: R2, R10, R11) --------------------
   # Each candidate is a small instruct model with builds on ALL THREE
   # runtimes the pipeline targets — Ollama / llama.cpp (this harness),
@@ -157,6 +194,20 @@ providers:
       simulatorModel: openai:gpt-4o
       maxTurns: 5
       simulatorSystemPath: simulators/thinker.md
+
+  # Reduced-role under disfluent input. The text gate keys on punctuation /
+  # discourse-marker cues, so the clean-prose thinker made it escalate nearly
+  # every turn (the 4/4 model_calls finding, §5 of the findings doc). With the
+  # STT-noise layer on, model_calls becomes an honest estimate of the live
+  # saving instead of a clean-prose artifact.
+  - id: file://providers/reduced-role.js
+    label: ollama-llama3.2-3b-reduced-disfluent
+    config:
+      targetModel: ollama:chat:llama3.2:3b
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+      disfluency: { seed: 42, level: medium }
 
 defaultTest:
   vars:

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "session": {
+    "id": "hand-authored-0001",
+    "date": "2026-07-25T00:00:00Z",
+    "source": "hand-authored",
+    "knobs": {
+      "silenceFloorMs": 900,
+      "incompleteExtensionMs": 700,
+      "completionThreshold": 0.5,
+      "useSmartTurn": true
+    }
+  },
+  "utterances": [
+    {
+      "text": "OK so um the idea is a reading app that doesn't show you progress like every reading app I've used turns the book into a task, 47% done 12 minutes left in the chapter and I noticed I start reading to move the number instead of actually reading",
+      "startSeconds": 0.0,
+      "endSeconds": 16.4
+    },
+    {
+      "text": "so this one just hides it hides all of it no percentage no time left no streak you open it and you're in the in the text that's it",
+      "startSeconds": 19.1,
+      "endSeconds": 27.8
+    },
+    {
+      "text": "and uh,",
+      "startSeconds": 31.5,
+      "endSeconds": 32.2
+    },
+    {
+      "text": "maybe at the very end it tells you you finished maybe not even that I don't know I keep going back and forth on whether the the finished screen is just the streak sneaking back in",
+      "startSeconds": 33.0,
+      "endSeconds": 44.6
+    },
+    {
+      "text": "the tricky part is what makes you open it again tomorrow right because the streak is the hook and I'm removing the hook so the pull has to be the book itself which means the real job is is how it picks what you read next",
+      "startSeconds": 48.2,
+      "endSeconds": 61.9
+    },
+    {
+      "text": "so yeah that's basically the idea a reading app with no numbers in it",
+      "startSeconds": 64.0,
+      "endSeconds": 68.3
+    }
+  ],
+  "landingIndex": 5
+}

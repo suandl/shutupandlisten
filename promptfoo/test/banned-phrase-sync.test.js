@@ -17,7 +17,14 @@ const PROMPTFOO_DIR = path.resolve(__dirname, '..');
 
 const CHATGPT_PROMPT = path.join(REPO_ROOT, 'prompts', 'chatgpt.md');
 const RESTRAINT_JUDGE = path.join(PROMPTFOO_DIR, 'judges', 'restraint.txt');
-const REDUCED_ROLE = path.join(PROMPTFOO_DIR, 'providers', 'reduced-role.js');
+// Every module that can emit or route a listener turn without a model call —
+// the original reduced-role provider, the gate rules factored out of it, and
+// the replay provider that reuses them. None may carry a copy of the list.
+const GATE_SOURCES = [
+  path.join(PROMPTFOO_DIR, 'providers', 'reduced-role.js'),
+  path.join(PROMPTFOO_DIR, 'providers', 'replay.js'),
+  path.join(PROMPTFOO_DIR, 'lib', 'gate.js'),
+];
 
 // Pull every double-quoted phrase out of a chunk of text. Used after each
 // source's list region is isolated, so stray quotes elsewhere can't leak in.
@@ -68,13 +75,15 @@ test('avoid-list (chatgpt.md) and cap-list (restraint.txt) are identical', () =>
   );
 });
 
-test('the reduced-role gate carries no third copy of the banned phrases', () => {
+test('no gate/replay module carries a third copy of the banned phrases', () => {
   const cap = capListFromJudge();
-  const gateSource = fs.readFileSync(REDUCED_ROLE, 'utf8');
-  for (const phrase of cap) {
-    assert.ok(
-      !gateSource.includes(phrase),
-      `reduced-role.js must not embed banned phrase "${phrase}" — single source of truth`,
-    );
+  for (const sourcePath of GATE_SOURCES) {
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    for (const phrase of cap) {
+      assert.ok(
+        !source.includes(phrase),
+        `${path.basename(sourcePath)} must not embed banned phrase "${phrase}" — single source of truth`,
+      );
+    }
   }
 });

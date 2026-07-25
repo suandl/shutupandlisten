@@ -67,14 +67,38 @@
 //                                   and the llm-rubric judges. Scoping it to
 //                                   the listener keeps the thinker and judges
 //                                   on their real endpoints.
+//   disfluency           (optional) opt-in STT-style noise on the thinker
+//                                   side, e.g. { seed: 42, level: "medium" }
+//                                   (see lib/disfluency.js). The simulator
+//                                   still writes clean prose; the transform is
+//                                   applied to every thinker turn — the
+//                                   scenario's starting turn included — before
+//                                   it reaches the listener AND before it is
+//                                   written to the transcript, so the judges
+//                                   score exactly what the listener saw. This
+//                                   closes on the clean-text upper bound of
+//                                   docs/findings/on-device-text-quality.md
+//                                   §5–6: clean prose flatters listener scores
+//                                   and makes the reduced-role gate escalate
+//                                   nearly every turn. ABSENT MEANS OFF, and
+//                                   off is byte-for-byte identical to before
+//                                   the option existed. `seed` (default 1) is
+//                                   reported in result metadata; each thinker
+//                                   turn uses seed + its turn index so noise
+//                                   decorrelates across turns while staying
+//                                   fully reproducible.
 //
 // Subclassing: the per-turn listener call is isolated in the _listenerTurn()
 // seam so a subclass (see providers/reduced-role.js) can answer light turns
 // from a rules gate without a model call, while reusing the whole simulator
 // loop, usage/cost accounting, and transcript formatting unchanged.
+// providers/replay.js reuses the same seam plus formatTranscript() with the
+// simulator loop replaced by a captured-session fixture.
 
 const fs = require('fs');
 const path = require('path');
+
+const { applyDisfluency, resolveLevel } = require('../lib/disfluency.js');
 
 // Emitted into the formatted transcript directly after the thinker turn that
 // lands the idea. Self-describing on purpose: every judge reads this same
@@ -134,6 +158,19 @@ class MultiTurnProvider {
     this.simulatorSystemPath = config.simulatorSystemPath || 'simulators/thinker.md';
     // basePath is injected by promptfoo and points at the config dir.
     this.basePath = config.basePath || process.cwd();
+    // Opt-in disfluency layer. Normalized here (and the level resolved
+    // eagerly, so a typo'd level fails at construction, not mid-eval); null
+    // when absent — and absent MUST mean byte-identical behaviour.
+    if (config.disfluency) {
+      const d = config.disfluency;
+      resolveLevel(d.level); // validate now; applyDisfluency re-resolves per call
+      this.disfluency = {
+        seed: Number.isFinite(d.seed) ? Math.floor(d.seed) : 1,
+        level: d.level == null ? 'medium' : d.level,
+      };
+    } else {
+      this.disfluency = null;
+    }
 
     this._listener = null;
     this._simulator = null;
@@ -214,7 +251,18 @@ ${arcLines}`;
     // Transcript is kept in listener's POV: role=user means thinker,
     // role=assistant means listener. When we call the simulator, we flip
     // roles so the simulator sees itself as the assistant.
-    const transcript = [{ role: 'user', content: startingTurn }];
+    //
+    // Every thinker turn passes through the (opt-in) disfluency layer as it
+    // enters the transcript — the starting turn too, so a disfluent cell never
+    // shows the listener a single line of clean prose. The transcript is the
+    // one source for both the listener's messages and the judges' text, so
+    // transforming here guarantees the judges score exactly what the listener
+    // saw. (The simulator also sees its own past turns disfluent — harmless,
+    // and it keeps one transcript instead of two diverging copies.)
+    let thinkerTurnIndex = 0;
+    const transcript = [
+      { role: 'user', content: this._disfluent(startingTurn, thinkerTurnIndex++) },
+    ];
     // Index of the thinker turn that ends the dictation — the last one, since
     // the last simulator call is given the LANDING directive. Starts at the
     // opening turn so a maxTurns=1 run (no simulator calls at all) still has a
@@ -264,42 +312,48 @@ ${arcLines}`;
       if (simResp.error) {
         return { error: `simulator turn ${turn + 1}: ${simResp.error}` };
       }
-      const simText = String(simResp.output ?? '').trim();
+      const simText = this._disfluent(
+        String(simResp.output ?? '').trim(),
+        thinkerTurnIndex++,
+      );
       transcript.push({ role: 'user', content: simText });
       landingIndex = transcript.length - 1;
       accumulateUsage(usage, simResp.tokenUsage);
       cost += simResp.cost || 0;
     }
 
-    // Silent listener turns (idea-dictation: the listener stays quiet while the
-    // thinker dictates) carry no text — omit them so the transcript reads as the
-    // thinker dictating with the listener speaking only when it pulls a thread.
-    // The judges score this text; restraint reads the sparse listener presence
-    // as silence, probing-depth scores the thread-pull(s) that remain.
-    const lines = [];
-    transcript.forEach((m, i) => {
-      const content = String(m.content ?? '').trim();
-      if (content) {
-        lines.push(`${m.role === 'user' ? 'THINKER' : 'LISTENER'}: ${content}`);
-      }
-      // The landing marker is positional, so it is emitted even when the
-      // landing turn itself came back empty — the judges need the boundary,
-      // and its position is what carries the meaning.
-      if (i === landingIndex) lines.push(LANDING_MARKER);
-    });
-    const formatted = lines.join('\n\n');
+    const resultMetadata = {
+      turns: transcript.length,
+      listenerTurns: transcript.filter((m) => m.role === 'assistant').length,
+      thinkerTurns: transcript.filter((m) => m.role === 'user').length,
+      listenerModelCalls: modelCalls,
+    };
+    // Surface the noise parameters only when the layer is on — a transcript
+    // must always be traceable back to its seed, and an untouched cell must
+    // keep its exact pre-disfluency metadata shape.
+    if (this.disfluency) {
+      resultMetadata.disfluency = { seed: this.disfluency.seed, level: this.disfluency.level };
+    }
 
     return {
-      output: formatted,
+      output: formatTranscript(transcript, landingIndex),
       tokenUsage: usage,
       cost,
-      metadata: {
-        turns: transcript.length,
-        listenerTurns: transcript.filter((m) => m.role === 'assistant').length,
-        thinkerTurns: transcript.filter((m) => m.role === 'user').length,
-        listenerModelCalls: modelCalls,
-      },
+      metadata: resultMetadata,
     };
+  }
+
+  // Apply the opt-in disfluency layer to ONE thinker turn. Identity when the
+  // option is absent (the returned string is the exact input, so untouched
+  // cells stay byte-for-byte identical). The per-turn seed offset decorrelates
+  // noise across turns while keeping the whole run a pure function of the
+  // configured seed.
+  _disfluent(text, thinkerTurnIndex) {
+    if (!this.disfluency) return text;
+    return applyDisfluency(text, {
+      seed: this.disfluency.seed + thinkerTurnIndex,
+      level: this.disfluency.level,
+    });
   }
 
   // Seam: produce ONE listener turn from the running transcript.
@@ -354,6 +408,33 @@ function toProviderMessages(systemContent, turns) {
   return msgs;
 }
 
+// Format a listener-POV transcript into the "THINKER: …\n\nLISTENER: …" text
+// the judges score, with LANDING_MARKER after the turn at `landingIndex`.
+//
+// Silent listener turns (idea-dictation: the listener stays quiet while the
+// thinker dictates) carry no text — omit them so the transcript reads as the
+// thinker dictating with the listener speaking only when it pulls a thread.
+// The judges score this text; restraint reads the sparse listener presence
+// as silence, probing-depth scores the thread-pull(s) that remain.
+//
+// Exported so providers/replay.js emits the EXACT same transcript shape from a
+// fixture-driven loop — the judges must be unable to tell a replay cell from a
+// simulator cell by format alone.
+function formatTranscript(transcript, landingIndex) {
+  const lines = [];
+  transcript.forEach((m, i) => {
+    const content = String(m.content ?? '').trim();
+    if (content) {
+      lines.push(`${m.role === 'user' ? 'THINKER' : 'LISTENER'}: ${content}`);
+    }
+    // The landing marker is positional, so it is emitted even when the
+    // landing turn itself came back empty — the judges need the boundary,
+    // and its position is what carries the meaning.
+    if (i === landingIndex) lines.push(LANDING_MARKER);
+  });
+  return lines.join('\n\n');
+}
+
 function accumulateUsage(total, u) {
   if (!u) return;
   total.total += u.total || 0;
@@ -368,3 +449,7 @@ module.exports = MultiTurnProvider;
 // and put the column straight back to un-measurable).
 module.exports.LANDING_MARKER = LANDING_MARKER;
 module.exports.phaseDirective = phaseDirective;
+// Shared with providers/replay.js so a fixture-replayed cell and a simulator
+// cell produce byte-identical transcript formatting and usage accounting.
+module.exports.formatTranscript = formatTranscript;
+module.exports.accumulateUsage = accumulateUsage;

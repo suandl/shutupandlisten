@@ -62,8 +62,11 @@ npm install
 npm run eval                # full matrix (all scenarios × providers × prompts)
 npm run eval:smoke          # one scenario × openai × claude-prompt (cheap)
 npm run eval:smoke:ondevice # one on-device (Ollama) model × one scenario (needs Ollama)
-npm run validate            # schema-check the config without calling APIs
-npm test                    # gate, landing-phase, variety-gate, summary unit tests (keyless)
+npm run eval:smoke:replay   # claude-prompt × a captured-session replay (no simulator calls)
+npm run eval:smoke:disfluent# claude-prompt × openai with the STT-noise layer on
+npm run validate            # schema-check the config AND fixtures/*.json, no API calls
+npm test                    # gate, landing-phase, variety-gate, disfluency, replay,
+                            # fixture-schema, summary unit tests (keyless)
 npm run test:judges         # OPT-IN: scores two fixture transcripts with a real grader (paid)
 ```
 
@@ -166,6 +169,39 @@ The transcript is scored by four judges in `judges/`:
   count). Variety is undefined on a single sample, and the rubric's old
   "≤1 questions → 5" rule meant zero-question transcripts — the most
   degenerate output in the matrix — scored top marks on it.
+
+## Disfluent input: the noise layer and captured-session replay
+
+The simulator emits clean prose, and
+[`docs/findings/on-device-text-quality.md`](../docs/findings/on-device-text-quality.md)
+§5–6 names the cost: every judge score above is a **clean-text upper bound**
+relative to live STT input, and the reduced-role gate — which keys on
+punctuation and discourse-marker cues — escalates nearly every clean turn
+(the 4/4 `model_calls` finding). Two opt-in mechanisms close that gap from
+opposite ends:
+
+- **Disfluency layer** (`lib/disfluency.js`) — a deterministic, seeded
+  STT-noise transform (fillers, word restarts, dropped terminal punctuation
+  and commas, lowercased sentence starts, run-ons; never a word substituted)
+  applied to every thinker turn before the listener sees it *and* before it
+  enters the transcript, so the judges score exactly what the listener saw.
+  Opt in per provider cell with `disfluency: { seed: 42, level: medium }`
+  (levels `light`/`medium`/`heavy` or a number in 0–1); the seed rides in the
+  cell's result metadata. Absent means off, and off is byte-for-byte identical
+  to before the option existed.
+- **Fixture replay** (`providers/replay.js`) — drops the simulator entirely
+  and replays the thinker utterances of a captured session verbatim against
+  the listener under test: real dictation in, fresh listener responses out,
+  zero simulator calls. Fixtures live in `fixtures/` (schema contract in
+  [`fixtures/README.md`](fixtures/README.md) — the current two are
+  **hand-authored placeholders**, to be replaced by real iOS
+  `SFSpeechRecognizer` exports). The transcript contract is identical to the
+  multi-turn provider's — same THINKER/LISTENER lines, same landing marker —
+  so all four judges run unchanged. An optional `gate: true` routes light
+  turns through the same rules gate as reduced-role (`lib/gate.js`) and
+  reports `listenerModelCalls` the same way; replay ignores the scenario's
+  `starting_turn`, so filter replay cells to a single scenario
+  (`eval:smoke:replay` does).
 
 ## Iteration loop
 

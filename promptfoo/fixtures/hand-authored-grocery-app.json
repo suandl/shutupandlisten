@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "session": {
+    "id": "hand-authored-0002",
+    "date": "2026-07-25T00:00:00Z",
+    "source": "hand-authored"
+  },
+  "utterances": [
+    {
+      "text": "so the idea is a grocery app but backwards um every meal planning thing I've seen starts from recipes you pick what you want to cook and it builds a shopping list but my actual problem isn't picking recipes it's the half a bag of spinach and the chicken thighs slowly dying in my fridge because I forgot they were in there"
+    },
+    {
+      "text": "so the mechanic is it knows what you have and roughly when it dies and it plans meals in that order not like here's 20 things you could make one thing tonight because the spinach goes tomorrow the ordering is the whole product really"
+    },
+    {
+      "text": "and um,"
+    },
+    {
+      "text": "the interesting part is staples versus perishables like rice and oil never trigger anything they're just background the perishables are the clock so the app is really a queue with a with a deadline on each item and the recipe is just how you spend the item before it expires"
+    },
+    {
+      "text": "and if I skip the spinach three nights running it's learned something either I don't actually like spinach or I'm not cooking this week so it should stop nagging and start buying less of it so it ends up being a small inventory system that talks in dinners that's basically it"
+    }
+  ]
+}

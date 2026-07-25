@@ -34,11 +34,17 @@
 //                                   the findings methodology sweeps it.
 
 const MultiTurnProvider = require('./multi-turn.js');
-
-// Natural level-2 minimal acknowledgments, rotated by turn index so a run of
-// gated turns doesn't read as one stuck token.
-const DEFAULT_ACKS = ['mm', 'yeah', 'mhm', 'right', 'mm-hm'];
-const DEFAULT_SUBSTANTIVE_WORDS = 12;
+// The routing rules live in lib/gate.js so providers/replay.js gates fixture
+// turns with the SAME rules — one gate, two callers, no drift. Behaviour is
+// byte-identical to when the rules lived here (pinned by
+// test/reduced-role.test.js).
+const {
+  DEFAULT_ACKS,
+  DEFAULT_SUBSTANTIVE_WORDS,
+  shouldEscalate,
+  ackFor,
+  latestThinkerTurn,
+} = require('../lib/gate.js');
 
 class ReducedRoleProvider extends MultiTurnProvider {
   constructor(options) {
@@ -51,29 +57,18 @@ class ReducedRoleProvider extends MultiTurnProvider {
   }
 
   // The latest thinker turn is the last role:'user' entry in the listener-POV
-  // transcript (user = thinker, assistant = listener).
+  // transcript (user = thinker, assistant = listener). Thin wrappers over
+  // lib/gate.js, kept as methods so the seam (and its unit tests) stay stable.
   _latestThinkerTurn(transcript) {
-    for (let i = transcript.length - 1; i >= 0; i -= 1) {
-      if (transcript[i].role === 'user') return transcript[i].content;
-    }
-    return '';
+    return latestThinkerTurn(transcript);
   }
 
   // Text-only response-hierarchy gate. Returns true to escalate to the model
   // (levels 3-4: reflection / brief question), false to answer with a minimal
   // ack (levels 1-2). Default is silence/ack; it escalates only on positive
-  // evidence a substantive reply is invited.
+  // evidence a substantive reply is invited. Rules in lib/gate.js.
   _shouldEscalate(thinkerText) {
-    const text = String(thinkerText || '').trim();
-    if (!text) return false;
-    // Explicit question → a substantive reply is invited (level 4).
-    if (/\?/.test(text)) return true;
-    // Trailing off mid-thought (ellipsis, em-dash, comma) → the thinker isn't
-    // done; hold and acknowledge, never treat the pause as a finished thought.
-    if (/[…,—-]$/.test(text)) return false;
-    // Otherwise escalate only on a genuinely substantive utterance.
-    const words = text.split(/\s+/).filter(Boolean).length;
-    return words >= this.gateSubstantiveWords;
+    return shouldEscalate(thinkerText, this.gateSubstantiveWords);
   }
 
   async _listenerTurn(args) {
@@ -83,8 +78,7 @@ class ReducedRoleProvider extends MultiTurnProvider {
       return super._listenerTurn(args);
     }
     // Light turn: answer from the gate with NO model call.
-    const ack = this.acks[args.turn % this.acks.length];
-    return { text: ack, tokenUsage: null, cost: 0, modelCalled: false };
+    return { text: ackFor(args.turn, this.acks), tokenUsage: null, cost: 0, modelCalled: false };
   }
 }
 

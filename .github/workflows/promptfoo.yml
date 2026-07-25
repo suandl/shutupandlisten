@@ -47,7 +47,9 @@ jobs:
       PROMPTFOO_DISABLE_UPDATE: '1'
       # Cloud providers only — the config also defines on-device (ollama:*)
       # providers that need a local Ollama runtime unavailable on the runner.
-      EVAL_PROVIDERS: 'openai-gpt-4o|anthropic-claude-haiku-4-5'
+      # Anchored: the disfluent/replay cells (openai-gpt-4o-disfluent,
+      # replay-reading-app) are opt-in and stay out of the CI matrix.
+      EVAL_PROVIDERS: 'openai-gpt-4o$|anthropic-claude-haiku-4-5$'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
