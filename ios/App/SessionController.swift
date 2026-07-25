@@ -169,6 +169,12 @@ final class SessionController: ObservableObject {
     /// Crash recovery runs once per launch, on the first `configure`.
     private var didRunRecovery = false
 
+    init() {
+        // Shortcuts reach the controller through the bridge (weak ref) —
+        // App Intents cannot touch the SwiftUI-owned instance directly.
+        IntentBridge.shared.register(self)
+    }
+
     /// Hand in the SwiftData container and the account layer. Idempotent —
     /// the root view calls this on appear. The first call also adopts any
     /// recording a crashed session left orphaned on disk (this is the
@@ -180,6 +186,25 @@ final class SessionController: ObservableObject {
         if !didRunRecovery {
             didRunRecovery = true
             SessionRecovery.adoptOrphanedRecordings(in: modelContext)
+        }
+        // A Shortcut may have queued a start before we could save sessions.
+        consumePendingIntentAction()
+    }
+
+    /// Drain the action a Shortcut queued in `IntentBridge`, if any. Runs
+    /// only once a ModelContext is in hand — a session started earlier could
+    /// never be saved — so a cold-launch intent waits here for `configure`.
+    /// Firing while a session runs is a no-op (nothing double-starts, and
+    /// the persisted voice is left alone).
+    func consumePendingIntentAction() {
+        guard modelContext != nil else { return }
+        guard let action = IntentBridge.shared.takePendingAction() else { return }
+        switch action {
+        case let .startListening(mode, justListen):
+            guard !isRunning else { return }
+            if let mode { sessionMode = mode }
+            if let justListen { self.justListen = justListen }
+            Task { await startSession() }
         }
     }
 
@@ -407,6 +432,9 @@ final class SessionController: ObservableObject {
             UIApplication.shared.isIdleTimerDisabled = false
         case .active:
             UIApplication.shared.isIdleTimerDisabled = isRunning
+            // A start intent can land while we foreground — drain it here in
+            // case `perform()` raced the controller's registration.
+            consumePendingIntentAction()
         default:
             break
         }
