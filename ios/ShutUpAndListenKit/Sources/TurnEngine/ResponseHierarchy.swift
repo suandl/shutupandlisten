@@ -53,17 +53,26 @@ public struct GateConfig: Sendable {
     public var acks: [String]
     public var questionCooldownTurns: Int
     public var completionThreshold: Double
+    /// "Just listen" — questions off. Caps the hierarchy at the acknowledge
+    /// rung for UNINVITED turns, so the model tiers (reflection/question) are
+    /// unreachable no matter how substantive the turn or how long the cooldown
+    /// has been elapsed. A direct question FROM the thinker still escalates
+    /// (an invited question bypasses the cap), and the explicit pull-a-thread
+    /// path never enters the gate at all — both invited routes survive.
+    public var justListen: Bool
 
     public init(
         substantiveWords: Int = defaultSubstantiveWords,
         acks: [String] = defaultAcks,
         questionCooldownTurns: Int = defaultQuestionCooldownTurns,
-        completionThreshold: Double = defaultCompletionThreshold
+        completionThreshold: Double = defaultCompletionThreshold,
+        justListen: Bool = false
     ) {
         self.substantiveWords = substantiveWords
         self.acks = acks
         self.questionCooldownTurns = questionCooldownTurns
         self.completionThreshold = completionThreshold
+        self.justListen = justListen
     }
 
     public static let defaults = GateConfig()
@@ -160,6 +169,22 @@ public func wordCount(_ text: String) -> Int {
 /// dash, comma) reads as "still going" — the thinker paused, they are not done.
 private let trailingOffMarkers: Set<Character> = ["…", ",", "-", "—"]
 
+/// The rules-only acknowledge rung: rotate the ack by utterance number so a
+/// run of gated turns never reads as one stuck token. An empty ack set (a
+/// config choice, not the default) degrades to silence — the more restrained
+/// rung, per §1's tie-breaking rule.
+private func ackDecision(
+    _ ctx: EvalContext, _ cfg: GateConfig, reason: String, silentReason: String
+) -> GateDecision {
+    guard !cfg.acks.isEmpty else {
+        return GateDecision(tier: .silence, callModel: false, ackText: nil,
+                            reason: silentReason)
+    }
+    let n = cfg.acks.count
+    let ack = cfg.acks[((ctx.utteranceIndex % n) + n) % n]
+    return GateDecision(tier: .acknowledge, callModel: false, ackText: ack, reason: reason)
+}
+
 /// Decide the response tier for an evaluated pause under the "escalate slowly"
 /// policy. Pure: same inputs → same output.
 ///
@@ -169,6 +194,8 @@ private let trailingOffMarkers: Set<Character> = ["…", ",", "-", "—"]
 ///  2. EOU says incomplete               → silence   (mid-thought; B1 — never interrupt)
 ///  3. text trails off (…, — ,)          → silence   (mid-thought)
 ///  4. short finished aside              → acknowledge (rules-only rotating backchannel)
+///  4b. just-listen cap (questions off)  → acknowledge — an uninvited turn never
+///      reaches the model tiers; a direct question FROM the thinker still does
 ///  5. substantive / a direct question   → reflection, or question when EARNED
 public func decideTier(_ ctx: EvalContext, config: GateConfig = .defaults) -> GateDecision {
     let cfg = config
@@ -203,18 +230,27 @@ public func decideTier(_ ctx: EvalContext, config: GateConfig = .defaults) -> Ga
     let substantive = words >= cfg.substantiveWords
 
     // 4. A short, finished, non-question aside → minimal acknowledgment.
-    //    Rules only, no model. Rotate the ack by turn number. An empty ack set
-    //    (a config choice, not the default) degrades to silence — the more
-    //    restrained rung, per §1's tie-breaking rule.
+    //    Rules only, no model.
     if !invited && !substantive {
-        guard !cfg.acks.isEmpty else {
-            return GateDecision(tier: .silence, callModel: false, ackText: nil,
-                                reason: "brief turn (\(words)w), no acks configured — holding silence")
-        }
-        let n = cfg.acks.count
-        let ack = cfg.acks[((ctx.utteranceIndex % n) + n) % n]
-        return GateDecision(tier: .acknowledge, callModel: false, ackText: ack,
-                            reason: "brief turn (\(words)w) — minimal acknowledgment")
+        return ackDecision(
+            ctx, cfg,
+            reason: "brief turn (\(words)w) — minimal acknowledgment",
+            silentReason: "brief turn (\(words)w), no acks configured — holding silence"
+        )
+    }
+
+    // 4b. Just-listen: questions are off for this session. An UNINVITED turn —
+    //     however substantive — is capped at the acknowledge rung, so the model
+    //     tiers (reflection/question) are unreachable. A direct question FROM
+    //     the thinker still escalates via rule 5 (an invited question bypasses
+    //     the cap), and the explicit "pull a thread now" path never enters the
+    //     gate at all — it builds its `.question` request directly.
+    if cfg.justListen && !invited {
+        return ackDecision(
+            ctx, cfg,
+            reason: "just listen — substantive turn (\(words)w) capped to acknowledgment",
+            silentReason: "just listen (\(words)w), no acks configured — holding silence"
+        )
     }
 
     // 5. Substantive (or a direct question) → escalate to the model. Default to

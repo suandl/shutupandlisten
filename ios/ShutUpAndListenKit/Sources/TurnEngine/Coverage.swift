@@ -68,6 +68,19 @@ public enum Coverage {
         "additionalProperties": false,
     ]
 
+    /// Parse a newline-separated checklist — the shape the Settings field
+    /// stores and `CoveragePreset.criteriaText` produces — into criteria: one
+    /// topic per line, whitespace-trimmed, blank lines dropped. Same logic the
+    /// app applies to its stored checklist text, so presets and hand-typed
+    /// checklists flow through one path.
+    public static func parseCriteria(_ text: String) -> [CoverageCriterion] {
+        text
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .map(CoverageCriterion.init(topic:))
+    }
+
     public static func userMessage(transcript: String, criteria: [CoverageCriterion]) -> String {
         let list = criteria.map { "- \($0.topic)" }.joined(separator: "\n")
         return """
