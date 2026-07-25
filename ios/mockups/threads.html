@@ -1,0 +1,304 @@
+<!-- shutupandlisten · mockup · threads lens, resume, ask-your-library -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Threads — shutupandlisten mockups</title>
+<style>
+  :root{
+    --page:#08090B; --bg:#0B0D10; --surface:#12151A; --raised:#191D23;
+    --ink:#E9E4DA; --ink2:#8E9298; --ink3:#565B62; --line:#20242B;
+    --track:rgba(233,228,218,.09);
+    --accent:#D9A15E; --accent-ink:#E7BE8A; --accent-dim:rgba(217,161,94,.13);
+    --bezel:#000; --shadow:0 34px 80px rgba(0,0,0,.55);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --page:#EFEDE7; --bg:#F7F5F0; --surface:#FFFFFF; --raised:#FBFAF6;
+      --ink:#20232A; --ink2:#5E636B; --ink3:#9EA2A9; --line:#E5E1D8;
+      --track:rgba(30,33,42,.10);
+      --accent:#96661F; --accent-ink:#7C5316; --accent-dim:rgba(150,102,31,.10);
+      --bezel:#101114; --shadow:0 24px 60px rgba(70,58,34,.16);
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--page); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent); text-decoration:none} a:hover{text-decoration:underline}
+  header.page{padding:44px 44px 6px; max-width:1780px}
+  .crumb{font-size:13px; color:var(--ink3)}
+  header.page h1{font-size:23px; font-weight:600; letter-spacing:-.01em; margin:10px 0 8px}
+  header.page p{max-width:68ch; color:var(--ink2); font-size:15px; line-height:1.6; margin:0}
+  header.page p b{color:var(--ink); font-weight:600}
+  .row{display:flex; gap:44px; overflow-x:auto; padding:26px 44px 60px; align-items:flex-start}
+  .study{flex:none; width:415px}
+  .study h2{font-size:12px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ink3); margin:0 0 4px 6px}
+  .study .sub{font-size:13px; color:var(--ink2); margin:0 0 14px 6px; line-height:1.5}
+  .notes{list-style:none; margin:16px 2px 0; padding:0; border-top:1px solid var(--line)}
+  .notes li{display:flex; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line); font-size:13px; line-height:1.55; color:var(--ink2)}
+  .notes b{color:var(--ink); font-weight:600}
+  .notes .n{flex:none; width:17px; height:17px; margin-top:1px; border-radius:50%; background:var(--accent);
+    color:var(--page); font:600 10.5px/17px system-ui; text-align:center}
+  .pin{position:absolute; z-index:9; width:18px; height:18px; border-radius:50%; background:var(--accent);
+    color:var(--page); font:600 11px/18px system-ui; text-align:center; box-shadow:0 0 0 5px var(--accent-dim)}
+
+  .device{position:relative; width:415px; padding:11px; background:var(--bezel); border-radius:64px; box-shadow:var(--shadow)}
+  .screen{position:relative; width:393px; height:852px; border-radius:54px; overflow:hidden; background:var(--bg); display:flex; flex-direction:column}
+  .island{position:absolute; top:12px; left:50%; transform:translateX(-50%); width:122px; height:36px; border-radius:19px; background:#000; z-index:5}
+  .statusbar{flex:none; height:56px; display:flex; align-items:center; justify-content:space-between; padding:14px 36px 0; font-size:15px; font-weight:600}
+  .statusbar .icons{display:flex; gap:7px; align-items:center; opacity:.92}
+  .homebar{position:absolute; bottom:9px; left:50%; transform:translateX(-50%); width:134px; height:5px; border-radius:3px; background:var(--ink); opacity:.32; z-index:6}
+
+  /* library chrome */
+  .navrow{flex:none; display:flex; align-items:center; justify-content:space-between; padding:14px 24px 0}
+  .navrow .back{display:flex; align-items:center; gap:5px; color:var(--accent); font-size:16px}
+  .bigtitle{flex:none; padding:16px 24px 4px; font-size:30px; font-weight:700; letter-spacing:-.02em}
+  .lens{flex:none; margin:12px 24px 4px; display:flex; background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:3px}
+  .lens button{flex:1; border:0; border-radius:9px; padding:8px 0; font-size:13px; font-weight:600; background:none; color:var(--ink3)}
+  .lens button.on{background:var(--raised); color:var(--ink); box-shadow:0 1px 4px rgba(0,0,0,.25)}
+  .ask{flex:none; margin:12px 24px 6px; display:flex; align-items:center; gap:9px; padding:11px 14px;
+    border:1px solid var(--line); border-radius:14px; background:var(--surface); color:var(--ink3); font-size:14px}
+  .list{flex:1; overflow:hidden; padding:8px 16px 0}
+
+  /* thread cards */
+  .tcard{border:1px solid var(--line); border-radius:18px; background:var(--surface); padding:16px 18px 14px; margin-bottom:12px}
+  .tcard .trow{display:flex; align-items:baseline; justify-content:space-between}
+  .tcard .tname{font-size:17px; font-weight:600; letter-spacing:-.01em}
+  .tcard .tmeta{font-size:12px; color:var(--ink3)}
+  .tcard .tq{display:flex; gap:10px; margin-top:11px}
+  .tq .qd{flex:none; width:7px; height:7px; border-radius:50%; background:var(--accent); margin-top:6px}
+  .tq p{margin:0; font-size:14px; line-height:1.5; font-style:italic; color:var(--accent-ink)}
+  .tq .qm{display:block; margin-top:5px; font-style:normal; font:400 11px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3)}
+  .single{display:flex; align-items:baseline; justify-content:space-between; padding:13px 6px; border-bottom:1px solid var(--line)}
+  .single .t{font-size:15px}
+  .single .m{font-size:12px; color:var(--ink3)}
+  .seclbl{font-size:11px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:var(--ink3); margin:16px 8px 8px}
+
+  /* thread detail */
+  .dhead{flex:none; padding:8px 24px 0}
+  .dhead h3{margin:8px 0 3px; font-size:26px; font-weight:700; letter-spacing:-.02em}
+  .dhead .m{font-size:13px; color:var(--ink3)}
+  .opencard{margin:16px 24px 0; border:1px solid var(--line); border-radius:20px; background:var(--surface); padding:20px 20px 16px}
+  .opencard .k{display:flex; align-items:center; gap:8px; font-size:10.5px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); margin-bottom:12px}
+  .opencard .k .qd{width:7px; height:7px; border-radius:50%; background:var(--accent)}
+  .opencard .q{font-size:19px; line-height:1.45; letter-spacing:-.008em}
+  .opencard .meta{margin-top:14px; padding-top:12px; border-top:1px solid var(--line);
+    font:400 11.5px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3)}
+  .continue{margin:14px 24px 0; display:flex; align-items:center; justify-content:center; gap:9px;
+    background:var(--accent); color:var(--page); border:0; border-radius:16px; padding:14px; font-size:15px; font-weight:600}
+  .timeline{flex:1; overflow:hidden; margin:18px 24px 0; position:relative}
+  .timeline::before{content:""; position:absolute; left:8px; top:6px; bottom:0; width:1px; background:var(--line)}
+  .tl{position:relative; padding:0 0 20px 30px}
+  .tl .node{position:absolute; left:4.5px; top:5px; width:8px; height:8px; border-radius:50%; background:var(--ink3)}
+  .tl.q .node{background:var(--accent)}
+  .tl .when{font-size:12px; color:var(--ink3)}
+  .tl .what{font-size:14px; line-height:1.5; margin-top:3px}
+  .tl .what i{color:var(--accent-ink)}
+  .tl .ans{display:inline-block; margin-top:4px; font-size:11px; color:var(--ink3); border:1px solid var(--line); border-radius:9px; padding:2px 8px}
+
+  /* ask your library */
+  .askbar{flex:none; margin:14px 24px 0; display:flex; align-items:center; gap:10px; padding:13px 16px;
+    border:1px solid var(--accent); border-radius:16px; background:var(--surface); font-size:15px}
+  .askbar .cursor{width:1.5px; height:18px; background:var(--accent); animation:blink 1.1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .answers{flex:1; overflow:hidden; padding:16px 24px 0}
+  .quote{border:1px solid var(--line); border-left:2.5px solid var(--accent); border-radius:14px;
+    background:var(--surface); padding:15px 16px 12px; margin-bottom:12px}
+  .quote p{margin:0; font-size:15px; line-height:1.58}
+  .quote .cite{display:flex; align-items:center; gap:8px; margin-top:11px; padding-top:10px; border-top:1px solid var(--line)}
+  .quote .cite .chip{display:inline-flex; align-items:center; gap:6px; font:400 11.5px/1 ui-monospace,"SF Mono",Menlo,monospace;
+    color:var(--ink2); border:1px solid var(--line); border-radius:10px; padding:5px 9px}
+  .quote .cite .play{width:0; height:0; border-left:6px solid var(--accent); border-top:4px solid transparent; border-bottom:4px solid transparent}
+  .creed{margin:6px 26px 0; text-align:center; font-size:12px; color:var(--ink3)}
+  @media (prefers-reduced-motion: reduce){ *{animation:none !important} }
+</style>
+
+<header class="page">
+  <div class="crumb"><a href="index.html">← mockups</a> · shutupandlisten</div>
+  <h1>Threads — the filing cabinet becomes a thinking record</h1>
+  <p>Sessions cluster on-device (embedding similarity + shared checklists) into recurring idea-threads.
+  A thread is led by <b>its latest open question</b> — the listener's own words are the index. “Continue
+  this thread” resumes with the listener's memory seeded; “Ask your library” answers only in
+  <b>quotes of what you actually said</b>, cited by session and timestamp. Memory without commentary:
+  labels derive from recurrence, never from model opinion, and nothing ever pings you.</p>
+</header>
+
+<div class="row">
+
+  <!-- ══════════ FRAME 1 · THREADS LENS ══════════ -->
+  <section class="study">
+    <h2>1 · Library — the Threads lens</h2>
+    <p class="sub">A second lens on the same records. Sessions remain the default.</p>
+    <div class="device">
+      <span class="pin" style="top:242px; right:-2px">1</span>
+      <span class="pin" style="top:352px; left:-2px">2</span>
+      <span class="pin" style="top:188px; left:-2px">3</span>
+      <div class="screen">
+        <div class="island"></div>
+        <div class="statusbar"><span>21:14</span>
+          <span class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 9.5 5.7 7.2a3.3 3.3 0 0 1 4.6 0L8 9.5Z"/><path d="M3.6 5.1a6.3 6.3 0 0 1 8.8 0l-1.5 1.5a4.2 4.2 0 0 0-5.8 0L3.6 5.1Z" opacity=".85"/><path d="M1.4 2.9a9.4 9.4 0 0 1 13.2 0l-1.5 1.5a7.3 7.3 0 0 0-10.2 0L1.4 2.9Z" opacity=".6"/></svg>
+            <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="2" fill="currentColor"/><path d="M23 4v4a2.2 2.2 0 0 0 0-4Z" fill="currentColor" opacity=".4"/></svg>
+          </span>
+        </div>
+        <div class="bigtitle">Library</div>
+        <div class="ask">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6.5" cy="6.5" r="4.5"/><path d="m10 10 3 3"/></svg>
+          Ask your library…
+        </div>
+        <div class="lens"><button>Sessions</button><button class="on">Threads</button></div>
+        <div class="list">
+          <div class="tcard">
+            <div class="trow"><span class="tname">Reading app</span><span class="tmeta">5 sessions · 6 weeks</span></div>
+            <div class="tq"><span class="qd"></span>
+              <p>“What does that picking actually look like the first time someone opens it?”
+                <span class="qm">open · asked Jul 24</span></p>
+            </div>
+          </div>
+          <div class="tcard">
+            <div class="trow"><span class="tname">Newsletter relaunch</span><span class="tmeta">3 sessions · 2 weeks</span></div>
+            <div class="tq"><span class="qd"></span>
+              <p>“You said the archive is the asset — who is actually going back to read it?”
+                <span class="qm">open · asked Jul 19</span></p>
+            </div>
+          </div>
+          <div class="tcard">
+            <div class="trow"><span class="tname">Hiring a first designer</span><span class="tmeta">2 sessions · 5 days</span></div>
+            <div class="tq"><span class="qd"></span>
+              <p>“You said taste is the filter — how would you see taste in a portfolio full of someone else's constraints?”
+                <span class="qm">open · asked Jul 21</span></p>
+            </div>
+          </div>
+          <div class="seclbl">One-offs</div>
+          <div class="single"><span class="t">Garage shelving plan</span><span class="m">Jul 12 · 04:10</span></div>
+          <div class="single"><span class="t">Why the demo fell flat</span><span class="m">Jul 3 · 08:55</span></div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">1</span><div><b>A thread is named by recurrence, led by its question.</b> Title comes from the cluster's shared words; the headline is the latest <i>open</i> question — the crown jewel finally surfaced in the library (C1 + B1).</div></li>
+      <li><span class="n">2</span><div><b>Quiet grouping, never a badge.</b> “You've circled this 3 times” is a label you find when you come looking — no counts on the app icon, no notification, nothing moves unless you do.</div></li>
+      <li><span class="n">3</span><div><b>“Ask your library” lives here</b>, scoped to the library — never on the live screen. Placeholder voice stays in-brand: it's a question box, not a chat.</div></li>
+      <li><span class="n"> </span><div><b>All clustering is on-device</b> (NLEmbedding vectors stored on the record + shared <code>criteriaText</code>). The server never learns that threads exist.</div></li>
+    </ul>
+  </section>
+
+  <!-- ══════════ FRAME 2 · THREAD DETAIL ══════════ -->
+  <section class="study">
+    <h2>2 · Thread detail — continue where you stopped</h2>
+    <p class="sub">Six weeks of one idea, strung on the questions it earned.</p>
+    <div class="device">
+      <span class="pin" style="top:255px; right:-2px">4</span>
+      <span class="pin" style="top:436px; left:-2px">5</span>
+      <span class="pin" style="top:635px; right:-2px">6</span>
+      <div class="screen">
+        <div class="island"></div>
+        <div class="statusbar"><span>21:15</span>
+          <span class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 9.5 5.7 7.2a3.3 3.3 0 0 1 4.6 0L8 9.5Z"/><path d="M3.6 5.1a6.3 6.3 0 0 1 8.8 0l-1.5 1.5a4.2 4.2 0 0 0-5.8 0L3.6 5.1Z" opacity=".85"/><path d="M1.4 2.9a9.4 9.4 0 0 1 13.2 0l-1.5 1.5a7.3 7.3 0 0 0-10.2 0L1.4 2.9Z" opacity=".6"/></svg>
+            <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="2" fill="currentColor"/><path d="M23 4v4a2.2 2.2 0 0 0 0-4Z" fill="currentColor" opacity=".4"/></svg>
+          </span>
+        </div>
+        <div class="navrow"><span class="back">
+          <svg width="10" height="17" viewBox="0 0 10 17" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 1.5 2 8.5l6.5 7"/></svg>
+          Library</span></div>
+        <div class="dhead">
+          <h3>Reading app</h3>
+          <div class="m">5 sessions · Jun 12 – Jul 24 · 1 h 04 m of thinking</div>
+        </div>
+        <div class="opencard">
+          <div class="k"><span class="qd"></span>Where you stopped</div>
+          <div class="q">You said picking the next book becomes the whole job — what does that picking actually look like the first time someone opens it?</div>
+          <div class="meta">Jul 24 · 22:41 · still open</div>
+        </div>
+        <button class="continue">
+          <svg width="17" height="17" viewBox="0 0 17 17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="6" cy="6" r="3.6"/><path d="M8.8 8.8c2.1 2.1 2.7 4.2 5.4 5.4"/></svg>
+          Continue this thread
+        </button>
+        <div class="timeline">
+          <div class="tl q"><span class="node"></span>
+            <div class="when">Jul 24 · 14:32</div>
+            <div class="what"><i>“…what does that picking actually look like the first time someone opens it?”</i></div>
+          </div>
+          <div class="tl q"><span class="node"></span>
+            <div class="when">Jul 16 · 09:12</div>
+            <div class="what"><i>“If the shelf replaces the streak, what earns a book a place on it?”</i>
+              <span class="ans">you picked this up on Jul 24</span></div>
+          </div>
+          <div class="tl"><span class="node"></span>
+            <div class="when">Jul 2 · 06:40</div>
+            <div class="what">No question — it just listened.</div>
+          </div>
+          <div class="tl q"><span class="node"></span>
+            <div class="when">Jun 19 · 11:05</div>
+            <div class="what"><i>“You said the ending should feel like closing the cover — what does the app do in that moment?”</i>
+              <span class="ans">you picked this up on Jul 2</span></div>
+          </div>
+          <div class="tl q"><span class="node"></span>
+            <div class="when">Jun 12 · 12:36</div>
+            <div class="what"><i>“…with the number gone, what makes someone open the app again tomorrow?”</i>
+              <span class="ans">you picked this up on Jun 19</span></div>
+          </div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">4</span><div><b>“Where you stopped”</b> — the thread's open question, pinned. It is the resume point and the reason to come back; sessions where the listener never spoke show as “No question — it just listened”, worn proudly.</div></li>
+      <li><span class="n">5</span><div><b>Continue this thread</b> — the one filled button in the entire app. It starts a live session whose listener history is seeded with compact prior-thread context, open question first. The listener behaves identically (silence-first); its one earned question may now span sessions. The prompt forbids opening recaps — no “Welcome back!”.</div></li>
+      <li><span class="n">6</span><div><b>The timeline is strung on questions, not files.</b> “you picked this up on Jul 2” is computed from your own later words answering it — recurrence, not model judgment. Tap any node for the full session.</div></li>
+      <li><span class="n"> </span><div><b>Escape hatches:</b> a mis-clustered session can be dragged out of a thread; two threads can be merged. Clustering must stay legible and reversible (open question in README).</div></li>
+    </ul>
+  </section>
+
+  <!-- ══════════ FRAME 3 · ASK YOUR LIBRARY ══════════ -->
+  <section class="study">
+    <h2>3 · Ask your library — answered in your own words</h2>
+    <p class="sub">Retrieval, not summary. Every answer is a quote with a citation.</p>
+    <div class="device">
+      <span class="pin" style="top:196px; left:-2px">7</span>
+      <span class="pin" style="top:330px; right:-2px">8</span>
+      <span class="pin" style="top:700px; left:-2px">9</span>
+      <div class="screen">
+        <div class="island"></div>
+        <div class="statusbar"><span>21:17</span>
+          <span class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 9.5 5.7 7.2a3.3 3.3 0 0 1 4.6 0L8 9.5Z"/><path d="M3.6 5.1a6.3 6.3 0 0 1 8.8 0l-1.5 1.5a4.2 4.2 0 0 0-5.8 0L3.6 5.1Z" opacity=".85"/><path d="M1.4 2.9a9.4 9.4 0 0 1 13.2 0l-1.5 1.5a7.3 7.3 0 0 0-10.2 0L1.4 2.9Z" opacity=".6"/></svg>
+            <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="2" fill="currentColor"/><path d="M23 4v4a2.2 2.2 0 0 0 0-4Z" fill="currentColor" opacity=".4"/></svg>
+          </span>
+        </div>
+        <div class="navrow"><span class="back">
+          <svg width="10" height="17" viewBox="0 0 10 17" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 1.5 2 8.5l6.5 7"/></svg>
+          Library</span></div>
+        <div class="askbar">what did I say about streaks?<span class="cursor"></span></div>
+        <div class="creed">Your own words, found. Never a summary.</div>
+        <div class="answers">
+          <div class="quote">
+            <p>“No percentage, no time left, no streak. You open it and you're in the text, that's it.”</p>
+            <div class="cite"><span class="play"></span><span class="chip">Reading app · Jun 12 · 01:58</span></div>
+          </div>
+          <div class="quote">
+            <p>“The streak is the hook and I'm removing the hook. Maybe the thing that pulls you back has to be the book itself.”</p>
+            <div class="cite"><span class="play"></span><span class="chip">Reading app · Jun 12 · 05:20</span></div>
+          </div>
+          <div class="quote">
+            <p>“A shelf you're proud of might be the honest version of a streak — it grows, but it never resets on you.”</p>
+            <div class="cite"><span class="play"></span><span class="chip">Reading app · Jul 16 · 03:47</span></div>
+          </div>
+          <div class="creed" style="margin-top:14px">3 places, 2 sessions · matched on device</div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">7</span><div><b>The query is yours; the answer is also yours.</b> Hybrid keyword + on-device embedding retrieval over <i>thinker</i> utterances only — listener turns are excluded, fixing today's <code>searchableText</code> pollution.</div></li>
+      <li><span class="n">8</span><div><b>Quotes are the only answer shape.</b> Verbatim utterance, session + timestamp chip, tap-to-play that exact audio range (unlocked by W1a per-utterance timestamps). The no-summarize judge, applied to the library.</div></li>
+      <li><span class="n">9</span><div><b>Provenance line:</b> “matched on device”. If a model helps <i>select or order</i> quotes, only the matched excerpts ever leave the device (optional <code>/v1/select-quotes</code>) — never the corpus, and the model never writes a sentence of its own.</div></li>
+      <li><span class="n"> </span><div><b>Empty result is honest:</b> “You haven't said anything about that yet.” No generative padding.</div></li>
+    </ul>
+  </section>
+
+</div>

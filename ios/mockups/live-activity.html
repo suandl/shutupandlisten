@@ -1,0 +1,270 @@
+<!-- shutupandlisten · mockup · lock screen live activity + dynamic island -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Activity — shutupandlisten mockups</title>
+<style>
+  :root{
+    --page:#08090B; --bg:#0B0D10; --surface:#12151A; --raised:#191D23;
+    --ink:#E9E4DA; --ink2:#8E9298; --ink3:#565B62; --line:#20242B;
+    --track:rgba(233,228,218,.09);
+    --accent:#D9A15E; --accent-ink:#E7BE8A; --accent-dim:rgba(217,161,94,.13);
+    --bezel:#000; --shadow:0 34px 80px rgba(0,0,0,.55);
+    --glass:rgba(22,24,28,.62);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --page:#EFEDE7; --bg:#F7F5F0; --surface:#FFFFFF; --raised:#FBFAF6;
+      --ink:#20232A; --ink2:#5E636B; --ink3:#9EA2A9; --line:#E5E1D8;
+      --track:rgba(30,33,42,.10);
+      --accent:#96661F; --accent-ink:#7C5316; --accent-dim:rgba(150,102,31,.10);
+      --bezel:#101114; --shadow:0 24px 60px rgba(70,58,34,.16);
+      --glass:rgba(22,24,28,.62); /* lock screen stays a night surface */
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--page); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent); text-decoration:none} a:hover{text-decoration:underline}
+  header.page{padding:44px 44px 6px; max-width:1780px}
+  .crumb{font-size:13px; color:var(--ink3)}
+  header.page h1{font-size:23px; font-weight:600; letter-spacing:-.01em; margin:10px 0 8px}
+  header.page p{max-width:66ch; color:var(--ink2); font-size:15px; line-height:1.6; margin:0}
+  header.page p b{color:var(--ink); font-weight:600}
+  .row{display:flex; gap:44px; overflow-x:auto; padding:26px 44px 60px; align-items:flex-start}
+  .study{flex:none; width:415px}
+  .study.wide{width:520px}
+  .study h2{font-size:12px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ink3); margin:0 0 4px 6px}
+  .study .sub{font-size:13px; color:var(--ink2); margin:0 0 14px 6px; line-height:1.5}
+  .notes{list-style:none; margin:16px 2px 0; padding:0; border-top:1px solid var(--line)}
+  .notes li{display:flex; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line); font-size:13px; line-height:1.55; color:var(--ink2)}
+  .notes b{color:var(--ink); font-weight:600}
+  .notes .n{flex:none; width:17px; height:17px; margin-top:1px; border-radius:50%; background:var(--accent);
+    color:var(--page); font:600 10.5px/17px system-ui; text-align:center}
+  .pin{position:absolute; z-index:9; width:18px; height:18px; border-radius:50%; background:var(--accent);
+    color:var(--page); font:600 11px/18px system-ui; text-align:center; box-shadow:0 0 0 5px var(--accent-dim)}
+
+  /* device */
+  .device{position:relative; width:415px; padding:11px; background:var(--bezel); border-radius:64px; box-shadow:var(--shadow)}
+  .screen{position:relative; width:393px; height:852px; border-radius:54px; overflow:hidden;
+    background:radial-gradient(120% 90% at 50% 0%, #10141c 0%, #090b10 55%, #06070a 100%);
+    display:flex; flex-direction:column; color:#E9E4DA}
+  .island{position:absolute; top:12px; left:50%; transform:translateX(-50%); width:122px; height:36px; border-radius:19px; background:#000; z-index:5}
+  .homebar{position:absolute; bottom:9px; left:50%; transform:translateX(-50%); width:134px; height:5px; border-radius:3px; background:#E9E4DA; opacity:.32; z-index:6}
+
+  /* lock screen */
+  .lock-top{flex:none; text-align:center; padding-top:74px}
+  .lock-date{font-size:17px; font-weight:500; color:rgba(233,228,218,.82)}
+  .lock-time{font-size:86px; font-weight:700; letter-spacing:-.02em; line-height:1.04; color:rgba(233,228,218,.94)}
+  .lock-spacer{flex:1}
+  .lock-bottom{flex:none; display:flex; justify-content:space-between; padding:0 46px 66px}
+  .lock-btn{width:50px; height:50px; border-radius:50%; background:rgba(233,228,218,.12);
+    display:flex; align-items:center; justify-content:center; backdrop-filter:blur(6px)}
+
+  /* the live activity card */
+  .la{margin:22px 14px 0; border-radius:24px; background:var(--glass); backdrop-filter:blur(18px);
+    border:1px solid rgba(233,228,218,.07); padding:16px 18px; color:#E9E4DA}
+  .la .top{display:flex; align-items:center; gap:13px}
+  .la .who{font-size:11px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:rgba(233,228,218,.45)}
+  .la .state{font-size:16px; font-weight:600; margin-top:2px; color:#E9E4DA}
+  .la .grow{flex:1}
+  .la .elapsed{font:500 22px/1 ui-monospace,"SF Mono",Menlo,monospace; color:rgba(233,228,218,.9); letter-spacing:.02em}
+  .la .sub{margin-top:11px; padding-top:11px; border-top:1px solid rgba(233,228,218,.08);
+    font-size:13px; color:rgba(233,228,218,.55); display:flex; justify-content:space-between; align-items:center}
+  .la .sub .q{color:#E7BE8A; font-style:italic}
+
+  /* mini patience ring */
+  .mini{position:relative; flex:none}
+  .mini svg{display:block}
+  .mini .trk{stroke:rgba(233,228,218,.16); stroke-width:2; fill:none}
+  .mini .arc{stroke:#D9A15E; stroke-width:2.4; fill:none; stroke-linecap:round;
+    transform:rotate(-90deg); transform-origin:50% 50%}
+  .mini.breathing{animation:mbreathe 5.8s ease-in-out infinite}
+  @keyframes mbreathe{0%,100%{transform:scale(1)} 50%{transform:scale(1.06)}}
+  .mini .dotc{fill:#D9A15E}
+
+  /* dynamic island components */
+  .di-board{display:flex; flex-direction:column; gap:26px}
+  .di-label{font-size:11px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:var(--ink3); margin-bottom:8px}
+  .di{background:#000; color:#E9E4DA; border-radius:26px; display:flex; align-items:center;
+    box-shadow:0 10px 34px rgba(0,0,0,.5); border:1px solid rgba(233,228,218,.06)}
+  .di.minimal{width:44px; height:37px; border-radius:20px; justify-content:center}
+  .di.compact{width:246px; height:37px; border-radius:20px; padding:0 14px; gap:8px}
+  .di.compact .t{font:500 13px/1 ui-monospace,"SF Mono",Menlo,monospace; color:rgba(233,228,218,.9)}
+  .di.compact .grow,.di.expanded .grow{flex:1}
+  .di.expanded{width:376px; border-radius:38px; padding:18px 22px; align-items:flex-start; flex-direction:column; gap:0}
+  .di.expanded .toprow{display:flex; align-items:center; gap:14px; width:100%}
+  .di.expanded .who{font-size:10.5px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:rgba(233,228,218,.42)}
+  .di.expanded .state{font-size:16px; font-weight:600; margin-top:2px}
+  .di.expanded .elapsed{font:500 24px/1 ui-monospace,"SF Mono",Menlo,monospace}
+  .di.expanded .botrow{display:flex; align-items:center; justify-content:space-between; width:100%;
+    margin-top:14px; padding-top:13px; border-top:1px solid rgba(233,228,218,.09)}
+  .di.expanded .meta{font-size:13px; color:rgba(233,228,218,.55)}
+  .di.expanded .endpill{border:1px solid rgba(233,228,218,.18); background:rgba(233,228,218,.06); color:#E9E4DA;
+    font-size:13px; font-weight:600; border-radius:16px; padding:7px 16px}
+  .budget{margin-top:26px; border:1px solid var(--line); border-radius:16px; background:var(--surface); padding:16px 18px}
+  .budget h3{margin:0 0 10px; font-size:12px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--accent)}
+  .budget table{width:100%; border-collapse:collapse; font-size:12.5px; color:var(--ink2)}
+  .budget td{padding:6px 4px; border-top:1px solid var(--line); vertical-align:top; line-height:1.45}
+  .budget td:first-child{color:var(--ink); font-weight:600; white-space:nowrap; padding-right:14px}
+  @media (prefers-reduced-motion: reduce){ *{animation:none !important} }
+</style>
+
+<header class="page">
+  <div class="crumb"><a href="index.html">← mockups</a> · shutupandlisten</div>
+  <h1>Lock screen &amp; Dynamic Island — the session survives the pocket</h1>
+  <p>The defining scenario is a locked phone on a table, or in a pocket on a walk. With background audio
+  keeping the pipeline alive (W1a), the Live Activity is the only UI most of a session will ever show:
+  <b>elapsed time, one coarse state, a turn count</b> — and, at most once in a while, the fact that a
+  question is waiting. It never shows streaming words on the lock screen.</p>
+</header>
+
+<div class="row">
+
+  <!-- ══════════ LOCK SCREEN · LISTENING ══════════ -->
+  <section class="study">
+    <h2>1 · Lock screen — listening</h2>
+    <p class="sub">Mid-session, phone locked, screen woken by a tap. Nothing is asking to be read.</p>
+    <div class="device">
+      <span class="pin" style="top:305px; left:-2px">1</span>
+      <span class="pin" style="top:352px; right:-2px">2</span>
+      <div class="screen">
+        <div class="island"></div>
+        <div class="lock-top">
+          <div class="lock-date">Friday, July 24</div>
+          <div class="lock-time">11:31</div>
+        </div>
+        <div class="la">
+          <div class="top">
+            <span class="mini breathing">
+              <svg width="34" height="34" viewBox="0 0 34 34">
+                <circle class="trk" cx="17" cy="17" r="14"/>
+              </svg>
+            </span>
+            <div><div class="who">shutupandlisten</div><div class="state">listening</div></div>
+            <div class="grow"></div>
+            <div class="elapsed">12:40</div>
+          </div>
+          <div class="sub"><span>3 thoughts · no questions yet</span><span>on-device</span></div>
+        </div>
+        <div class="lock-spacer"></div>
+        <div class="lock-bottom">
+          <span class="lock-btn"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="#E9E4DA" stroke-width="1.5"><path d="M6 3h3l1.5 4-2 1.5a11 11 0 0 0 3 3L13 10l4 1.5v3a2 2 0 0 1-2.2 2A14.8 14.8 0 0 1 4 6.2 2 2 0 0 1 6 3Z"/></svg></span>
+          <span class="lock-btn"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="#E9E4DA" stroke-width="1.5"><rect x="4" y="6" width="12" height="10" rx="2"/><circle cx="10" cy="11" r="2.6"/><path d="M8 6l1-2h2l1 2"/></svg></span>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">1</span><div><b>The mini patience ring is the app's signature</b> at 34&thinsp;pt — empty track, breathing. On the lock screen it never fills per-pause (that would need seconds-scale updates); it only carries identity and the coarse state.</div></li>
+      <li><span class="n">2</span><div><b>Elapsed is <code>Text(timerInterval:)</code></b> — the system ticks it for free, costing zero ActivityKit budget. The turn count line updates only when a thought lands (~once a minute at most, batched).</div></li>
+      <li><span class="n"> </span><div><b>“no questions yet” is a feature claim.</b> Restraint made visible: most sessions will show this line for a long time, and that's the product working.</div></li>
+      <li><span class="n"> </span><div><b>“on-device”</b> quietly states where the words are. The transcript never appears on the lock screen — coarse state only, by design and by privacy.</div></li>
+    </ul>
+  </section>
+
+  <!-- ══════════ LOCK SCREEN · QUESTION WAITING ══════════ -->
+  <section class="study">
+    <h2>2 · Lock screen — a question is waiting</h2>
+    <p class="sub">The idea landed while the phone was in a pocket. The activity holds the question — it does not push it.</p>
+    <div class="device">
+      <span class="pin" style="top:305px; left:-2px">3</span>
+      <span class="pin" style="top:395px; right:-2px">4</span>
+      <div class="screen">
+        <div class="island"></div>
+        <div class="lock-top">
+          <div class="lock-date">Friday, July 24</div>
+          <div class="lock-time">11:36</div>
+        </div>
+        <div class="la">
+          <div class="top">
+            <span class="mini">
+              <svg width="34" height="34" viewBox="0 0 34 34">
+                <circle class="trk" cx="17" cy="17" r="14"/>
+                <circle class="dotc" cx="17" cy="17" r="4.5"/>
+              </svg>
+            </span>
+            <div><div class="who">shutupandlisten</div><div class="state">one question, when you're ready</div></div>
+            <div class="grow"></div>
+            <div class="elapsed">17:22</div>
+          </div>
+          <div class="sub"><span class="q">“You said you start reading to move the number…”</span><span>open</span></div>
+        </div>
+        <div class="lock-spacer"></div>
+        <div class="lock-bottom">
+          <span class="lock-btn"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="#E9E4DA" stroke-width="1.5"><path d="M6 3h3l1.5 4-2 1.5a11 11 0 0 0 3 3L13 10l4 1.5v3a2 2 0 0 1-2.2 2A14.8 14.8 0 0 1 4 6.2 2 2 0 0 1 6 3Z"/></svg></span>
+          <span class="lock-btn"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="#E9E4DA" stroke-width="1.5"><rect x="4" y="6" width="12" height="10" rx="2"/><circle cx="10" cy="11" r="2.6"/><path d="M8 6l1-2h2l1 2"/></svg></span>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">3</span><div><b>The ring settles to the ember point</b> — same grammar as the in-app question moment. State copy is patient: “one question, when you're ready”, never “Answer now!”. No sound, no banner, <b>no push notification — ever</b> (roadmap's explicit rejection). If the phone is out of the pocket, TTS already spoke it.</div></li>
+      <li><span class="n">4</span><div><b>Truncated anchor, not the full question.</b> The first clause (“You said you start reading to move the number…”) is enough to pull you back in; the full question stages properly in-app. Open discussion: should even this clause be hidden until unlock (lock-screen privacy)? See README.</div></li>
+      <li><span class="n"> </span><div><b>This is one budget-priced update per session-rare event</b> — questions are gate-earned and rare by design, so the activity's chattiness is bounded by the product's own restraint.</div></li>
+      <li><span class="n"> </span><div><b>Stale-state honesty:</b> a <code>staleDate</code> ~90&thinsp;s past the last heartbeat renders the card dimmed with “session may have ended” if the app process was killed — never a confidently wrong “listening”.</div></li>
+    </ul>
+  </section>
+
+  <!-- ══════════ DYNAMIC ISLAND ══════════ -->
+  <section class="study wide">
+    <h2>3 · Dynamic Island — minimal, compact, expanded</h2>
+    <p class="sub">While using other apps mid-session. Rendered at real point sizes.</p>
+    <div class="di-board">
+      <div>
+        <div class="di-label">Minimal — another activity holds the island</div>
+        <div class="di minimal">
+          <span class="mini breathing"><svg width="22" height="22" viewBox="0 0 22 22"><circle class="trk" cx="11" cy="11" r="8.5"/></svg></span>
+        </div>
+      </div>
+      <div>
+        <div class="di-label">Compact — listening (leading: ring · trailing: elapsed)</div>
+        <div class="di compact">
+          <span class="mini breathing"><svg width="22" height="22" viewBox="0 0 22 22"><circle class="trk" cx="11" cy="11" r="8.5"/></svg></span>
+          <span class="grow"></span>
+          <span class="t">12:40</span>
+        </div>
+      </div>
+      <div>
+        <div class="di-label">Compact — question waiting (the ring becomes the ember point)</div>
+        <div class="di compact">
+          <span class="mini"><svg width="22" height="22" viewBox="0 0 22 22"><circle class="trk" cx="11" cy="11" r="8.5"/><circle class="dotc" cx="11" cy="11" r="3.2"/></svg></span>
+          <span class="grow"></span>
+          <span class="t">17:22</span>
+        </div>
+      </div>
+      <div>
+        <div class="di-label">Expanded — long-press</div>
+        <div class="di expanded">
+          <div class="toprow">
+            <span class="mini breathing"><svg width="40" height="40" viewBox="0 0 40 40"><circle class="trk" cx="20" cy="20" r="16.5"/></svg></span>
+            <div><div class="who">shutupandlisten</div><div class="state">listening</div></div>
+            <div class="grow"></div>
+            <div class="elapsed">12:40</div>
+          </div>
+          <div class="botrow">
+            <span class="meta">3 thoughts · no questions yet</span>
+            <button class="endpill">End</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="budget">
+      <h3>ActivityKit update budget — the contract</h3>
+      <table>
+        <tr><td>Elapsed time</td><td><code>Text(timerInterval:pauseTime:)</code> — system-rendered, <b>zero updates consumed</b>. Never tick the clock yourself.</td></tr>
+        <tr><td>State transitions only</td><td><code>Activity.update()</code> fires solely on: session start · a thought landing (turn count, coalesced) · question arrival · question answered/resumed · session end. Locally delivered (the audio background mode keeps the process alive), so <b>no push token, no remote updates, no APNs</b>.</td></tr>
+        <tr><td>Never per-pause</td><td>Pauses are seconds-scale; animating the arc fill on the lock screen would burn the budget and be throttled. The mini ring shows <i>state</i>, not progress. The in-app hero owns the live arc.</td></tr>
+        <tr><td>End of session</td><td><code>activity.end(dismissalPolicy: .after(30s))</code> with a final state showing the question the session left with — a last quiet artifact, then gone.</td></tr>
+        <tr><td>New target</td><td>Requires a widget-extension target (<code>ActivityAttributes</code> shared with the app), and the “End” pill is a <code>LiveActivityIntent</code>. See README for sizing.</td></tr>
+      </table>
+    </div>
+    <ul class="notes">
+      <li><span class="n"> </span><div><b>Minimal</b> is just the breathing empty ring — recognizable at 22&thinsp;pt because it's the only mark the brand has.</div></li>
+      <li><span class="n"> </span><div><b>Compact</b> carries exactly two facts: alive (ring) and how long (mono elapsed). Question state swaps the ring for the ember point — the same one-symbol grammar taught by the session screen.</div></li>
+      <li><span class="n"> </span><div><b>Expanded</b> adds the turn count and the only remote control worth having: End. No transcript, no question text in the island — it's a status surface, not a reading surface.</div></li>
+    </ul>
+  </section>
+
+</div>
