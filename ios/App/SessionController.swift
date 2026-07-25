@@ -110,6 +110,23 @@ final class SessionController: ObservableObject {
     /// Criteria for coverage mode, one topic per line.
     @AppStorage("coverageCriteria") var coverageCriteriaText = ""
 
+    // ── session voice (mode tint + just-listen), persisted between launches ──
+    /// Raw `SessionMode` storage — use `sessionMode` for typed access. The
+    /// same key backs the picker on the session screen.
+    @AppStorage("sessionMode") var sessionModeRaw = SessionMode.open.rawValue
+    /// "Just listen" — questions off. Caps the gate at the acknowledge rung
+    /// for uninvited turns and tints the prompt; pull-a-thread still asks.
+    @AppStorage("justListen") var justListen = false
+    var sessionMode: SessionMode {
+        get { SessionMode(rawValue: sessionModeRaw) ?? .open }
+        set { sessionModeRaw = newValue.rawValue }
+    }
+    /// The voice in effect for the RUNNING session — frozen at `startSession`
+    /// so a mid-session change can never flip the listener's register
+    /// mid-thought. Takes effect next session.
+    private var activeMode: SessionMode = .open
+    private var activeJustListen = false
+
     var coverageCriteria: [CoverageCriterion] {
         coverageCriteriaText
             .split(separator: "\n")
@@ -202,6 +219,9 @@ final class SessionController: ObservableObject {
         activeRecord = nil
         ticksSinceCheckpoint = 0
         isInterrupted = false
+        // Freeze the session voice: the picker edits the NEXT session.
+        activeMode = sessionMode
+        activeJustListen = justListen
 
         detector = TurnDetector(knobs: knobs)
 
@@ -591,7 +611,9 @@ final class SessionController: ObservableObject {
                 .sorted { $0.key < $1.key }
                 .map { PriorDecision(turn: $0.key, tier: $0.value) }
         )
-        let decision = decideTier(ctx, config: GateConfig.derived(from: knobs))
+        var gateConfig = GateConfig.derived(from: knobs)
+        gateConfig.justListen = activeJustListen
+        let decision = decideTier(ctx, config: gateConfig)
         decisionsByTurn[turn] = decision.tier
 
         switch decision.tier {
@@ -621,7 +643,7 @@ final class SessionController: ObservableObject {
         }
 
         var request = buildListenerRequest(
-            systemPrompt: ListenerPrompt.systemPrompt,
+            systemPrompt: ListenerPrompt.systemPrompt(mode: activeMode, justListen: activeJustListen),
             tier: tier,
             currentTurnText: utterance,
             history: conversationHistory(before: turn)
@@ -696,7 +718,7 @@ final class SessionController: ObservableObject {
         decisionsByTurn[turn] = .question
         guard let client = makeService() else { return }
         let request = buildListenerRequest(
-            systemPrompt: ListenerPrompt.systemPrompt,
+            systemPrompt: ListenerPrompt.systemPrompt(mode: activeMode, justListen: activeJustListen),
             tier: .question,
             currentTurnText: text,
             history: conversationHistory(before: turn)
