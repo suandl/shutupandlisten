@@ -1,0 +1,65 @@
+name: swift tests
+
+# Run the ShutUpAndListenKit test suite — the golden-vector parity tests
+# (every spec/turn-vectors/scenarios/ vector replayed through the Swift
+# TurnDetector, exact-output), the response-hierarchy gate rule tests, and the
+# ClaudeClient/ProxyClient/AccountClient unit tests — on Linux, so engine and
+# spec changes are checked without a Mac in the loop.
+#
+# Toolchain: the job runs inside the official `swift:6.3.3-noble` container
+# (Swift 6.3.3 on Ubuntu 24.04 — the exact combination the suite was first
+# validated green on: 42 tests, 0 failures). A pinned container beats
+# swift-actions/setup-swift here: no marketplace action to trust, no toolchain
+# download step to flake, and the image tag is published by swift.org itself
+# (see the `docker` field in swift.org/api/v1/install/releases.json). The
+# package's tools-version is 5.9, so any Swift ≥ 5.9 works; bump the tag
+# deliberately, not implicitly.
+#
+# No SwiftPM cache: the package has zero external dependencies and a
+# from-scratch `swift build --build-tests` measured ~20 s on 4 cores, so an
+# actions/cache restore/save round-trip would cost more than it saves.
+#
+# The tests read the vectors from the repo checkout via #filePath (single
+# source of truth — no copied fixtures), which is why the job checks out the
+# full repo and runs via --package-path instead of a sparse checkout. Fully
+# offline once the container is up: no secrets, no network calls.
+
+on:
+  pull_request:
+    paths:
+      - 'ios/ShutUpAndListenKit/**'
+      - 'spec/turn-vectors/**'
+      - 'spec/turn-state-machine.md'
+      - '.github/workflows/swift-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ios/ShutUpAndListenKit/**'
+      - 'spec/turn-vectors/**'
+      - 'spec/turn-state-machine.md'
+      - '.github/workflows/swift-tests.yml'
+  workflow_dispatch:
+
+# One run per PR/branch at a time; a newer push cancels an in-flight run.
+concurrency:
+  group: swift-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: swift test (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.3.3-noble
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build (including tests)
+        run: swift build --build-tests --package-path ios/ShutUpAndListenKit
+
+      - name: Run tests
+        run: swift test --package-path ios/ShutUpAndListenKit

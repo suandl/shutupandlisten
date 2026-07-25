@@ -156,9 +156,10 @@ runs the golden-vector parity suite (all `spec/turn-vectors/scenarios/`
 vectors, exact-output) plus the gate's rule tests — on macOS or Linux; the
 tests read the vectors from the repo checkout, so run them from a full clone.
 The Swift port's algorithm was additionally cross-checked against all 11
-scenario vectors via an instruction-level mirror at port time. No Swift
-toolchain was available in the authoring environment, so run `swift test`
-locally before relying on changes to the engine.
+scenario vectors via an instruction-level mirror at port time. The suite is
+validated on Linux (Swift 6.3.3 / Ubuntu 24.04, all 42 tests green) and runs
+in CI on every PR or push touching the engine, the vectors, or the spec —
+see `.github/workflows/swift-tests.yml`.
 
 ## Knobs
 
