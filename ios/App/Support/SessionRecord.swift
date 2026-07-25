@@ -111,6 +111,24 @@ final class SessionRecord {
         return lines.joined(separator: "\n")
     }
 
+    /// The session as a promptfoo replay fixture (contract:
+    /// promptfoo/fixtures/README.md; encoder: TurnEngine/FixtureExport.swift).
+    /// The mapping keys on `StoredEntry.speaker`: "thinker" lines become the
+    /// fixture's utterances, text exactly as SFSpeechRecognizer produced it;
+    /// "listener" lines are dropped by the encoder per the contract. The
+    /// record keeps no per-utterance timings, no knob snapshot, and no landing
+    /// marker, so startSeconds/endSeconds, session.knobs, and landingIndex are
+    /// all omitted rather than invented (replay defaults the landing to the
+    /// last utterance). Nil when no thinker line survives — nothing to replay.
+    var fixtureJSON: String? {
+        try? FixtureExport.json(
+            sessionID: id.uuidString,
+            date: startedAt,
+            source: FixtureExport.iosSFSpeechRecognizerSource,
+            entries: entries.map { FixtureExport.Entry(speaker: $0.speaker, text: $0.text) }
+        )
+    }
+
     private static func markdownLabel(for entry: StoredEntry) -> String {
         guard entry.speaker == "listener" else { return "**You:**" }
         switch entry.tier {

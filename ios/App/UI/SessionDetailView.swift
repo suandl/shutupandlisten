@@ -1,6 +1,8 @@
 // A saved session: the transcript (same bubble language as the live screen),
 // the coverage snapshot when a check ran, the audio when it was recorded, and
-// a Markdown export via ShareLink.
+// two ShareLink exports — Markdown for people, and an eval fixture
+// (promptfoo/fixtures/README.md) that turns the session into a deterministic
+// regression input for the promptfoo replay provider.
 
 import AVFoundation
 import SwiftUI
@@ -9,6 +11,10 @@ import TurnEngine
 struct SessionDetailView: View {
     let record: SessionRecord
     @StateObject private var playback = AudioPlayback()
+    /// On-disk copy of the eval-fixture JSON, so the share sheet hands off a
+    /// real `sul-fixture-….json` file. Nil until written (or when the session
+    /// has no thinker turns — nothing to replay).
+    @State private var fixtureURL: URL?
 
     private var audioURL: URL? {
         guard let name = record.audioFileName else { return nil }
@@ -46,8 +52,33 @@ struct SessionDetailView: View {
                 ShareLink(item: record.markdown)
                     .accessibilityLabel("Export as Markdown")
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                if let fixtureURL {
+                    ShareLink(item: fixtureURL) {
+                        Image(systemName: "curlybraces")
+                    }
+                    .accessibilityLabel("Export eval fixture")
+                }
+            }
         }
+        .task { fixtureURL = writeFixtureFile() }
         .onDisappear { playback.stop() }
+    }
+
+    // ── eval-fixture export ──
+
+    /// Write the fixture JSON (SessionRecord.fixtureJSON) to a stable temp
+    /// path named by FixtureExport.fileName, for ShareLink to hand off.
+    private func writeFixtureFile() -> URL? {
+        guard let json = record.fixtureJSON else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(FixtureExport.fileName(sessionID: record.id.uuidString))
+        do {
+            try json.write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            return nil
+        }
     }
 
     // ── header ──

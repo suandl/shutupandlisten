@@ -9,8 +9,8 @@ clean prose (the clean-text upper bound documented in
 [`docs/findings/on-device-text-quality.md`](../../docs/findings/on-device-text-quality.md) §5–6).
 
 > **The two `hand-authored-*.json` files here are hand-authored
-> placeholders, not device captures.** They exist so the replay path is
-> runnable and testable before the iOS export ships; the disfluent text is
+> placeholders, not device captures.** They made the replay path runnable
+> and testable before the iOS export shipped; the disfluent text is
 > written to *resemble* `SFSpeechRecognizer` output (fillers, restarts,
 > dropped punctuation, run-ons), but nobody ever dictated it. Their
 > `session.source` says `"hand-authored"` for exactly this reason — never
@@ -22,9 +22,13 @@ clean prose (the clean-text upper bound documented in
 This file is the CONTRACT. The executable version is
 [`lib/fixture-schema.js`](../lib/fixture-schema.js) — it validates every
 fixture in `npm run validate`, and `providers/replay.js` refuses to replay a
-fixture that fails it. A future iOS export feature produces this JSON from a
-SwiftData `SessionRecord` (`ios/App/Support/SessionRecord.swift`); the mapping
-is noted per field.
+fixture that fails it. The iOS export produces this JSON from a SwiftData
+`SessionRecord` (`ios/App/Support/SessionRecord.swift`): the pure encoder is
+`ios/ShutUpAndListenKit/Sources/TurnEngine/FixtureExport.swift` — its tests
+run the encoder's output through `lib/validate-fixtures.js` itself, so the
+two sides cannot drift silently — and the session detail screen's "Export
+eval fixture" action (`ios/App/UI/SessionDetailView.swift`) shares the file.
+The mapping is noted per field.
 
 ```jsonc
 {

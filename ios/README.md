@@ -89,7 +89,13 @@ The app is a product, not a developer harness — no API key required:
   from the first words, full transcript, coverage snapshot, and the session
   audio (AAC, recorded off the same mic tap). The library is the home screen:
   search, swipe-to-delete, per-session detail with audio playback and a
-  Markdown export via the share sheet.
+  Markdown export via the share sheet. The detail screen also shares the
+  session as an **eval fixture** (`sul-fixture-<id>.json`): thinker turns
+  only, text exactly as recognized, matching the replay contract in
+  `promptfoo/fixtures/README.md` — so a real dictation becomes a
+  deterministic regression input for the eval harness. The encoder is the
+  platform-agnostic `TurnEngine/FixtureExport.swift`, cross-checked against
+  the harness's own Node validator in `TurnEngineTests`.
 
 ### Beyond idea-dictation
 
