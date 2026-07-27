@@ -379,6 +379,27 @@ public func toChatMessages(_ turns: [ConversationTurn]) -> [ListenerChatMessage]
     return out
 }
 
+/// Shared message construction for the listener builders: append the current
+/// thinker turn onto `history`, normalize to an alternating chat array, and
+/// wrap it with the already-assembled system prompt + tier. Both public
+/// builders differ only in which instruction they append to the system prompt.
+private func makeRequest(
+    system: String,
+    tier: Tier,
+    currentTurnText: String,
+    history: [ConversationTurn],
+    maxTokens: Int
+) -> ListenerRequest {
+    var turns = history
+    turns.append(ConversationTurn(speaker: .thinker, text: currentTurnText))
+    return ListenerRequest(
+        system: system,
+        messages: toChatMessages(turns),
+        tier: tier,
+        maxTokens: maxTokens
+    )
+}
+
 /// Build the model request for a substantive turn. `history` is the prior
 /// conversation (not including the current turn); `currentTurnText` is appended
 /// as the final thinker (user) message.
@@ -391,12 +412,36 @@ public func buildListenerRequest(
 ) -> ListenerRequest {
     let system = (systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         + "\n\n" + tierInstruction(tier)).trimmingCharacters(in: .whitespacesAndNewlines)
-    var turns = history
-    turns.append(ConversationTurn(speaker: .thinker, text: currentTurnText))
-    return ListenerRequest(
-        system: system,
-        messages: toChatMessages(turns),
-        tier: tier,
-        maxTokens: maxTokens
+    return makeRequest(
+        system: system, tier: tier, currentTurnText: currentTurnText,
+        history: history, maxTokens: maxTokens
+    )
+}
+
+/// The forcing instruction for the explicit "pull a thread now" path. Unlike
+/// the gate's `tierInstruction(.question)`, it never offers silence and never
+/// permits a deferral — the user asked, so the listener asks.
+public let pullThreadInstruction =
+    "You were explicitly asked to pull a thread; ask ONE specific question "
+    + "anchored to what they've said. If genuinely too little has been said, "
+    + "say that plainly — never tell them to take their time."
+
+/// Build the model request for the invited "pull a thread now" path. Mirrors
+/// `buildListenerRequest`'s message construction (append the current turn onto
+/// `history`, then normalise with `toChatMessages` so consecutive same-speaker
+/// turns merge and roles strictly alternate, per the Messages API) but swaps in
+/// `pullThreadInstruction` (NOT the gate's optional-silence question
+/// instruction) so the reply is always a question or an honest "not yet".
+public func buildPullThreadRequest(
+    systemPrompt: String,
+    currentTurnText: String,
+    history: [ConversationTurn] = [],
+    maxTokens: Int = defaultMaxListenerTokens
+) -> ListenerRequest {
+    let system = (systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        + "\n\n" + pullThreadInstruction).trimmingCharacters(in: .whitespacesAndNewlines)
+    return makeRequest(
+        system: system, tier: .question, currentTurnText: currentTurnText,
+        history: history, maxTokens: maxTokens
     )
 }
