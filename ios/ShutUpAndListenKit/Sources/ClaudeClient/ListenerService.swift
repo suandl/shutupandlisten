@@ -22,6 +22,11 @@ public protocol ListenerService: Sendable {
     /// Backends that cannot surface usage return `usage: nil`.
     func respondWithUsage(to request: ListenerRequest) async throws -> ListenerReply
 
+    /// One analyst cycle: the whole-transcript request → a ranked candidate
+    /// list, with the token usage the call reported. Backends without a
+    /// structured analyst endpoint return an empty candidate list.
+    func analyze(_ request: AnalystRequest) async throws -> AnalystReply
+
     /// Evaluate the recording so far against a checklist.
     func checkCoverage(
         transcript: String,
@@ -35,6 +40,13 @@ public extension ListenerService {
     /// proxy passes usage through.
     func respondWithUsage(to request: ListenerRequest) async throws -> ListenerReply {
         ListenerReply(text: try await respond(to: request), usage: nil)
+    }
+
+    /// Default: no analyst endpoint ⇒ a cold pool, no network call. ClaudeClient
+    /// overrides this with the real structured, cached call; ProxyClient keeps
+    /// this default until the proxy exposes /v1/analyst (server/API.md).
+    func analyze(_ request: AnalystRequest) async throws -> AnalystReply {
+        AnalystReply(result: AnalystResult(candidates: []), usage: nil)
     }
 }
 

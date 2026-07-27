@@ -191,6 +191,42 @@ final class ClaudeClientTests: XCTestCase {
         XCTAssertEqual((blocks?[0]["cache_control"] as? [String: Any])?["type"] as? String, "ephemeral")
     }
 
+    // ── analyze: structured candidate list, cached transcript prefix, usage ──
+
+    func testAnalyzeDecodesCandidatesAndUsage() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"""
+            { "content": [{ "type": "text",
+                "text": "{\"candidates\":[{\"text\":\"what decides the order for a brand-new user?\",\"register\":\"question\",\"anchor\":\"ranking per-user\"}]}" }],
+              "stop_reason": "end_turn",
+              "usage": { "input_tokens": 5000, "output_tokens": 40,
+                         "cache_creation_input_tokens": 0, "cache_read_input_tokens": 4096 } }
+            """#
+        )
+
+        let reply = try await makeClient().analyze(Analyst.buildRequest(transcript: "a long transcript"))
+
+        XCTAssertEqual(reply.result.candidates.count, 1)
+        XCTAssertEqual(reply.result.candidates[0].register, "question")
+        XCTAssertEqual(reply.result.candidates[0].anchor, "ranking per-user")
+        XCTAssertEqual(reply.usage?.cacheReadInputTokens, 4096)
+    }
+
+    func testAnalyzeSendsStructuredSchemaAndCachedPrefixBlocks() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"{ "content": [{ "type": "text", "text": "{\"candidates\":[]}" }], "stop_reason": "end_turn" }"#
+        )
+
+        _ = try await makeClient().analyze(Analyst.buildRequest(transcript: "some transcript text"))
+
+        let body = MockURLProtocol.lastRequest?.bodyJSON
+        XCTAssertNotNil(body?["output_config"], "analyst uses structured outputs")
+        XCTAssertTrue(body?["system"] is [[String: Any]],
+                      "the transcript prefix is cached ⇒ block-array system")
+    }
+
     // ── errors that are NOT silence still surface ──
 
     func testRespondSurfacesRefusalStopReason() async {

@@ -8,6 +8,7 @@
 // change is a one-line edit.
 
 import Foundation
+import TurnEngine
 
 /// Token usage for one Messages API call. Cached input is reported separately
 /// from fresh input, so all four fields are additive with their own rates.
@@ -95,6 +96,18 @@ public struct ListenerReply: Equatable, Sendable {
 
     public init(text: String, usage: Usage?) {
         self.text = text
+        self.usage = usage
+    }
+}
+
+/// One analyst cycle's parsed candidate list plus what the call cost. `usage`
+/// nil ⇒ the backend surfaced no token count (the proxy default path).
+public struct AnalystReply: Equatable, Sendable {
+    public let result: AnalystResult
+    public let usage: Usage?
+
+    public init(result: AnalystResult, usage: Usage?) {
+        self.result = result
         self.usage = usage
     }
 }

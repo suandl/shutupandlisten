@@ -114,6 +114,28 @@ public final class ClaudeClient: @unchecked Sendable {
         }
     }
 
+    /// One analyst cycle: whole-transcript request (with the transcript sent as
+    /// a cache_control prefix) → parsed `AnalystResult` + token usage. Uses the
+    /// Messages API structured outputs so the candidate list parses cleanly.
+    public func analyze(_ request: AnalystRequest) async throws -> AnalystReply {
+        let result = try await complete(
+            system: request.system,
+            cachedSystemPrefix: request.cachedSystemPrefix,
+            messages: request.messages.map { ["role": $0.role.rawValue, "content": $0.content] },
+            maxTokens: request.maxTokens,
+            outputSchema: Analyst.resultSchema
+        )
+        guard let data = result.text.data(using: .utf8) else {
+            throw ClaudeClientError.decoding("analyst result was not UTF-8")
+        }
+        do {
+            let parsed = try JSONDecoder().decode(AnalystResult.self, from: data)
+            return AnalystReply(result: parsed, usage: result.usage)
+        } catch {
+            throw ClaudeClientError.decoding("analyst result did not match schema: \(error)")
+        }
+    }
+
     // ── raw Messages API call ──
 
     private struct CompletionResult { let text: String; let usage: Usage? }
