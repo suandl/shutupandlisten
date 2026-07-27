@@ -49,18 +49,23 @@ cleanup() {
 trap cleanup EXIT
 
 # ── 1. build-for-testing ──
+# A generic simulator destination — the specific device need not exist yet, and
+# building once for the platform lets any booted arm64 sim run the tests.
 log "build-for-testing"
 xcodebuild build-for-testing \
   -project "$PROJECT" \
   -scheme "$SCHEME" \
-  -destination "platform=iOS Simulator,name=$SIM_NAME" \
+  -destination "generic/platform=iOS Simulator" \
   -derivedDataPath "$DERIVED" \
   CODE_SIGNING_ALLOWED=NO
 
 # ── 2. boot the simulator ──
+# Resolve (or create) the target device by name. Override with CAPTURE_SIM if
+# "$SIM_NAME" is neither present nor a known device type on this machine.
 log "boot $SIM_NAME"
 UDID="$(xcrun simctl list devices available | grep -m1 "$SIM_NAME (" | grep -oiE '[0-9a-f-]{36}' || true)"
 if [[ -z "${UDID:-}" ]]; then
+  log "no '$SIM_NAME' sim found — creating one"
   UDID="$(xcrun simctl create "$SIM_NAME" "$SIM_NAME")"
 fi
 xcrun simctl boot "$UDID" 2>/dev/null || true
