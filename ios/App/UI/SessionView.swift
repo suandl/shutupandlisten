@@ -1,11 +1,13 @@
 // The live session screen — the waiting IS the interface.
 //
-// The root of the app (talk-first): a large breathing ring (PatienceRing) is
-// the whole stage. At most three ambient states are ever named — listening /
-// waiting / speaking — in one small lowercase word. The transcript collapses
-// to a one-line peek (tap for the full text in a sheet); the listener's one
-// earned question arrives as a staged moment (QuestionCard) with a gentle
-// haptic. The library and settings live behind toolbar icons.
+// The root of the app (talk-first): a level-responsive ring (PatienceRing) sits
+// above the accumulating transcript, which is the running stage. At most three
+// ambient states are ever named — listening / waiting / speaking — in one small
+// lowercase word. Below the transcript, a single distinct "suggested" hint line
+// carries the analyst's top candidate (silent — it never speaks). When the gate
+// does speak, the reply lands inline in the transcript with a gentle haptic.
+// Between sessions the transcript collapses to a one-line peek (tap for the full
+// text in a sheet). The library and settings live behind toolbar icons.
 
 #if APPLE_SIGN_IN
 import AuthenticationServices
@@ -34,9 +36,9 @@ struct SessionView: View {
     // when speech resumes.
     @State private var ringFill: Double = 0
 
-    // The question moment.
-    @State private var activeQuestion: TranscriptEntry?
-    @State private var questionMinimized = false
+    // A spoken listener line lands as a light haptic (no card — the line itself
+    // lives inline in the transcript). Tracked by id so the cue fires once.
+    @State private var lastSpokenID: UUID?
     @State private var questionHaptic = 0
 
     // First-session coaching: shown once, the first time the machine
@@ -74,14 +76,6 @@ struct SessionView: View {
                 }
                 controls
             }
-
-            if let question = activeQuestion, !questionMinimized {
-                QuestionCard(text: question.text) {
-                    withAnimation(.easeInOut(duration: 0.5)) { activeQuestion = nil }
-                }
-                .transition(.opacity)
-                .zIndex(1)
-            }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -96,16 +90,6 @@ struct SessionView: View {
                     Image(systemName: "gearshape")
                 }
                 .accessibilityLabel("Settings")
-            }
-        }
-        .overlay(alignment: .top) {
-            if let question = activeQuestion, questionMinimized {
-                QuestionChip(text: question.text) {
-                    withAnimation(.easeInOut(duration: 0.5)) { questionMinimized = false }
-                }
-                .padding(.top, 8)
-                .padding(.horizontal, 24)
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .sensoryFeedback(.impact(weight: .light, intensity: 0.7), trigger: questionHaptic)
@@ -155,29 +139,23 @@ struct SessionView: View {
                 seenPatienceTip = true
                 withAnimation(.easeIn(duration: 1.2)) { showPatienceTip = true }
             }
-            // The thinker resumed over an open question — it steps aside.
-            if state == .speaking, activeQuestion != nil, !questionMinimized {
-                withAnimation(.easeInOut(duration: 0.6)) { questionMinimized = true }
-            }
         }
         .onChange(of: controller.transcript) { _, entries in
+            // A spoken listener line just landed — fire a light tactile cue once.
+            // No card: the line itself is already visible inline in the transcript.
             guard let latest = entries.last(where: {
                 $0.speaker == .listener
                     && ($0.tier == .question || $0.tier == .reflection)
                     && !$0.text.isEmpty
             }) else { return }
-            if latest.id != activeQuestion?.id {
+            if latest.id != lastSpokenID {
+                lastSpokenID = latest.id
                 questionHaptic += 1
-                withAnimation(.easeOut(duration: 0.9)) {
-                    activeQuestion = latest
-                    questionMinimized = false
-                }
             }
         }
         .onChange(of: controller.isRunning) { _, running in
             if running {
-                activeQuestion = nil
-                questionMinimized = false
+                lastSpokenID = nil
                 ringFill = 0
             } else {
                 withAnimation(.easeOut(duration: 1)) { showPatienceTip = false }
@@ -379,24 +357,43 @@ struct SessionView: View {
     @ViewBuilder private var hintLine: some View {
         Group {
             if let top = controller.hint.first {
-                Label {
-                    Text(top.text)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                } icon: {
-                    Image(systemName: top.register == .question ? "questionmark.bubble" : "quote.bubble")
-                        .foregroundStyle(Color.sulAccent.opacity(0.7))
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: top.register == .question ? "questionmark.circle" : "lightbulb")
+                        .font(.caption2)
+                        .foregroundStyle(Color.sulAccent)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("SUGGESTED")
+                            .font(.system(size: 9, weight: .semibold))
+                            .tracking(0.6)
+                            .foregroundStyle(Color.sulAccent.opacity(0.8))
+                        Text(top.text)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.sulAccent.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(Color.sulAccent.opacity(0.18), lineWidth: 1)
+                        )
+                )
                 .transition(.opacity)
             }
         }
-        .frame(minHeight: 40, alignment: .center)
-        .padding(.horizontal, 28)
+        .frame(minHeight: 48, alignment: .center)
+        .padding(.horizontal, 24)
+        .padding(.top, 2)
         .animation(.easeInOut(duration: 0.6), value: controller.hint)
         .accessibilityElement()
-        .accessibilityLabel(controller.hint.first.map { "Hint: \($0.text)" } ?? "")
+        .accessibilityLabel(controller.hint.first.map { "Suggested: \($0.text)" } ?? "")
     }
 
     // ── transcript peek ──
