@@ -180,6 +180,7 @@ struct SessionView: View {
                 levelDb: controller.inputLevelDb
             )
             .frame(width: 220, height: 220)
+            .accessibilityIdentifier("session.ring")
 
             VStack(spacing: 14) {
                 Text(stateWord)
@@ -322,6 +323,7 @@ struct SessionView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 260)
+            .accessibilityIdentifier("session.transcript")
             .onChange(of: controller.transcript) { _, _ in
                 if let last = visibleEntries.last {
                     withAnimation(.easeOut(duration: 0.4)) { proxy.scrollTo(last.id, anchor: .bottom) }
@@ -347,6 +349,7 @@ struct SessionView: View {
                 .font(.system(.subheadline, design: .serif).italic())
                 .foregroundStyle(Color.sulAccent)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("session.listenerReply")
         }
     }
 
@@ -394,6 +397,7 @@ struct SessionView: View {
         .animation(.easeInOut(duration: 0.6), value: controller.hint)
         .accessibilityElement()
         .accessibilityLabel(controller.hint.first.map { "Suggested: \($0.text)" } ?? "")
+        .accessibilityIdentifier("session.hint")
     }
 
     // ── transcript peek ──
@@ -471,6 +475,7 @@ struct SessionView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(controller.isRunning ? "End session" : "Start talking")
+            .accessibilityIdentifier("session.startButton")
         }
         .padding(.top, 6)
         .padding(.bottom, 24)
