@@ -243,13 +243,18 @@ final class SessionController: ObservableObject {
         guard !isRunning else { return }
         lastError = nil
 
-        guard await AVAudioApplication.requestRecordPermission() else {
-            fail("Microphone access is required to listen.")
-            return
-        }
-        guard await SpeechTranscriber.requestAuthorization() else {
-            fail("Speech recognition access is required to transcribe.")
-            return
+        // Under CI capture (-uiTestCapture) the simulator's privacy is pre-granted
+        // by capture-demo.sh, so skip the interactive permission requests — a TCC
+        // dialog would otherwise suspend startup and the session would never go live.
+        if !CaptureSeam.isActive {
+            guard await AVAudioApplication.requestRecordPermission() else {
+                fail("Microphone access is required to listen.")
+                return
+            }
+            guard await SpeechTranscriber.requestAuthorization() else {
+                fail("Speech recognition access is required to transcribe.")
+                return
+            }
         }
 
         clockOrigin = ProcessInfo.processInfo.systemUptime

@@ -66,6 +66,12 @@ fi
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
 
+# Pre-grant privacy so the app's permission requests return granted without a
+# blocking TCC dialog — otherwise the session never goes live and the running
+# checkpoints (transcript/hint/reply) never render on a fresh CI simulator.
+BUNDLE_ID="${CAPTURE_BUNDLE_ID:-sh.shutupandlisten.ios}"
+xcrun simctl privacy "$UDID" grant all "$BUNDLE_ID" >/dev/null 2>&1 || true
+
 # ── 3. host audio input = BlackHole (best effort) ──
 if command -v SwitchAudioSource >/dev/null 2>&1; then
   log "set host input = $BLACKHOLE_DEVICE"
