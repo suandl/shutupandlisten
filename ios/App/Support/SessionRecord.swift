@@ -55,6 +55,11 @@ final class SessionRecord {
     /// Total model spend for the session, USD. Optional: records saved before
     /// cost tracking (and sessions on the usage-less proxy path) carry nil.
     var costUSD: Double?
+    /// Whether `transcriptJSON` is the authoritative file-derived transcript
+    /// (true) or the best-effort live transcript still awaiting reconciliation
+    /// (false). Defaulting to false means every existing record — and every
+    /// freshly checkpointed one — is treated as "live, reconcile when possible".
+    var transcriptIsReconciled: Bool = false
 
     init(
         id: UUID = UUID(),
@@ -65,7 +70,8 @@ final class SessionRecord {
         criteriaText: String,
         coverageJSON: Data? = nil,
         audioFileName: String? = nil,
-        costUSD: Double? = nil
+        costUSD: Double? = nil,
+        transcriptIsReconciled: Bool = false
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -76,12 +82,43 @@ final class SessionRecord {
         self.coverageJSON = coverageJSON
         self.audioFileName = audioFileName
         self.costUSD = costUSD
+        self.transcriptIsReconciled = transcriptIsReconciled
     }
 
     // ── decoded views ──
 
     var entries: [StoredEntry] {
         (try? JSONDecoder().decode([StoredEntry].self, from: transcriptJSON)) ?? []
+    }
+
+    // ── reconciliation inputs (rebuilt from the stored live transcript) ──
+    //
+    // Reconciliation is resumable: a record saved with the live transcript can
+    // be upgraded to the file-derived one at any later launch, because the turn
+    // windows and the synthesized listener lines are recoverable from what was
+    // already saved. Only the file-derived thinker segments come fresh (from
+    // FileTranscriber); these two provide the rest.
+
+    /// The thinker turn windows the machine recorded — grouping + tap-to-seek
+    /// anchors for `TranscriptReconciler`.
+    var turnWindows: [TurnWindow] {
+        entries
+            .filter { $0.speaker == "thinker" }
+            .compactMap { e in
+                guard let start = e.startMs else { return nil }
+                return TurnWindow(turn: e.turn, startMs: start, endMs: e.endMs)
+            }
+    }
+
+    /// The synthesized listener lines — not in the mic .m4a, re-inserted as-is.
+    var listenerLines: [ListenerLine] {
+        entries.compactMap { e in
+            guard e.speaker == "listener",
+                  let start = e.startMs,
+                  let tier = e.tier.flatMap(Tier.init(rawValue:))
+            else { return nil }
+            return ListenerLine(text: e.text, tier: tier, turn: e.turn, startMs: start)
+        }
     }
 
     var coverage: CoverageResult? {
