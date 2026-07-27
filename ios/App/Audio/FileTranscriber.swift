@@ -14,6 +14,37 @@ import Speech
 import TurnEngine
 
 enum FileTranscriber {
+    /// Thread-safe holder for the in-flight recognition task and the resume-once
+    /// flag. The `withCheckedContinuation` body and the `onCancel` handler run in
+    /// separate concurrency domains but must share this state; a `let` reference
+    /// to this class (rather than captured `var`s) is what keeps that capture
+    /// legal under Swift 6. Manually synchronized with `lock`, hence
+    /// `@unchecked Sendable`.
+    private final class State: @unchecked Sendable {
+        private let lock = NSLock()
+        private var task: SFSpeechRecognitionTask?
+        private var resumed = false
+
+        func setTask(_ task: SFSpeechRecognitionTask) {
+            lock.lock(); self.task = task; lock.unlock()
+        }
+
+        func cancel() {
+            lock.lock(); let task = self.task; lock.unlock()
+            task?.cancel()
+        }
+
+        /// Returns true for exactly one caller — the first to win the right to
+        /// resume the continuation. All later calls get false and must not resume
+        /// (a `CheckedContinuation` fatal-crashes if resumed more than once).
+        func claimResume() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if resumed { return false }
+            resumed = true
+            return true
+        }
+    }
+
     /// Transcribe the whole `.m4a` at `url` into timestamped segments. Returns
     /// nil when recognition is unavailable or the file cannot be read — the
     /// caller keeps the (already-saved) live transcript in that case. Returns
@@ -31,22 +62,11 @@ enum FileTranscriber {
             request.requiresOnDeviceRecognition = true
         }
 
-        // Guards `resumed` (so the continuation can only fire once, even if the
-        // completion handler races itself — not documented to be serial) and
-        // `currentTask` (so `onCancel`, which can run on another thread, never
-        // tears down the task mid-assignment).
-        let lock = NSLock()
-        var currentTask: SFSpeechRecognitionTask?
-
+        let state = State()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                var resumed = false
                 func resumeOnce(_ value: [TranscriptSegment]?) {
-                    lock.lock()
-                    let shouldResume = !resumed
-                    if shouldResume { resumed = true }
-                    lock.unlock()
-                    if shouldResume { continuation.resume(returning: value) }
+                    if state.claimResume() { continuation.resume(returning: value) }
                 }
 
                 let recognitionTask = recognizer.recognitionTask(with: request) { result, error in
@@ -66,13 +86,12 @@ enum FileTranscriber {
                     resumeOnce(segments)
                 }
 
-                lock.lock(); currentTask = recognitionTask; lock.unlock()
+                state.setTask(recognitionTask)
                 // Cancellation may have already landed before the task was stored.
                 if Task.isCancelled { recognitionTask.cancel() }
             }
         } onCancel: {
-            lock.lock(); let task = currentTask; lock.unlock()
-            task?.cancel()
+            state.cancel()
         }
     }
 }
