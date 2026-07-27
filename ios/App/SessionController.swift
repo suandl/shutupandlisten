@@ -185,7 +185,7 @@ final class SessionController: ObservableObject {
         // App Intents cannot touch the SwiftUI-owned instance directly.
         IntentBridge.shared.register(self)
 
-        analyst.makeService = { [weak self] in self?.makeService() }
+        analyst.makeService = { [weak self] in self?.resolveService() }
         analyst.onUsage = { [weak self] usage in self?.sessionCost.add(usage) }
         analyst.onCandidatesChanged = { [weak self] candidates in
             self?.hint = Array(candidates.prefix(2))
@@ -898,6 +898,25 @@ final class SessionController: ObservableObject {
     /// signed in, the developer-mode key otherwise. Nil (with a friendly
     /// lastError) when neither is configured.
     private func makeService() -> (any ListenerService)? {
+        guard let service = resolveService() else {
+            // Typed as `.accountRequired` so the UI can offer sign-in instead of
+            // showing a raw error — the user most likely just skipped onboarding.
+            fail(
+                "Sign in — or add a developer API key in Settings — so the "
+                    + "listener's rare question can reach the model.",
+                kind: .accountRequired
+            )
+            return nil
+        }
+        return service
+    }
+
+    /// Resolve the listener backend WITHOUT any side effect — nil simply means
+    /// "no account and no dev key configured". The ambient analyst probes this
+    /// on every cadence tick and must stay silent when signed out (a cold pool
+    /// is a valid state); only the reactive gate, when it actually needs to
+    /// speak, raises the `.accountRequired` sign-in banner (via `makeService`).
+    private func resolveService() -> (any ListenerService)? {
         if let service = accountStore?.makeListenerService(devAPIKey: KeychainStore.apiKey) {
             return service
         }
@@ -907,13 +926,6 @@ final class SessionController: ObservableObject {
            !key.trimmingCharacters(in: .whitespaces).isEmpty {
             return ClaudeClient(config: ClaudeConfig(apiKey: key))
         }
-        // Typed as `.accountRequired` so the UI can offer sign-in instead of
-        // showing a raw error — the user most likely just skipped onboarding.
-        fail(
-            "Sign in — or add a developer API key in Settings — so the "
-                + "listener's rare question can reach the model.",
-            kind: .accountRequired
-        )
         return nil
     }
 
