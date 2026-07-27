@@ -93,6 +93,11 @@ final class SessionController: ObservableObject {
     /// when the interruption ends.
     @Published private(set) var isInterrupted = false
 
+    /// Developer cost readout: the running per-session model spend. Only shown
+    /// behind the `showCostReadout` debug toggle; always accumulated so the
+    /// figure is ready if the toggle is on.
+    @Published private(set) var sessionCost = SessionCost()
+
     // Coverage mode
     @Published private(set) var coverageResult: CoverageResult?
     @Published private(set) var coverageChecking = false
@@ -242,6 +247,7 @@ final class SessionController: ObservableObject {
         decisionsByTurn = [:]
         pendingReply = nil
         transcript = []
+        sessionCost = SessionCost()
         coverageResult = nil
         activeRecord = nil
         ticksSinceCheckpoint = 0
@@ -701,16 +707,17 @@ final class SessionController: ObservableObject {
         Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.isThinking = false } }
             do {
-                let reply = try await client.respond(to: request)
+                let reply = try await client.respondWithUsage(to: request)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    if reply.isEmpty {
+                    self.sessionCost.add(reply.usage)
+                    if reply.text.isEmpty {
                         // The model chose silence — the prompt says that is the
                         // correct response for most turns. Declining is free.
                         self.decisionsByTurn[turn] = .silence
                         self.feed(.decision(t: self.nowMs(), outcome: .silence))
                     } else {
-                        self.takeFloor(with: reply, tier: tier)
+                        self.takeFloor(with: reply.text, tier: tier)
                     }
                 }
             } catch {
@@ -760,18 +767,20 @@ final class SessionController: ObservableObject {
         Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.isThinking = false } }
             do {
-                let reply = try await client.respond(to: request)
+                let reply = try await client.respondWithUsage(to: request)
                 await MainActor.run { [weak self] in
-                    guard let self, !reply.isEmpty else { return }
+                    guard let self else { return }
+                    self.sessionCost.add(reply.usage)
+                    guard !reply.text.isEmpty else { return }
                     if self.detector?.state == .deciding {
-                        self.takeFloor(with: reply, tier: .question)
+                        self.takeFloor(with: reply.text, tier: .question)
                     } else {
                         // Out-of-band: the user asked while the machine was not
                         // parked on an evaluation. Speak directly; the turn
                         // continues (with AEC the mic will not hear our TTS).
-                        self.speech.speak(reply)
+                        self.speech.speak(reply.text)
                         self.transcript.append(TranscriptEntry(
-                            speaker: .listener, text: reply, tier: .question,
+                            speaker: .listener, text: reply.text, tier: .question,
                             turn: self.detector?.currentTurn ?? 0,
                             startMs: self.nowMs()
                         ))
