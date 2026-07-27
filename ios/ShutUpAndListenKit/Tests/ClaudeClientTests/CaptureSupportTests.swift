@@ -33,4 +33,23 @@ final class CaptureSupportTests: XCTestCase {
     func testInterceptIsCaseInsensitive() {
         XCTAssertTrue(CaptureHosts.shouldIntercept(URL(string: "https://API.ANTHROPIC.COM/v1/messages")))
     }
+
+    // ── CaptureFixture ──
+
+    func testDecodesFixtureShape() throws {
+        let json = """
+        {
+          "listenerReplies": ["hi there"],
+          "analystCandidates": [
+            { "text": "Which step could you defer?", "register": "question", "anchor": "config" }
+          ],
+          "seedTranscript": ["one", "two"]
+        }
+        """
+        let fixture = try CaptureFixture.decode(from: Data(json.utf8))
+        XCTAssertEqual(fixture.listenerReplies, ["hi there"])
+        XCTAssertEqual(fixture.seedTranscript, ["one", "two"])
+        XCTAssertEqual(fixture.analystCandidates.first?.register, "question")
+        XCTAssertEqual(fixture.analystCandidates.first?.text, "Which step could you defer?")
+    }
 }

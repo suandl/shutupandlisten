@@ -23,3 +23,27 @@ public enum CaptureHosts {
         return intercepted.contains { host == $0 || host.hasSuffix("." + $0) }
     }
 }
+
+/// The canned data the capture stub replays. `analystCandidates` reuses
+/// TurnEngine's wire type so the analyst JSON round-trips through the real
+/// `AnalystResult` decoder. `seedTranscript` drives the optional in-app replay
+/// fallback (design §reliability) — display only, never the network.
+public struct CaptureFixture: Codable, Equatable, Sendable {
+    public var listenerReplies: [String]
+    public var analystCandidates: [AnalystCandidate]
+    public var seedTranscript: [String]
+
+    public init(
+        listenerReplies: [String],
+        analystCandidates: [AnalystCandidate],
+        seedTranscript: [String]
+    ) {
+        self.listenerReplies = listenerReplies
+        self.analystCandidates = analystCandidates
+        self.seedTranscript = seedTranscript
+    }
+
+    public static func decode(from data: Data) throws -> CaptureFixture {
+        try JSONDecoder().decode(CaptureFixture.self, from: data)
+    }
+}
