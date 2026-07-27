@@ -51,14 +51,8 @@ struct PatienceRing: View {
         TimelineView(.animation(minimumInterval: 1 / 20, paused: motionPaused)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             ZStack {
-                // Speaking glow: a soft interior bloom that tracks the voice.
-                if phase == .thinkerSpeaking {
-                    Circle()
-                        .fill(Color.sulAccent.opacity(0.04 + 0.10 * Double(levelNorm)))
-                        .padding(26)
-                        .blur(radius: 20)
-                        .transition(.opacity)
-                }
+                // No animated glow while the thinker talks — the transcript is
+                // the stage now, and the ring stays still until a pause is timed.
 
                 // The base ring.
                 Circle()
@@ -103,19 +97,18 @@ struct PatienceRing: View {
 
     // ── motion ──
 
+    // Motion only exists while a pause is being timed (`waiting`) or the model
+    // is deliberating (`deciding`). Every other phase — including the thinker
+    // talking — is static: no perpetual breathing, no idle shimmer (spec §3).
     private var motionPaused: Bool {
-        reduceMotion || phase == .idle || phase == .replying
+        reduceMotion || !(phase == .waiting || phase == .deciding)
     }
 
     private func breathScale(at t: Double) -> Double {
         guard !reduceMotion else { return 1 }
-        let amplitude: Double
-        switch phase {
-        case .idle, .replying, .deciding: amplitude = 0
-        case .listening: amplitude = 0.012
-        case .waiting: amplitude = 0.008
-        case .thinkerSpeaking: amplitude = 0.016 + 0.012 * Double(levelNorm)
-        }
+        // Only the timed-pause state breathes — a single calm cue that the
+        // machine is waiting on purpose. Talking and listening are dead still.
+        let amplitude: Double = (phase == .waiting) ? 0.010 : 0
         return 1 + amplitude * sin(t * 2 * .pi / breathPeriod)
     }
 
