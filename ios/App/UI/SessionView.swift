@@ -63,7 +63,12 @@ struct SessionView: View {
                 if !controller.isRunning {
                     modeControl
                 }
-                transcriptPeek
+                if controller.isRunning {
+                    liveTranscript
+                    hintLine
+                } else {
+                    transcriptPeek
+                }
                 if showCostReadout && controller.isRunning {
                     costReadout
                 }
@@ -318,6 +323,80 @@ struct SessionView: View {
         justListen
             ? "questions off — it stays quiet; pull a thread still asks"
             : selectedMode.blurb.lowercased()
+    }
+
+    // ── the stage while running: accumulating transcript + hint line ──
+
+    /// The stage (spec §3): the scrolling, accumulating transcript — thinker
+    /// text flowing continuously, listener lines styled inline, auto-scrolling
+    /// to the newest line and NEVER resetting per turn. The most-recent spoken
+    /// response is simply the last listener line, always visible here.
+    private var liveTranscript: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(visibleEntries) { entry in
+                        liveEntry(entry).id(entry.id)
+                    }
+                }
+                .padding(.horizontal, 28)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 260)
+            .onChange(of: controller.transcript) { _, _ in
+                if let last = visibleEntries.last {
+                    withAnimation(.easeOut(duration: 0.4)) { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
+        }
+    }
+
+    private var visibleEntries: [TranscriptEntry] {
+        controller.transcript.filter {
+            !$0.text.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+    }
+
+    @ViewBuilder private func liveEntry(_ entry: TranscriptEntry) -> some View {
+        if entry.speaker == .thinker {
+            Text(entry.text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(entry.text)
+                .font(.system(.subheadline, design: .serif).italic())
+                .foregroundStyle(Color.sulAccent)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The glance reward (spec §2/§3): a persistent, quietly-updating hint line
+    /// carrying the analyst's top candidate. Silent — it never speaks. Shown in
+    /// just-listen too (that mode means "don't talk to me," not "go dark"). A
+    /// cold pool simply reserves the space so arrivals don't shove the layout.
+    @ViewBuilder private var hintLine: some View {
+        Group {
+            if let top = controller.hint.first {
+                Label {
+                    Text(top.text)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                } icon: {
+                    Image(systemName: top.register == .question ? "questionmark.bubble" : "quote.bubble")
+                        .foregroundStyle(Color.sulAccent.opacity(0.7))
+                }
+                .transition(.opacity)
+            }
+        }
+        .frame(minHeight: 40, alignment: .center)
+        .padding(.horizontal, 28)
+        .animation(.easeInOut(duration: 0.6), value: controller.hint)
+        .accessibilityElement()
+        .accessibilityLabel(controller.hint.first.map { "Hint: \($0.text)" } ?? "")
     }
 
     // ── transcript peek ──
