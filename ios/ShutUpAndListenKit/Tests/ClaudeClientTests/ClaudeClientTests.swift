@@ -152,6 +152,45 @@ final class ClaudeClientTests: XCTestCase {
         XCTAssertNil(blocks?[1]["cache_control"], "only the stable prefix is cached")
     }
 
+    func testMismatchedCachePrefixFallsBackToPlainStringSystem() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"{ "content": [{ "type": "text", "text": "ok" }], "stop_reason": "end_turn" }"#
+        )
+        let request = ListenerRequest(
+            system: "ACTUAL SYSTEM TEXT",
+            messages: [ListenerChatMessage(role: .user, content: "hi")],
+            tier: .reflection,
+            maxTokens: 128,
+            cachedSystemPrefix: "NOT A PREFIX OF SYSTEM"
+        )
+        _ = try await makeClient().respondWithUsage(to: request)
+
+        let system = MockURLProtocol.lastRequest?.bodyJSON?["system"]
+        XCTAssertTrue(system is String, "a prefix that isn't actually a prefix ⇒ plain string, caching silently skipped")
+        XCTAssertEqual(system as? String, "ACTUAL SYSTEM TEXT")
+    }
+
+    func testCachePrefixEqualToWholeSystemSendsSingleCachedBlock() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"{ "content": [{ "type": "text", "text": "ok" }], "stop_reason": "end_turn" }"#
+        )
+        let request = ListenerRequest(
+            system: "WHOLE THING",
+            messages: [ListenerChatMessage(role: .user, content: "hi")],
+            tier: .reflection,
+            maxTokens: 128,
+            cachedSystemPrefix: "WHOLE THING"
+        )
+        _ = try await makeClient().respondWithUsage(to: request)
+
+        let blocks = MockURLProtocol.lastRequest?.bodyJSON?["system"] as? [[String: Any]]
+        XCTAssertEqual(blocks?.count, 1, "no volatile suffix ⇒ single cached block, no empty second block")
+        XCTAssertEqual(blocks?[0]["text"] as? String, "WHOLE THING")
+        XCTAssertEqual((blocks?[0]["cache_control"] as? [String: Any])?["type"] as? String, "ephemeral")
+    }
+
     // ── errors that are NOT silence still surface ──
 
     func testRespondSurfacesRefusalStopReason() async {
