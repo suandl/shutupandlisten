@@ -279,6 +279,33 @@ public func decideTier(_ ctx: EvalContext, config: GateConfig = .defaults) -> Ga
                         reason: "substantive turn (\(words)w) — short reflection")
 }
 
+/// What the host should do with an `.acknowledge` gate decision, split so the
+/// spoken side (suppressed when acknowledgments are off) never drags the
+/// recorded side (the gate history that spaces questions) with it.
+public struct ResolvedAck: Equatable, Sendable {
+    /// What to store in the decision history — always `.acknowledge` here, so
+    /// the question cooldown counts this turn correctly even when silent.
+    public let recordedTier: Tier
+    /// The backchannel to speak, or nil to stay silent (acks off, or no ack).
+    public let spokenText: String?
+
+    public init(recordedTier: Tier, spokenText: String?) {
+        self.recordedTier = recordedTier
+        self.spokenText = spokenText
+    }
+}
+
+/// Resolve an `.acknowledge` decision into (what to record, what to speak).
+/// Precondition: `decision.tier == .acknowledge`.
+public func resolveAcknowledge(
+    _ decision: GateDecision,
+    speakAcknowledgments: Bool
+) -> ResolvedAck {
+    let spoken = (speakAcknowledgments ? decision.ackText : nil)
+        .flatMap { $0.isEmpty ? nil : $0 }
+    return ResolvedAck(recordedTier: .acknowledge, spokenText: spoken)
+}
+
 // ── Prompt construction for the substantive tiers ──
 //
 // Only reflection/question turns reach the model. `buildListenerRequest`
