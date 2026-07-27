@@ -35,6 +35,10 @@ final class SpeechTranscriber: NSObject {
     /// Rotate this long after a task starts — a beat before the duty-cycle limit.
     private let rotateAfter: TimeInterval = 50
     private var rotateTimer: Timer?
+    /// Set when a task could not start because the recognizer was momentarily
+    /// unavailable; fires a short retry so recognition self-heals instead of
+    /// dying silently for the rest of the session.
+    private var retryTimer: Timer?
     /// A rolling tail of recent mic buffers, replayed into the replacement task
     /// so no audio is lost during the hop. Sized to ~1.5 s of buffers.
     ///
@@ -64,6 +68,12 @@ final class SpeechTranscriber: NSObject {
         recognizer = SFSpeechRecognizer(locale: Locale.current)
             ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
         super.init()
+        // Recover automatically the moment the recognizer flips back to
+        // available. It can drop out transiently (system busy, on-device model
+        // reloading); without this, a rotation that lands in an unavailable
+        // window would leave recognition dead for the rest of the session —
+        // the transcript freezes while the UI still says "listening".
+        recognizer?.delegate = self
     }
 
     var fullText: String { stitcher.text }
@@ -101,6 +111,8 @@ final class SpeechTranscriber: NSObject {
         running = false
         rotateTimer?.invalidate()
         rotateTimer = nil
+        retryTimer?.invalidate()
+        retryTimer = nil
         task?.cancel()
         task = nil
         let oldRequest = locked { () -> SFSpeechAudioBufferRecognitionRequest? in
@@ -131,7 +143,17 @@ final class SpeechTranscriber: NSObject {
     // ── task lifecycle ──
 
     private func beginTask(replayTail: Bool) {
-        guard running, let recognizer, recognizer.isAvailable else { return }
+        guard running, let recognizer else { return }
+        guard recognizer.isAvailable else {
+            // Momentarily unavailable — do NOT die. Retry shortly; the delegate
+            // callback will also kick us the instant availability returns. This
+            // is the fix for the frozen-transcript-but-still-"listening" stall.
+            scheduleRetry()
+            return
+        }
+        // We're starting a task — cancel any pending recovery retry.
+        retryTimer?.invalidate()
+        retryTimer = nil
 
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
@@ -226,5 +248,36 @@ final class SpeechTranscriber: NSObject {
         rotateTimer?.invalidate()
         rotateTimer = nil
         beginTask(replayTail: replayTail)
+    }
+
+    /// Schedule a short retry after a task failed to start (recognizer
+    /// unavailable). Idempotent — only one retry is ever pending.
+    private func scheduleRetry() {
+        guard running, retryTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.retryBeginTask() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        retryTimer = timer
+    }
+
+    private func retryBeginTask() {
+        retryTimer = nil
+        guard running, task == nil else { return }
+        beginTask(replayTail: true)
+    }
+}
+
+extension SpeechTranscriber: SFSpeechRecognizerDelegate {
+    /// The recognizer became available (or unavailable) again. When it comes
+    /// back and we're running with no live task, restart immediately with the
+    /// replayed tail so recognition resumes without waiting on the retry timer.
+    func speechRecognizer(_ recognizer: SFSpeechRecognizer, availabilityDidChange available: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.running, available, self.task == nil else { return }
+            self.retryTimer?.invalidate()
+            self.retryTimer = nil
+            self.beginTask(replayTail: true)
+        }
     }
 }
