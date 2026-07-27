@@ -9,6 +9,7 @@ import TurnEngine
 
 struct SessionDetailView: View {
     let record: SessionRecord
+    @AppStorage("showCostReadout") private var showCostReadout = false
     @StateObject private var playback = AudioPlayback()
 
     private var audioURL: URL? {
@@ -25,6 +26,11 @@ struct SessionDetailView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 header
+                if showCostReadout, let cost = record.costUSD {
+                    Text(String(format: "model cost: $%.4f", cost))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
                 headline(hasTranscript: hasTranscript)
 
                 if audioURL != nil {

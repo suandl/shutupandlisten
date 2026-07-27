@@ -10,6 +10,7 @@
 #if APPLE_SIGN_IN
 import AuthenticationServices
 #endif
+import ClaudeClient
 import SwiftData
 import SwiftUI
 import TurnEngine
@@ -47,6 +48,7 @@ struct SessionView: View {
     // start, so the control only shows (and only matters) between sessions.
     @AppStorage("sessionMode") private var sessionModeRaw = SessionMode.open.rawValue
     @AppStorage("justListen") private var justListen = false
+    @AppStorage("showCostReadout") private var showCostReadout = false
 
     private var selectedMode: SessionMode {
         SessionMode(rawValue: sessionModeRaw) ?? .open
@@ -62,6 +64,9 @@ struct SessionView: View {
                     modeControl
                 }
                 transcriptPeek
+                if showCostReadout && controller.isRunning {
+                    costReadout
+                }
                 controls
             }
 
@@ -333,6 +338,18 @@ struct SessionView: View {
             .accessibilityLabel("Transcript: \(line)")
             .accessibilityHint("Double tap to read the full transcript.")
         }
+    }
+
+    @ViewBuilder private var costReadout: some View {
+        let cost = controller.sessionCost
+        Text(
+            (cost.isExact ? "" : "≈ ")
+                + String(format: "$%.4f", cost.dollars())
+                + "  ·  \(cost.inputTokens) in / \(cost.outputTokens) out"
+        )
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(.tertiary)
+        .accessibilityHidden(true)
     }
 
     private var lastThinkerLine: String? {

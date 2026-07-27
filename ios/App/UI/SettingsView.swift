@@ -30,6 +30,7 @@ struct SettingsView: View {
     @AppStorage("proxyBaseURL") private var proxyBaseURL = "https://api.shutupandlisten.sh"
     @AppStorage("hasOnboarded") private var hasOnboarded = false
     @AppStorage("developerUnlocked") private var developerUnlocked = false
+    @AppStorage("showCostReadout") private var showCostReadout = false
 
     #if APPLE_SIGN_IN
     @State private var signingIn = false
@@ -330,6 +331,7 @@ struct SettingsView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             Toggle("Speak brief acknowledgments", isOn: $speakAcknowledgments)
+            Toggle("Show model cost readout", isOn: $showCostReadout)
             Button("Tuning (developer)") { showKnobs = true }
             Button("Replay onboarding") {
                 KeychainStore.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
