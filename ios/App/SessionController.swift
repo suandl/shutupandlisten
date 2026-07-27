@@ -193,6 +193,7 @@ final class SessionController: ObservableObject {
         if !didRunRecovery {
             didRunRecovery = true
             SessionRecovery.adoptOrphanedRecordings(in: modelContext)
+            SessionRecovery.reconcilePendingTranscripts(in: modelContext)
         }
         // A Shortcut may have queued a start before we could save sessions.
         consumePendingIntentAction()
@@ -352,7 +353,11 @@ final class SessionController: ObservableObject {
         machineState = .listening
         patienceProgress = nil
         UIApplication.shared.isIdleTimerDisabled = false
+        let fileName = recordingFileName
         persistSession(final: true)
+        if let fileName, let recordID = lastSavedRecordID {
+            reconcileTranscript(recordID: recordID, fileName: fileName)
+        }
     }
 
     // ── lifecycle: interruptions & scene phase ──
@@ -521,6 +526,55 @@ final class SessionController: ObservableObject {
             sessionStartDate = nil
             recordingFileName = nil
             activeRecord = nil
+        }
+    }
+
+    /// Upgrade a saved record's live transcript to the authoritative
+    /// file-derived one (spec §1). The live transcript is already saved (the
+    /// fail-safe), so this only replaces it on success; any failure leaves the
+    /// live transcript in place and `transcriptIsReconciled == false`, so the
+    /// next launch retries it. Runs off the main actor for the file pass.
+    private func reconcileTranscript(recordID: UUID, fileName: String) {
+        guard let modelContext else { return }
+        let url = RecordingStorage.url(for: fileName)
+        Task { [weak self] in
+            guard let segments = await FileTranscriber.transcribe(url: url), !segments.isEmpty
+            else { return } // keep the live transcript; retry next launch
+            await MainActor.run {
+                guard self != nil else { return }
+                let descriptor = FetchDescriptor<SessionRecord>(
+                    predicate: #Predicate { $0.id == recordID }
+                )
+                guard let record = try? modelContext.fetch(descriptor).first else { return }
+                guard record.canReconcileWithoutListenerLoss else {
+                    // A legacy record whose untimed listener lines reconciliation
+                    // can't preserve — keep the live transcript, and don't retry
+                    // the expensive file pass again: mark it resolved as-is.
+                    record.transcriptIsReconciled = true
+                    try? modelContext.save()
+                    return
+                }
+                let reconciled = TranscriptReconciler.reconcile(
+                    segments: segments,
+                    turns: record.turnWindows,
+                    listenerLines: record.listenerLines
+                )
+                let stored = reconciled.map {
+                    StoredEntry(
+                        speaker: $0.speaker.rawValue,
+                        text: $0.text,
+                        tier: $0.tier?.rawValue,
+                        turn: $0.turn,
+                        startMs: $0.startMs,
+                        endMs: $0.endMs
+                    )
+                }
+                guard !stored.isEmpty, let json = try? JSONEncoder().encode(stored) else { return }
+                record.transcriptJSON = json
+                record.title = SessionRecord.deriveTitle(from: stored)
+                record.transcriptIsReconciled = true
+                try? modelContext.save()
+            }
         }
     }
 

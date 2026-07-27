@@ -17,6 +17,7 @@
 import AVFoundation
 import Foundation
 import SwiftData
+import TurnEngine
 
 enum SessionRecovery {
     /// Adopt orphaned recordings into recovered records. Called once per
@@ -58,5 +59,53 @@ enum SessionRecovery {
             adopted = true
         }
         if adopted { try? context.save() }
+    }
+
+    /// Finish any reconciliation that never completed (spec §1, resumable). A
+    /// record with audio but `transcriptIsReconciled == false` still carries its
+    /// best-effort live transcript; re-run the file pass and upgrade it. Called
+    /// once per launch, after `adoptOrphanedRecordings`.
+    @MainActor
+    static func reconcilePendingTranscripts(in context: ModelContext) {
+        let records = (try? context.fetch(FetchDescriptor<SessionRecord>())) ?? []
+        for record in records where !record.transcriptIsReconciled {
+            guard let fileName = record.audioFileName else { continue }
+            let url = RecordingStorage.url(for: fileName)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            guard record.canReconcileWithoutListenerLoss else {
+                // Legacy record: reconciliation would drop untimed listener
+                // lines (unrecoverable). Keep the live transcript and stop
+                // retrying — mark resolved as-is so we don't re-run STT each launch.
+                record.transcriptIsReconciled = true
+                try? context.save()
+                continue
+            }
+            let recordID = record.id
+            let windows = record.turnWindows
+            let lines = record.listenerLines
+            Task {
+                guard let segments = await FileTranscriber.transcribe(url: url), !segments.isEmpty
+                else { return }
+                await MainActor.run {
+                    let descriptor = FetchDescriptor<SessionRecord>(
+                        predicate: #Predicate { $0.id == recordID }
+                    )
+                    guard let record = try? context.fetch(descriptor).first else { return }
+                    let stored = TranscriptReconciler.reconcile(
+                        segments: segments, turns: windows, listenerLines: lines
+                    ).map {
+                        StoredEntry(
+                            speaker: $0.speaker.rawValue, text: $0.text, tier: $0.tier?.rawValue,
+                            turn: $0.turn, startMs: $0.startMs, endMs: $0.endMs
+                        )
+                    }
+                    guard !stored.isEmpty, let json = try? JSONEncoder().encode(stored) else { return }
+                    record.transcriptJSON = json
+                    record.title = SessionRecord.deriveTitle(from: stored)
+                    record.transcriptIsReconciled = true
+                    try? context.save()
+                }
+            }
+        }
     }
 }

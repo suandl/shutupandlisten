@@ -121,6 +121,16 @@ final class SessionRecord {
         }
     }
 
+    /// True only if every stored listener line has the timing reconciliation
+    /// needs. Listener lines are NOT in the mic .m4a, so reconciliation (which
+    /// overwrites the transcript) must not run when it would drop an untimed
+    /// listener line — that content is unrecoverable. Legacy records saved
+    /// before per-utterance timing shipped fail this and keep their live
+    /// transcript. Thinker text is unaffected (it is regenerated from the file).
+    var canReconcileWithoutListenerLoss: Bool {
+        entries.allSatisfy { $0.speaker != "listener" || $0.startMs != nil }
+    }
+
     var coverage: CoverageResult? {
         guard let coverageJSON else { return nil }
         return try? JSONDecoder().decode(CoverageResult.self, from: coverageJSON)
