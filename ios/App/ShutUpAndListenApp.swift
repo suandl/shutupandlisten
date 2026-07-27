@@ -13,6 +13,12 @@ struct ShutUpAndListenApp: App {
     @AppStorage("hasOnboarded") private var hasOnboarded = false
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        // Arm the CI capture seams before any view renders or request is made.
+        // Inert unless launched with -uiTestCapture.
+        CaptureSeam.installIfNeeded()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
