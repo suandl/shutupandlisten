@@ -159,20 +159,34 @@ final class SpeechTranscriber: NSObject {
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
             guard let self else { return }
             DispatchQueue.main.async {
-                guard myGeneration == self.generation else { return }
+                let isCurrent = (myGeneration == self.generation)
+
                 if let result {
                     let text = result.bestTranscription.formattedString
                     if result.isFinal {
+                        // A final ALWAYS folds in — even from a task superseded by
+                        // a proactive rotation. A proactive rotation's endAudio()
+                        // forces exactly this final, and dropping it would lose
+                        // everything the superseded task heard beyond the ~1.5 s
+                        // replay tail. merge() de-dups the overlap the
+                        // replacement's replayed tail re-transcribed.
                         self.stitcher.commit(text)
-                    } else {
+                        self.onTranscriptUpdate?()
+                    } else if isCurrent {
+                        // Only the ACTIVE task drives the live partial; a stale
+                        // task's partial would clobber the current task's
+                        // in-flight text.
                         self.stitcher.setPartial(text)
+                        self.onTranscriptUpdate?()
                     }
-                    self.onTranscriptUpdate?()
                 }
-                if error != nil || (result?.isFinal ?? false) {
-                    // Task ended (final, duty-cycle death, or error). Commit
-                    // whatever is in flight and start a fresh task, replaying the
-                    // tail so the seam loses nothing.
+
+                if isCurrent, error != nil || (result?.isFinal ?? false) {
+                    // Only the CURRENT task tears down + rotates. A superseded
+                    // task's late terminal callback must NOT nil the fresh
+                    // request/task or trigger another rotation (that was the
+                    // orphaned-task cascade) — its final was already folded in
+                    // above, so nothing further is needed from it.
                     self.locked { self.request = nil }
                     self.task = nil
                     if self.running { self.rotate(replayTail: true) }
