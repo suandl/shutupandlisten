@@ -751,9 +751,8 @@ final class SessionController: ObservableObject {
         }
         decisionsByTurn[turn] = .question
         guard let client = makeService() else { return }
-        let request = buildListenerRequest(
+        let request = buildPullThreadRequest(
             systemPrompt: ListenerPrompt.systemPrompt(mode: activeMode, justListen: activeJustListen),
-            tier: .question,
             currentTurnText: text,
             history: conversationHistory(before: turn)
         )
