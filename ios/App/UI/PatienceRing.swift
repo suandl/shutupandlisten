@@ -51,8 +51,17 @@ struct PatienceRing: View {
         TimelineView(.animation(minimumInterval: 1 / 20, paused: motionPaused)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             ZStack {
-                // No animated glow while the thinker talks — the transcript is
-                // the stage now, and the ring stays still until a pause is timed.
+                // Level-responsive glow: a soft interior bloom that tracks the
+                // mic while the room is live. It follows the published input
+                // level (each update re-renders this view), so it reads as one
+                // smooth, breathing response to your voice rather than the old
+                // fixed-rate shimmer — subtly alive, never busy.
+                if phase == .listening || phase == .thinkerSpeaking {
+                    Circle()
+                        .fill(Color.sulAccent.opacity(0.04 + 0.16 * Double(levelNorm)))
+                        .padding(24)
+                        .blur(radius: 18)
+                }
 
                 // The base ring.
                 Circle()
@@ -86,9 +95,12 @@ struct PatienceRing: View {
                         .transition(.opacity)
                 }
             }
-            .scaleEffect(breathScale(at: t))
+            .scaleEffect(ringScale(at: t))
         }
         .opacity(phase == .replying ? 0.4 : (phase == .idle ? 0.7 : 1))
+        // Smooth the level follow so the glow/scale glide with your voice
+        // instead of stepping with each buffer.
+        .animation(.easeOut(duration: 0.18), value: levelNorm)
         .animation(.easeInOut(duration: 2), value: phase)
         .accessibilityElement()
         .accessibilityLabel("Listener")
@@ -104,12 +116,27 @@ struct PatienceRing: View {
         reduceMotion || !(phase == .waiting || phase == .deciding)
     }
 
+    /// The ring's overall scale: the timed-pause breath, multiplied by a subtle
+    /// mic-level lean while the room is live. The two compose so a pause still
+    /// breathes even if you're mid-word.
+    private func ringScale(at t: Double) -> Double {
+        breathScale(at: t) * levelScale
+    }
+
     private func breathScale(at t: Double) -> Double {
         guard !reduceMotion else { return 1 }
         // Only the timed-pause state breathes — a single calm cue that the
-        // machine is waiting on purpose. Talking and listening are dead still.
+        // machine is waiting on purpose.
         let amplitude: Double = (phase == .waiting) ? 0.010 : 0
         return 1 + amplitude * sin(t * 2 * .pi / breathPeriod)
+    }
+
+    /// A subtle scale that follows the mic while the room is live — the ring
+    /// "leans in" a touch as you speak, making listening feel responsive
+    /// instead of inert. Off in Reduce Motion.
+    private var levelScale: Double {
+        guard !reduceMotion, phase == .listening || phase == .thinkerSpeaking else { return 1 }
+        return 1 + 0.02 * Double(levelNorm)
     }
 
     private func shimmerAngle(at t: Double) -> Double {
