@@ -52,4 +52,85 @@ final class CaptureSupportTests: XCTestCase {
         XCTAssertEqual(fixture.analystCandidates.first?.register, "question")
         XCTAssertEqual(fixture.analystCandidates.first?.text, "Which step could you defer?")
     }
+
+    // ── CaptureResponder ──
+
+    func testDetectsStructuredRequestByOutputConfig() {
+        let analyst = Data(#"{"model":"m","output_config":{"format":{}}}"#.utf8)
+        let listener = Data(#"{"model":"m","messages":[]}"#.utf8)
+        XCTAssertTrue(CaptureResponder.isStructuredRequest(body: analyst))
+        XCTAssertFalse(CaptureResponder.isStructuredRequest(body: listener))
+        XCTAssertFalse(CaptureResponder.isStructuredRequest(body: nil))
+    }
+
+    func testListenerResponseCarriesNthReply() throws {
+        let fixture = CaptureFixture(
+            listenerReplies: ["first", "second"], analystCandidates: [], seedTranscript: []
+        )
+        let data = CaptureResponder.responseData(fixture: fixture, isAnalyst: false, callIndex: 1)
+        XCTAssertEqual(try Self.text(in: data), "second")
+    }
+
+    func testListenerResponsePastEndIsSilence() throws {
+        let fixture = CaptureFixture(
+            listenerReplies: ["only"], analystCandidates: [], seedTranscript: []
+        )
+        let data = CaptureResponder.responseData(fixture: fixture, isAnalyst: false, callIndex: 5)
+        XCTAssertEqual(try Self.text(in: data), "")
+    }
+
+    func testAnalystResponseDecodesToAnalystResult() throws {
+        let fixture = CaptureFixture(
+            listenerReplies: [],
+            analystCandidates: [AnalystCandidate(text: "q?", register: "question", anchor: "a")],
+            seedTranscript: []
+        )
+        let data = CaptureResponder.responseData(fixture: fixture, isAnalyst: true, callIndex: 0)
+        let text = try Self.text(in: data)
+        let result = try JSONDecoder().decode(AnalystResult.self, from: Data(text.utf8))
+        XCTAssertEqual(result.candidates.first?.text, "q?")
+    }
+
+    func testListenerEnvelopeDecodesInClaudeClient() async throws {
+        // Round-trip through the REAL ClaudeClient decode path (not just
+        // JSONSerialization key checks) so a future rename of
+        // MessagesResponse.CodingKeys fails this test.
+        let fixture = CaptureFixture(listenerReplies: ["ok"], analystCandidates: [], seedTranscript: [])
+        let data = CaptureResponder.responseData(fixture: fixture, isAnalyst: false, callIndex: 0)
+        MockURLProtocol.stub(status: 200, body: try XCTUnwrap(String(data: data, encoding: .utf8)))
+
+        let client = ClaudeClient(config: ClaudeConfig(apiKey: "sk-test"), session: MockURLProtocol.makeSession())
+        let request = ListenerRequest(
+            system: "be quiet mostly",
+            messages: [ListenerChatMessage(role: .user, content: "so here is my idea")],
+            tier: .reflection,
+            maxTokens: 128
+        )
+        let reply = try await client.respondWithUsage(to: request)
+
+        XCTAssertEqual(reply.text, "ok")
+        XCTAssertEqual(reply.usage?.inputTokens, 120)
+    }
+
+    func testAnalystEnvelopeDecodesInClaudeClient() async throws {
+        let fixture = CaptureFixture(
+            listenerReplies: [],
+            analystCandidates: [AnalystCandidate(text: "q?", register: "question", anchor: "a")],
+            seedTranscript: []
+        )
+        let data = CaptureResponder.responseData(fixture: fixture, isAnalyst: true, callIndex: 0)
+        MockURLProtocol.stub(status: 200, body: try XCTUnwrap(String(data: data, encoding: .utf8)))
+
+        let client = ClaudeClient(config: ClaudeConfig(apiKey: "sk-test"), session: MockURLProtocol.makeSession())
+        let reply = try await client.analyze(Analyst.buildRequest(transcript: "a transcript"))
+
+        XCTAssertEqual(reply.result.candidates.first?.text, "q?")
+    }
+
+    /// Pull the first content block's text out of a Messages-API envelope.
+    private static func text(in data: Data) throws -> String {
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let content = try XCTUnwrap(json["content"] as? [[String: Any]])
+        return try XCTUnwrap(content.first?["text"] as? String)
+    }
 }

@@ -47,3 +47,50 @@ public struct CaptureFixture: Codable, Equatable, Sendable {
         try JSONDecoder().decode(CaptureFixture.self, from: data)
     }
 }
+
+/// Builds the canned Messages-API response the stub returns, and classifies
+/// requests. Kept here (not in the URLProtocol) so it is `swift test`-covered.
+public enum CaptureResponder {
+    /// A request is "structured" (analyst/coverage) when its JSON body carries
+    /// an `output_config`. The capture flow only ever fires the analyst, so the
+    /// stub treats every structured request as an analyst request.
+    public static func isStructuredRequest(body: Data?) -> Bool {
+        guard let body,
+              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+        else { return false }
+        return json["output_config"] != nil
+    }
+
+    /// The response body for an intercepted request. `isAnalyst` → a JSON
+    /// `AnalystResult` as the text block; otherwise the `callIndex`-th listener
+    /// reply (empty string past the end = the model choosing silence).
+    public static func responseData(fixture: CaptureFixture, isAnalyst: Bool, callIndex: Int) -> Data {
+        let text: String
+        if isAnalyst {
+            let result = AnalystResult(candidates: fixture.analystCandidates)
+            let encoded = (try? JSONEncoder().encode(result)) ?? Data()
+            text = String(data: encoded, encoding: .utf8) ?? ""
+        } else if callIndex >= 0, callIndex < fixture.listenerReplies.count {
+            text = fixture.listenerReplies[callIndex]
+        } else {
+            text = ""
+        }
+
+        let envelope: [String: Any] = [
+            "id": "msg_capture",
+            "type": "message",
+            "role": "assistant",
+            "stop_reason": "end_turn",
+            "content": [["type": "text", "text": text]],
+            "usage": [
+                "input_tokens": 120,
+                "output_tokens": 24,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            ],
+        ]
+        // The keys above are static and JSON-safe, so serialization cannot fail;
+        // fall back to an empty object rather than force-unwrap.
+        return (try? JSONSerialization.data(withJSONObject: envelope)) ?? Data("{}".utf8)
+    }
+}
