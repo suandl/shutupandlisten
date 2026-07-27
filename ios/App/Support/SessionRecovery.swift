@@ -84,11 +84,15 @@ enum SessionRecovery {
         }
         try? context.save() // persist the legacy settles
         guard !work.isEmpty else { return }
+        // Capture an immutable copy: a mutable `var` caught by the @Sendable
+        // Task closure is "an error in the Swift 6 language mode". (`context`
+        // is an immutable parameter, so it needs no such treatment.)
+        let pending = work
         // Process SEQUENTIALLY — one on-device recognition at a time — so the
         // first launch after this ships (every prior record unreconciled) does
         // not spawn an unbounded fleet of SFSpeechURLRecognitionRequests.
         Task {
-            for item in work {
+            for item in pending {
                 guard let segments = await FileTranscriber.transcribe(url: item.url) else { continue }
                 // Bind to a plain local: #Predicate can't capture a tuple member
                 // (`item.id`) — it must close over a simple value.
