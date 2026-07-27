@@ -51,35 +51,60 @@ and the authoritative transcript of what was said are the same lossy object.
 
 ## Design
 
-### 1. Transcript reliability — two tiers
+### 1. Recording + transcription as one standalone primitive
 
-**Live tier** (drives display + turn-taking), patched so it stops losing text:
+Today capture, VAD, and STT are split across `AudioPipeline` and
+`SpeechTranscriber`, and the transcript they produce is consumed directly as
+*both* the live display and the saved record. Reframe this as a self-contained
+**voice recorder with real-time transcription** — a primitive that does one job
+and does it reliably, with no notion of turns or interjections. It exposes:
 
-- **Close the restart seam.** Keep a small ring buffer of the most recent mic
-  buffers. When a recognition task ends, start the replacement task *and replay
-  the buffered tail* into it, so words spoken during the handoff are not lost.
-- **Never shrink.** When a final `bestTranscription` is shorter/re-segmented than
-  the partial already shown, commit the *longer* of the two. Displayed text only
-  grows within an utterance.
-- **Proactive rotation.** Rotate the task a few seconds *before* the duty-cycle
-  limit rather than waiting for the abrupt cutoff, so the seam is predictable.
+- **Continuous audio → `.m4a`** (ground truth; already reliable).
+- **One growing, seamless real-time transcript** with timestamps.
+- **Raw VAD signals** (speech-start / speech-end, level).
 
-**Authoritative tier** (the saved record), reconciled from ground-truth audio:
+Two clarifications the first draft muddied:
 
-- On session end, run a file-based `SFSpeechURLRecognitionRequest` (on-device)
-  over the finalized `.m4a`. No live duty-cycle gaps; results carry per-segment
-  timestamps.
-- Map segments back onto the turn timestamps the machine already records
-  (`startMs`/`endMs` per turn) so speaker attribution and **tap-to-seek** in
-  `SessionDetailView` survive. Listener (TTS) lines are inserted from what we
-  synthesized at their recorded timestamps — they are not in the mic `.m4a`
-  because the AEC removes our own speech.
-- **Fail-safe & resumable.** The record is saved with the live transcript first
-  (nothing lost if reconciliation fails or the app is killed), then *upgraded*
-  to the reconciled transcript when the pass completes. A session whose
-  reconciliation did not finish re-runs it on next open. If the on-device file
-  request has a duration cap, long recordings are chunked and stitched.
-- The record carries a flag distinguishing a live vs. reconciled transcript.
+- **"Recognition task" is an internal STT detail, not a product concept.**
+  `SFSpeechRecognizer` has an Apple duty-cycle limit (~1 min), so the primitive
+  rotates its recognition task internally and stitches the results into one
+  continuous transcript. Consumers never see the rotation, and it has nothing to
+  do with when the listener comments. To keep the live transcript from dropping
+  words across a rotation, the primitive replays a short tail of buffered mic
+  audio into the replacement task and rotates a beat *before* the hard limit —
+  but this is a cosmetic concern for the live view only (see next point).
+- **The saved transcript is derived from the audio file, not the live stream —
+  so there is no "keep the longer string" heuristic.** The live transcript is
+  best-effort: it may revise a word in-flight as recognition refines (normal
+  dictation behavior). On session end, the primitive re-transcribes the
+  finalized `.m4a` with a file-based `SFSpeechURLRecognitionRequest` (no
+  duty-cycle gaps, stable, timestamped) to produce the **authoritative** saved
+  transcript. A longer-but-wrong live string is never promoted; the file is the
+  source of truth. Fail-safe and resumable: the live transcript is saved first
+  so nothing is lost if reconciliation fails or the app is killed; it is
+  *upgraded* to the file-derived transcript when the pass completes, and a
+  session whose reconciliation didn't finish re-runs it on next open. Segments
+  map onto the turn timestamps the machine already records (`startMs`/`endMs`)
+  so speaker attribution and **tap-to-seek** in `SessionDetailView` survive;
+  listener (TTS) lines are inserted from what we synthesized (they're not in the
+  mic `.m4a` — the AEC removes our own speech). Long recordings are chunked and
+  stitched if the file request has a duration cap. The record carries a flag
+  distinguishing a live vs. reconciled transcript.
+
+The primitive alone satisfies "reliably record, transcribe, and play back
+everything"; the live transcript's only job is responsiveness.
+
+### 1a. What triggers a "turn" (the layer above the primitive)
+
+"Turn" and "interjection" belong to the **consumer** of the primitive, not the
+recorder. A turn is not a fixed interval and not a raw silence event — it is the
+existing pure `TurnDetector`: a turn ends when VAD reports silence **and** a
+patience window (seconds) elapses **and** the completeness heuristic reads the
+thought as finished; if the thinker resumes, the turn stays open. So turns are
+*silence-driven with a patience floor and a completeness gate* — the recorder
+just emits the raw signals the detector reduces. This logic is unchanged; the
+reframe only makes the boundary explicit so the recorder can be built and tested
+on its own.
 
 ### 2. The reflective analysis — one brain, two surfaces
 
@@ -112,6 +137,18 @@ candidate interjections**.
 - **Graceful degradation.** No account / offline / signed-out simply leaves the
   hint empty and the pool cold; the screen-free experience and the fallback
   spoken path are unaffected.
+- **Reprocess the whole transcript, kept cheap by prompt caching.** Each cycle
+  re-sends the whole conversation so far (simplest correct thing). The transcript
+  grows only at the end, so it's a stable prefix — mark it with a `cache_control`
+  breakpoint and each subsequent cycle reads the prior prefix from cache (~0.1×
+  input cost) instead of re-billing it. `ClaudeClient` must gain `cache_control`
+  support (it sends none today, `ClaudeClient.swift:120-125`). Caveats to honor:
+  Opus 4.8's minimum cacheable prefix is ~4096 tokens, so short early
+  conversations won't cache (that's fine — they're cheap); and the cached prefix
+  must stay byte-identical, so the volatile "what should the hint be right now"
+  instruction goes *after* the breakpoint. A future optimization (out of scope
+  now) is compaction/summary for very long sessions so the prefix doesn't grow
+  unbounded — noted as a known follow-up.
 
 ### 3. Live screen — transcript is the stage
 
@@ -131,16 +168,44 @@ candidate interjections**.
 ### 4. Behavior fixes
 
 - **Acknowledgments off by default.** `speakAcknowledgments = false`. The listener
-  speaks only real reflections/questions unless opted in. Fix a subtlety: even
-  when silent, the gate still *records* the acknowledge decision for
-  question-cooldown bookkeeping (today it rewrites it to `.silence`, distorting
-  spacing — `SessionController.swift:651-655`).
+  speaks only real reflections/questions unless opted in. This isn't just a
+  preference: `prompts/CLAUDE.md` (the listener's own role) *explicitly forbids*
+  minimal acknowledgments — "no minimal acknowledgments ('yeah', 'mm', 'right')
+  — they are noise against a train of thought." The spoken backchannel
+  contradicts the app's stated behavior; turning it off aligns them. Fix a
+  subtlety: even when silent, the gate still *records* the acknowledge decision
+  for question-cooldown bookkeeping (today it rewrites it to `.silence`,
+  distorting spacing — `SessionController.swift:651-655`).
 - **"Pull a thread" always asks.** The invited path speaks the top *question*
   candidate immediately, or force-generates one with a dedicated instruction:
   "You were explicitly asked to pull a thread; ask ONE specific question anchored
   to what they've said. If genuinely too little has been said, say that plainly —
   never tell them to take their time." No inherited restraint, no deferral, no
   silent empty reply.
+
+### 5. Debug: per-conversation cost
+
+A developer-facing cost readout so usage can be tracked as the analyst adds
+recurring model calls.
+
+- **Capture usage per call.** `ClaudeClient.MessagesResponse` currently decodes
+  only `content` + `stop_reason` (`ClaudeClient.swift:176-189`); add the `usage`
+  block (`input_tokens`, `output_tokens`, `cache_creation_input_tokens`,
+  `cache_read_input_tokens`). Every model call in a session — analyst cycles,
+  reflections/questions, pull-a-thread, coverage — reports its usage to a session
+  cost accumulator.
+- **Compute cost.** Opus 4.8 pricing: input $5 / output $25 per 1M tokens; cache
+  *write* 1.25× input ($6.25/1M), cache *read* 0.1× input ($0.50/1M). Cost =
+  `(input·5 + cache_write·6.25 + cache_read·0.50 + output·25) / 1e6`. Prices live
+  in one constant so they're easy to update.
+- **Surface it.** A running tally while a session is live *and* a final figure on
+  the saved record, behind a debug toggle (off in normal use). Exact when usage
+  is available; labeled approximate otherwise.
+- **Proxy caveat.** Exact numbers require token usage in the response. The dev-key
+  `ClaudeClient` path has it directly; the account **proxy** path
+  (`AccountStore.makeListenerService`) must also surface usage, or the tally is
+  dev-key-only until the proxy passes it through. Flagged as a dependency, not
+  solved here.
 
 ## Preserved behavior
 
@@ -151,9 +216,10 @@ shows the on-screen hints** — the mode means "don't talk to me," not "go dark.
 ## Tradeoffs (accepted)
 
 - **Cost/usage.** The analyst means periodic model calls *during* a session, not
-  just rare interjections. Rate-limiting keeps it modest, but it is more usage
-  than today and requires the account/proxy (or dev key). The candidate pool
-  partly offsets this by avoiding a fresh call at each spoken pause.
+  just rare interjections. Rate-limiting, prompt caching of the transcript
+  prefix, and the candidate pool (no fresh call at each spoken pause) keep it
+  modest, but it is more usage than today and requires the account/proxy (or dev
+  key). The §5 cost readout exists so this stays visible.
 - **Privacy.** Analysis sends transcript to the proxy/model more often than
   today's rare reflections — same data path, higher frequency. Audio never
   leaves the phone.
@@ -161,8 +227,11 @@ shows the on-screen hints** — the mode means "don't talk to me," not "go dark.
 ## Out of scope
 
 - Replacing `SFSpeechRecognizer` with a different STT engine (e.g. a
-  Whisper-class model). The two-tier + reconcile approach meets the reliability
-  principle without a new dependency.
+  Whisper-class model). The recorder primitive (live best-effort + file-derived
+  authoritative transcript) meets the reliability principle without a new
+  dependency.
+- Compaction/summarization of very long transcripts to bound the analyst's
+  cached prefix — a known follow-up once long sessions are common.
 - Changes to the pure `TurnDetector` state machine's timing logic. The reactive
   gate fires *when* it fires today; only the *source* of the spoken reply (pool
   vs. cold call) changes.
