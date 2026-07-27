@@ -344,6 +344,7 @@ final class SessionController: ObservableObject {
 
         isRunning = true
         machineState = .listening
+        seedCaptureStateIfNeeded()
         // Thinking out loud means long stretches of not touching the screen —
         // don't let auto-lock read that as absence. Background audio makes a
         // lock survivable, but mid-session lock is still a jolt.
@@ -374,6 +375,34 @@ final class SessionController: ObservableObject {
         persistSession(final: true)
         if let fileName, let recordID = lastSavedRecordID {
             reconcileTranscript(recordID: recordID, fileName: fileName)
+        }
+    }
+
+    /// CI capture fallback (design §reliability): when launched with
+    /// -captureSeedTranscript, paint the fixture's transcript + top hint onto
+    /// the live screen so the "live transcript" and "SUGGESTED" checkpoints
+    /// render even if host mic injection produced no audio. Display only — the
+    /// network path is untouched; inert unless the flag is present.
+    private func seedCaptureStateIfNeeded() {
+        guard CaptureSeam.shouldSeedTranscript else { return }
+        let fixture = CaptureURLProtocol.fixture
+        var seeded: [TranscriptEntry] = []
+        for (i, line) in fixture.seedTranscript.enumerated() where !line.isEmpty {
+            seeded.append(TranscriptEntry(
+                speaker: .thinker, text: line, tier: nil, turn: i + 1,
+                startMs: Double(i) * 4000, endMs: Double(i) * 4000 + 3500
+            ))
+        }
+        if let reply = fixture.listenerReplies.first, !reply.isEmpty {
+            seeded.append(TranscriptEntry(
+                speaker: .listener, text: reply, tier: .question,
+                turn: fixture.seedTranscript.count, startMs: Double(seeded.count) * 4000
+            ))
+        }
+        transcript = seeded
+        hint = fixture.analystCandidates.prefix(2).compactMap { candidate in
+            guard let register = Tier(rawValue: candidate.register) else { return nil }
+            return Candidate(text: candidate.text, register: register, anchorPosition: 0)
         }
     }
 
