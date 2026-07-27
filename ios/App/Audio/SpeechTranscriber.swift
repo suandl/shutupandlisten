@@ -37,8 +37,28 @@ final class SpeechTranscriber: NSObject {
     private var rotateTimer: Timer?
     /// A rolling tail of recent mic buffers, replayed into the replacement task
     /// so no audio is lost during the hop. Sized to ~1.5 s of buffers.
+    ///
+    /// `append(_:)` runs on the audio render thread while `tailBuffers` and
+    /// `request` are otherwise only touched on main (start/stop/beginTask/
+    /// rotate*/the recognition callback). `lock` guards both so the audio
+    /// thread never observes a torn array or a use-after-free request.
     private var tailBuffers: [AVAudioPCMBuffer] = []
     private let maxTailBuffers = 35 // ~1.5 s at 2048-frame / ~43 ms buffers
+    private let lock = NSLock()
+
+    /// Bumped each time a new recognition task is started. A recognition
+    /// task's completion closure captures the generation it was created with;
+    /// if a proactive rotation has since moved `generation` forward, that
+    /// task's late/forced-final callback is a stale duplicate and is dropped
+    /// (its replacement was already fed the replayed tail, so nothing is lost).
+    /// Touched only on main — no lock needed.
+    private var generation = 0
+
+    private func locked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
 
     override init() {
         recognizer = SFSpeechRecognizer(locale: Locale.current)
@@ -73,7 +93,7 @@ final class SpeechTranscriber: NSObject {
         running = true
         stitcher.reset()
         utteranceAnchor = 0
-        tailBuffers.removeAll()
+        locked { tailBuffers.removeAll() }
         beginTask(replayTail: false)
     }
 
@@ -83,19 +103,29 @@ final class SpeechTranscriber: NSObject {
         rotateTimer = nil
         task?.cancel()
         task = nil
-        request?.endAudio()
-        request = nil
-        tailBuffers.removeAll()
+        let oldRequest = locked { () -> SFSpeechAudioBufferRecognitionRequest? in
+            let current = request
+            request = nil
+            return current
+        }
+        oldRequest?.endAudio()
+        locked { tailBuffers.removeAll() }
     }
 
     /// Audio-thread entry point, wired to AudioPipeline.onBuffer.
     func append(_ buffer: AVAudioPCMBuffer) {
-        request?.append(buffer)
-        // Keep a rolling tail so a rotation can replay the last ~1.5 s.
-        tailBuffers.append(buffer)
-        if tailBuffers.count > maxTailBuffers {
-            tailBuffers.removeFirst(tailBuffers.count - maxTailBuffers)
+        // Keep a rolling tail so a rotation can replay the last ~1.5 s, and
+        // grab the current request — all under the lock, since both are
+        // written from main. The Speech API call itself happens OUTSIDE the
+        // lock so we never hold it across an unbounded call.
+        let localRequest = locked { () -> SFSpeechAudioBufferRecognitionRequest? in
+            tailBuffers.append(buffer)
+            if tailBuffers.count > maxTailBuffers {
+                tailBuffers.removeFirst(tailBuffers.count - maxTailBuffers)
+            }
+            return request
         }
+        localRequest?.append(buffer)
     }
 
     // ── task lifecycle ──
@@ -113,13 +143,23 @@ final class SpeechTranscriber: NSObject {
         // Seed the replacement task with the buffered tail so words spoken
         // during the hop are transcribed; the stitcher de-dups the overlap.
         if replayTail {
-            for buffer in tailBuffers { req.append(buffer) }
+            let tail = locked { tailBuffers }
+            for buffer in tail { req.append(buffer) }
         }
 
-        request = req
+        locked { request = req }
+
+        // Each task gets a generation stamp. A superseded task's forced-final
+        // callback (see rotateProactively) arrives AFTER `generation` has
+        // already moved on, so the guard below turns it into a no-op instead
+        // of letting it nil out the replacement task's state.
+        generation += 1
+        let myGeneration = generation
+
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
             guard let self else { return }
             DispatchQueue.main.async {
+                guard myGeneration == self.generation else { return }
                 if let result {
                     let text = result.bestTranscription.formattedString
                     if result.isFinal {
@@ -133,7 +173,7 @@ final class SpeechTranscriber: NSObject {
                     // Task ended (final, duty-cycle death, or error). Commit
                     // whatever is in flight and start a fresh task, replaying the
                     // tail so the seam loses nothing.
-                    self.request = nil
+                    self.locked { self.request = nil }
                     self.task = nil
                     if self.running { self.rotate(replayTail: true) }
                 }
@@ -142,20 +182,28 @@ final class SpeechTranscriber: NSObject {
 
         // Proactive rotation: end this task a beat before the hard limit so the
         // hop is planned (with a replay tail) rather than a surprise death.
+        // Scheduled in .common run-loop modes so UI tracking (e.g. scrolling)
+        // can't delay it past the duty-cycle limit.
         rotateTimer?.invalidate()
-        rotateTimer = Timer.scheduledTimer(withTimeInterval: rotateAfter, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: rotateAfter, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.rotateProactively() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        rotateTimer = timer
     }
 
     /// Timer-driven rotation: lock in the in-flight partial, then hop with a
     /// replayed tail. Ending the old request's audio makes it finalize; we don't
-    /// wait for that final (its late commit de-dups harmlessly).
+    /// wait for that final (its late commit de-dups harmlessly) — and since
+    /// `rotate(replayTail:)` below calls `beginTask`, which bumps `generation`
+    /// BEFORE that forced-final callback can run, the guard in the callback
+    /// drops it as stale rather than tearing down the new task.
     private func rotateProactively() {
         guard running else { return }
-        request?.endAudio()
+        let oldRequest = locked { request }
+        oldRequest?.endAudio()
         task?.cancel()
-        request = nil
+        locked { request = nil }
         task = nil
         rotate(replayTail: true)
     }
