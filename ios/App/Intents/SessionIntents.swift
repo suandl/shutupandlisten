@@ -21,8 +21,7 @@ import TurnEngine
 struct StartListeningIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Listening"
     static let description = IntentDescription(
-        "Opens the app and starts a listening session immediately, "
-            + "in whatever mode you last used."
+        "Opens the app and starts a listening session immediately, in whatever mode you last used."
     )
     /// The mic and the live screen ARE the product — this is a launcher.
     static let openAppWhenRun = true
@@ -39,8 +38,7 @@ struct StartListeningIntent: AppIntent {
 struct StopListeningIntent: AppIntent {
     static let title: LocalizedStringResource = "Stop Listening"
     static let description = IntentDescription(
-        "Ends the current session and saves it to the library. "
-            + "Does nothing if no session is running."
+        "Ends the current session and saves it to the library. Does nothing if no session is running."
     )
     // No openAppWhenRun: `stopSession` needs no UI, and an automation
     // ("when I leave the car, stop listening") should not foreground us.
@@ -57,8 +55,7 @@ struct StopListeningIntent: AppIntent {
 struct PullThreadIntent: AppIntent {
     static let title: LocalizedStringResource = "Pull a Thread"
     static let description = IntentDescription(
-        "Invites the listener's one question about what you've said so far. "
-            + "Only works while a session is running."
+        "Invites the listener's one question about what you've said so far. Only works while a session is running."
     )
     // No openAppWhenRun: the reply is spoken; eyes stay off the screen.
 
@@ -95,8 +92,7 @@ enum ListeningModeOption: String, AppEnum {
 struct StartListeningWithModeIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Listening in Mode"
     static let description = IntentDescription(
-        "Starts a listening session in a specific mode. The mode becomes "
-            + "the default until changed — the same as picking it in the app."
+        "Starts a listening session in a specific mode. The mode becomes the default until changed — the same as picking it in the app."
     )
     static let openAppWhenRun = true
 

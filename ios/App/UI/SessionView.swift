@@ -7,7 +7,9 @@
 // earned question arrives as a staged moment (QuestionCard) with a gentle
 // haptic. The library and settings live behind toolbar icons.
 
+#if APPLE_SIGN_IN
 import AuthenticationServices
+#endif
 import SwiftData
 import SwiftUI
 import TurnEngine
@@ -21,8 +23,10 @@ struct SessionView: View {
     @State private var showSettings = false
     @State private var showLibrary = false
     @State private var showTranscript = false
+    #if APPLE_SIGN_IN
     @State private var showSignIn = false
     @State private var signInReason: SessionErrorKind = .accountRequired
+    #endif
 
     // The ring's displayed fill — animated here so it never snaps: linear
     // 0.1 s while the controller ticks the window, a slow ease back to zero
@@ -98,13 +102,25 @@ struct SessionView: View {
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showLibrary) { LibraryView() }
         .sheet(isPresented: $showTranscript) { TranscriptSheet() }
+        #if APPLE_SIGN_IN
         .sheet(isPresented: $showSignIn, onDismiss: { controller.lastError = nil }) {
             SignInSheet(reason: signInReason)
         }
+        #endif
         .alert(
             "Something went wrong",
             isPresented: Binding(
-                get: { controller.lastError != nil && controller.lastErrorKind == .general },
+                get: {
+                    guard controller.lastError != nil else { return false }
+                    #if APPLE_SIGN_IN
+                    // Account/expired kinds get the sign-in sheet, not this alert.
+                    return controller.lastErrorKind == .general
+                    #else
+                    // No sheet in this build — every error surfaces here, using
+                    // the controller's human-readable message.
+                    return true
+                    #endif
+                },
                 set: { if !$0 { controller.lastError = nil } }
             )
         ) {
@@ -157,11 +173,13 @@ struct SessionView: View {
                 withAnimation(.easeOut(duration: 1)) { showPatienceTip = false }
             }
         }
+        #if APPLE_SIGN_IN
         .onChange(of: controller.lastErrorKind) { _, kind in
             guard let kind, kind != .general else { return }
             signInReason = kind
             showSignIn = true
         }
+        #endif
     }
 
     // ── the stage: ring + one word ──
@@ -454,7 +472,12 @@ private struct TranscriptSheet: View {
 // Presented when the controller reports `.accountRequired` (the listener's
 // first escalation with no account) or `.signInExpired` — a purpose-built
 // invitation instead of a raw error alert.
+//
+// Gated on APPLE_SIGN_IN — see AppleSignIn.swift and ios/README.md → Building.
+// When the flag is off, `.accountRequired` / `.signInExpired` fall back to the
+// generic error alert above (the controller always sets a readable message).
 
+#if APPLE_SIGN_IN
 private struct SignInSheet: View {
     let reason: SessionErrorKind
     @EnvironmentObject private var accountStore: AccountStore
@@ -534,3 +557,4 @@ private struct SignInSheet: View {
         }
     }
 }
+#endif

@@ -10,14 +10,16 @@
 // the state machine's patience floor sits on top (seconds), sub-100ms VAD
 // jitter does not move product behaviour.
 //
-// Echo: voice processing (AEC) is enabled on the input node so the companion's
-// own TTS is cancelled from the mic path — which is what makes barge-in
-// detection during a response trustworthy.
+// Echo: voice processing (AEC) is enabled on the duplex vpio unit (both input
+// and output nodes), and the listener's TTS is rendered THROUGH this engine via
+// a player node (see `playTTS` / `SpeechOutput`) rather than a separate audio
+// path. That is what gives the canceller a correct echo reference, so the
+// companion's own speech is removed from the mic and barge-in stays trustworthy.
 
 import AVFoundation
 import Foundation
 
-final class AudioPipeline {
+final class AudioPipeline: TTSPlaybackSink {
     /// System events that take the mic out from under a running session. The
     /// pipeline only *reports* — the host decides whether to park, resume, or
     /// finalize, because that decision touches the turn machine and storage.
@@ -52,6 +54,16 @@ final class AudioPipeline {
     private var engine = AVAudioEngine()
     private var running = false
     private var notificationObservers: [NSObjectProtocol] = []
+
+    // ── TTS playback through THIS engine (see `TTSPlaybackSink`) ──
+    // The listener's voice is rendered through the same voice-processing IO
+    // unit that captures the mic, so the AEC has a correct echo reference and
+    // cancels our own speech from the input — which is what the barge-in path
+    // assumes. Recreated per engine build; scheduled by `SpeechOutput`.
+    private var ttsPlayer = AVAudioPlayerNode()
+    /// The format TTS buffers must be in to schedule on the player node (the
+    /// engine mixer's format). `nil` until the engine is running.
+    private(set) var ttsFormat: AVAudioFormat?
 
     // ── VAD tuning (see header note) ──
     /// Speech must exceed the noise floor by this margin to count as onset.
@@ -94,6 +106,8 @@ final class AudioPipeline {
         guard running else { return }
         stopRecording() // safety net; the host normally stops recording first
         removeSessionNotificationObservers()
+        ttsPlayer.stop()
+        ttsFormat = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         running = false
@@ -154,8 +168,47 @@ final class AudioPipeline {
             self?.process(buffer)
         }
 
+        // Voice-process the OUTPUT node too — the documented duplex pattern —
+        // and route a player node into the graph so the listener's TTS is
+        // rendered by the vpio unit itself. That gives the AEC a correct echo
+        // reference (so it can cancel our speech from the mic) AND drives the
+        // duplex unit's render side, which otherwise render-faults every cycle
+        // ("auou/vpio/appl, render err: -1"). Accessing mainMixerNode also
+        // establishes the mixer→output connection we read the format from.
+        try? engine.outputNode.setVoiceProcessingEnabled(true)
+        if ttsPlayer.engine === engine { engine.detach(ttsPlayer) }
+        ttsPlayer = AVAudioPlayerNode() // fresh node — safe across engine rebuilds
+        engine.attach(ttsPlayer)
+        let mixer = engine.mainMixerNode
+        let playbackFormat = mixer.outputFormat(forBus: 0)
+        engine.connect(ttsPlayer, to: mixer, format: playbackFormat)
+        ttsFormat = playbackFormat
+
         engine.prepare()
         try engine.start()
+        // The player must be running to accept and render scheduled buffers.
+        ttsPlayer.play()
+    }
+
+    // ── TTS playback (TTSPlaybackSink) ──
+
+    /// Schedule one synthesized buffer for playback through the AEC engine.
+    /// `onComplete` fires on the main queue when this buffer finishes rendering
+    /// (used to detect the end of the whole clip on the last buffer).
+    func playTTS(_ buffer: AVAudioPCMBuffer, onComplete: @escaping @Sendable () -> Void) {
+        guard running else { return }
+        if !ttsPlayer.isPlaying { ttsPlayer.play() }
+        // `.dataPlayedBack` fires when the buffer has actually finished rendering
+        // (not merely been consumed), so the clip-end signal is accurate.
+        ttsPlayer.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { _ in
+            DispatchQueue.main.async(execute: onComplete)
+        }
+    }
+
+    /// Instant yield on barge-in: stop the player and flush anything queued.
+    /// The next `playTTS` restarts the player.
+    func stopTTS() {
+        ttsPlayer.stop()
     }
 
     /// Translate AVAudioSession notifications into `Interruption` values for

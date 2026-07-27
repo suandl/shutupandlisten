@@ -179,6 +179,9 @@ final class SessionController: ObservableObject {
     func configure(modelContext: ModelContext, accountStore: AccountStore) {
         self.modelContext = modelContext
         self.accountStore = accountStore
+        // Render the listener's TTS through the mic engine so its AEC cancels
+        // our own speech from the input (honest barge-in). Idempotent.
+        speech.sink = pipeline
         if !didRunRecovery {
             didRunRecovery = true
             SessionRecovery.adoptOrphanedRecordings(in: modelContext)

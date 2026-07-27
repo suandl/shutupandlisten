@@ -123,6 +123,8 @@ times.
   (developer mode, the original BYOK path, now behind the developer gate)
   are interchangeable behind it. A privacy panel in Settings states —
   verbatim-checkable against the code — what leaves the device and when.
+  (Sign in with Apple is compiled out of personal-team builds — see
+  [Building](#sign-in-with-apple-is-off-by-default-personal-team-builds).)
 - **Session library** — behind a toolbar icon (the session screen is home).
   Every session is saved (SwiftData) with per-utterance **timestamps**:
   title derived from the first words, full transcript, coverage snapshot,
@@ -208,11 +210,32 @@ is free), a rules-only backchannel, and one anchored thread-pull:
 
 Open `ios/ShutUpAndListen.xcodeproj` in Xcode 16+, set your signing team, and
 run on an iOS 17+ device (the mic + speech pipeline is best exercised on
-hardware). The target declares the `audio` background mode, and the Sign in
-with Apple capability is wired via `App/ShutUpAndListen.entitlements`. To
-point the app at your own proxy deployment, or to skip sign-in and use a
-personal Claude API key, unlock the Developer section first (tap the version
-row in Settings five times).
+hardware). The target declares the `audio` background mode. To point the app
+at your own proxy deployment, or to skip sign-in and use a personal Claude API
+key, unlock the Developer section first (tap the version row in Settings five
+times).
+
+### Sign in with Apple is off by default (personal-team builds)
+
+Sign in with Apple cannot be provisioned by a free/personal Apple Developer
+team — automatic signing fails with *"Personal development teams do not
+support the Sign In with Apple capability."* So the default build ships the
+feature **compiled out**: the active entitlements
+(`App/ShutUpAndListen.entitlements`) are empty, the `APPLE_SIGN_IN` compilation
+flag is unset, and the account surface falls back to Developer mode (BYOK). The
+app builds and signs on a personal token as-is.
+
+To restore the account path on a **paid** team:
+
+1. Add `APPLE_SIGN_IN` to `SWIFT_ACTIVE_COMPILATION_CONDITIONS` for the app
+   target (both Debug and Release configs).
+2. Point `CODE_SIGN_ENTITLEMENTS` at
+   `App/ShutUpAndListen-AppleSignIn.entitlements` (or copy its `<dict>` into
+   the active entitlements file) — it carries the
+   `com.apple.developer.applesignin` capability.
+
+Nothing else changes: the plumbing (`App/Support/AppleSignIn.swift`, the
+sign-in sheet, the Settings account section) is preserved behind the flag.
 
 Note: this branch has been validated headlessly only — the Kit test suite
 runs on Linux and every App file is parse-checked, but the app has not yet

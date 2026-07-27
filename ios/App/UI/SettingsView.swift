@@ -11,7 +11,9 @@
 // Wave-1b keys the session screen owns; this sheet only OFFERS a mode when a
 // preset suggests one, never sets it silently.
 
+#if APPLE_SIGN_IN
 import AuthenticationServices
+#endif
 import SwiftUI
 import TurnEngine
 
@@ -29,8 +31,10 @@ struct SettingsView: View {
     @AppStorage("hasOnboarded") private var hasOnboarded = false
     @AppStorage("developerUnlocked") private var developerUnlocked = false
 
+    #if APPLE_SIGN_IN
     @State private var signingIn = false
     @State private var signInError: String?
+    #endif
     @State private var showKnobs = false
     @State private var versionTaps = 0
     /// A preset whose suggested mode differs from the current one — the
@@ -99,6 +103,7 @@ struct SettingsView: View {
                     accountStore.signOut()
                 }
             } else {
+                #if APPLE_SIGN_IN
                 SignInWithAppleButton(.signIn) { request in
                     request.requestedScopes = []
                 } onCompletion: { result in
@@ -119,6 +124,15 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
+                #else
+                Text(
+                    "Sign in with Apple isn't available in this build. Unlock "
+                    + "Developer mode (tap the version row five times) to connect "
+                    + "a personal API key."
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                #endif
             }
         } header: {
             Text("Account")
@@ -341,6 +355,7 @@ struct SettingsView: View {
         }
     }
 
+    #if APPLE_SIGN_IN
     private func handleSignIn(_ result: Result<ASAuthorization, Error>) {
         switch AppleSignIn.outcome(of: result) {
         case .cancelled:
@@ -360,4 +375,5 @@ struct SettingsView: View {
             }
         }
     }
+    #endif
 }
