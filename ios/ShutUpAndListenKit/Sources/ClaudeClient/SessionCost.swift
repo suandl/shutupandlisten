@@ -85,3 +85,16 @@ public struct SessionCost: Equatable, Sendable {
             + Double(outputTokens) * pricing.outputPerMTok) / 1_000_000
     }
 }
+
+/// One substantive listener turn plus what it cost. `text` empty ⇒ the model
+/// chose silence (a valid, free outcome). `usage` nil ⇒ the backend surfaced no
+/// token count (e.g. the account proxy today).
+public struct ListenerReply: Equatable, Sendable {
+    public let text: String
+    public let usage: Usage?
+
+    public init(text: String, usage: Usage?) {
+        self.text = text
+        self.usage = usage
+    }
+}

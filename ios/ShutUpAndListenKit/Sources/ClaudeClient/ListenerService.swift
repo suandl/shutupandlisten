@@ -18,11 +18,24 @@ public protocol ListenerService: Sendable {
     /// model choosing silence is expected and free.
     func respond(to request: ListenerRequest) async throws -> String
 
+    /// One substantive listener turn, plus the token usage the call reported.
+    /// Backends that cannot surface usage return `usage: nil`.
+    func respondWithUsage(to request: ListenerRequest) async throws -> ListenerReply
+
     /// Evaluate the recording so far against a checklist.
     func checkCoverage(
         transcript: String,
         criteria: [CoverageCriterion]
     ) async throws -> CoverageResult
+}
+
+public extension ListenerService {
+    /// Default: reuse `respond` and report no usage. ClaudeClient overrides this
+    /// to decode the `usage` block; ProxyClient keeps this default until the
+    /// proxy passes usage through.
+    func respondWithUsage(to request: ListenerRequest) async throws -> ListenerReply {
+        ListenerReply(text: try await respond(to: request), usage: nil)
+    }
 }
 
 extension ClaudeClient: ListenerService {}

@@ -317,12 +317,25 @@ public struct ListenerRequest: Sendable {
     public let tier: Tier
     /// Generation cap — reflections/questions are brief (a sentence or two).
     public let maxTokens: Int
+    /// When set, the leading `cachedSystemPrefix` of `system` is sent as a
+    /// cache_control breakpoint block and the remainder follows as a volatile
+    /// block — Opus reads the stable prefix from cache (~0.1× input). MUST be a
+    /// prefix of `system`; nil ⇒ `system` is sent as one plain block (today's
+    /// behavior). Ignored by ProxyClient, which caches server-side.
+    public let cachedSystemPrefix: String?
 
-    public init(system: String, messages: [ListenerChatMessage], tier: Tier, maxTokens: Int) {
+    public init(
+        system: String,
+        messages: [ListenerChatMessage],
+        tier: Tier,
+        maxTokens: Int,
+        cachedSystemPrefix: String? = nil
+    ) {
         self.system = system
         self.messages = messages
         self.tier = tier
         self.maxTokens = maxTokens
+        self.cachedSystemPrefix = cachedSystemPrefix
     }
 }
 
