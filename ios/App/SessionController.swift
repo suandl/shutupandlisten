@@ -497,6 +497,7 @@ final class SessionController: ObservableObject {
             record.transcriptJSON = transcriptJSON
             record.criteriaText = coverageCriteriaText
             record.coverageJSON = coverageResult.flatMap { try? JSONEncoder().encode($0) }
+            record.costUSD = sessionCost.dollars()
         } else {
             record = SessionRecord(
                 startedAt: started,
@@ -505,7 +506,8 @@ final class SessionController: ObservableObject {
                 transcriptJSON: transcriptJSON,
                 criteriaText: coverageCriteriaText,
                 coverageJSON: coverageResult.flatMap { try? JSONEncoder().encode($0) },
-                audioFileName: recordingFileName
+                audioFileName: recordingFileName,
+                costUSD: sessionCost.dollars()
             )
             modelContext.insert(record)
             activeRecord = record

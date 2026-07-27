@@ -52,6 +52,9 @@ final class SessionRecord {
     var coverageJSON: Data?
     /// File name under Application Support/Recordings, when audio was captured.
     var audioFileName: String?
+    /// Total model spend for the session, USD. Optional: records saved before
+    /// cost tracking (and sessions on the usage-less proxy path) carry nil.
+    var costUSD: Double?
 
     init(
         id: UUID = UUID(),
@@ -61,7 +64,8 @@ final class SessionRecord {
         transcriptJSON: Data,
         criteriaText: String,
         coverageJSON: Data? = nil,
-        audioFileName: String? = nil
+        audioFileName: String? = nil,
+        costUSD: Double? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -71,6 +75,7 @@ final class SessionRecord {
         self.criteriaText = criteriaText
         self.coverageJSON = coverageJSON
         self.audioFileName = audioFileName
+        self.costUSD = costUSD
     }
 
     // ── decoded views ──
