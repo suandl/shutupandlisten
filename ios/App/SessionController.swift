@@ -106,7 +106,10 @@ final class SessionController: ObservableObject {
         didSet { detector?.setKnobs { $0 = knobs } }
     }
     /// Speak the rules-only backchannel ("mm", "yeah") on short finished asides.
-    @AppStorage("speakAcknowledgments") var speakAcknowledgments = true
+    /// Off by default: prompts/claude.md forbids minimal acknowledgments, so the
+    /// spoken backchannel contradicted the listener's own role. Opt in under
+    /// Developer settings.
+    @AppStorage("speakAcknowledgments") var speakAcknowledgments = false
     /// Criteria for coverage mode, one topic per line.
     @AppStorage("coverageCriteria") var coverageCriteriaText = ""
 
@@ -648,12 +651,16 @@ final class SessionController: ObservableObject {
             feed(.decision(t: now, outcome: .silence))
 
         case .acknowledge:
-            guard speakAcknowledgments, let ack = decision.ackText else {
-                decisionsByTurn[turn] = .silence
+            // Silent when acks are off, but the decision still COUNTS as an
+            // acknowledge for question-cooldown spacing (recording it as
+            // silence distorted the spacing). resolveAcknowledge splits the two.
+            let resolved = resolveAcknowledge(decision, speakAcknowledgments: speakAcknowledgments)
+            decisionsByTurn[turn] = resolved.recordedTier
+            if let ack = resolved.spokenText {
+                takeFloor(with: ack, tier: .acknowledge)
+            } else {
                 feed(.decision(t: now, outcome: .silence))
-                return
             }
-            takeFloor(with: ack, tier: .acknowledge)
 
         case .reflection, .question:
             requestModelReply(tier: decision.tier, turn: turn, utterance: text)

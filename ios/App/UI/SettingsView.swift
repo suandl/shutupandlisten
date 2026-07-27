@@ -23,7 +23,7 @@ struct SettingsView: View {
     @EnvironmentObject private var accountStore: AccountStore
 
     @State private var apiKey: String = KeychainStore.apiKey ?? ""
-    @AppStorage("speakAcknowledgments") private var speakAcknowledgments = true
+    @AppStorage("speakAcknowledgments") private var speakAcknowledgments = false
     @AppStorage("coverageCriteria") private var coverageCriteriaText = ""
     @AppStorage("coveragePresetId") private var coveragePresetId = ""
     @AppStorage("sessionMode") private var sessionModeRaw = SessionMode.open.rawValue
