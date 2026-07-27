@@ -16,7 +16,8 @@ import TurnEngine
 enum FileTranscriber {
     /// Transcribe the whole `.m4a` at `url` into timestamped segments. Returns
     /// nil when recognition is unavailable or the file cannot be read — the
-    /// caller keeps the (already-saved) live transcript in that case.
+    /// caller keeps the (already-saved) live transcript in that case. Returns
+    /// a non-nil, empty array when the file reads fine but no speech is detected.
     static func transcribe(url: URL) async -> [TranscriptSegment]? {
         guard let recognizer = SFSpeechRecognizer(locale: Locale.current)
             ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
@@ -30,24 +31,48 @@ enum FileTranscriber {
             request.requiresOnDeviceRecognition = true
         }
 
-        return await withCheckedContinuation { continuation in
-            var resumed = false
-            recognizer.recognitionTask(with: request) { result, error in
-                if let error {
-                    if !resumed { resumed = true; continuation.resume(returning: nil) }
-                    _ = error
-                    return
+        // Guards `resumed` (so the continuation can only fire once, even if the
+        // completion handler races itself — not documented to be serial) and
+        // `currentTask` (so `onCancel`, which can run on another thread, never
+        // tears down the task mid-assignment).
+        let lock = NSLock()
+        var currentTask: SFSpeechRecognitionTask?
+
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                var resumed = false
+                func resumeOnce(_ value: [TranscriptSegment]?) {
+                    lock.lock()
+                    let shouldResume = !resumed
+                    if shouldResume { resumed = true }
+                    lock.unlock()
+                    if shouldResume { continuation.resume(returning: value) }
                 }
-                guard let result, result.isFinal else { return }
-                let segments = result.bestTranscription.segments.map { seg in
-                    TranscriptSegment(
-                        text: seg.substring,
-                        startMs: Int((seg.timestamp * 1000).rounded()),
-                        endMs: Int(((seg.timestamp + seg.duration) * 1000).rounded())
-                    )
+
+                let recognitionTask = recognizer.recognitionTask(with: request) { result, error in
+                    if let error {
+                        NSLog("FileTranscriber: recognition failed for \(url.lastPathComponent): \(error.localizedDescription)")
+                        resumeOnce(nil)
+                        return
+                    }
+                    guard let result, result.isFinal else { return }
+                    let segments = result.bestTranscription.segments.map { seg in
+                        TranscriptSegment(
+                            text: seg.substring,
+                            startMs: Int((seg.timestamp * 1000).rounded()),
+                            endMs: Int(((seg.timestamp + seg.duration) * 1000).rounded())
+                        )
+                    }
+                    resumeOnce(segments)
                 }
-                if !resumed { resumed = true; continuation.resume(returning: segments) }
+
+                lock.lock(); currentTask = recognitionTask; lock.unlock()
+                // Cancellation may have already landed before the task was stored.
+                if Task.isCancelled { recognitionTask.cancel() }
             }
+        } onCancel: {
+            lock.lock(); let task = currentTask; lock.unlock()
+            task?.cancel()
         }
     }
 }
