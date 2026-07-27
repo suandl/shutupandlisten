@@ -55,4 +55,43 @@ final class TranscriptStitcherTests: XCTestCase {
         XCTAssertEqual(TranscriptStitching.merge(committed: "alpha beta", incoming: "beta gamma"),
                        "alpha beta beta gamma")
     }
+
+    // ── TranscriptStitcher: the live two-task lifecycle ──
+
+    func testPartialAppearsInText() {
+        var s = TranscriptStitcher()
+        s.setPartial("hello world")
+        XCTAssertEqual(s.text, "hello world")
+    }
+
+    func testCommitThenNewPartialAppends() {
+        var s = TranscriptStitcher()
+        s.commit("hello world")
+        s.setPartial("how are you")
+        XCTAssertEqual(s.text, "hello world how are you")
+    }
+
+    func testFinalReplacesItsOwnPartialWithoutDoubling() {
+        var s = TranscriptStitcher()
+        s.setPartial("hello wor")      // in-flight
+        s.commit("hello world")        // the same task's final
+        XCTAssertEqual(s.text, "hello world")
+    }
+
+    func testRotationReplayTailIsDeDuped() {
+        var s = TranscriptStitcher()
+        s.commit("I was saying that")                 // task 1 finalized
+        // task 2 was fed a replayed tail, so it re-transcribes "saying that":
+        s.setPartial("saying that we should go")
+        XCTAssertEqual(s.text, "I was saying that we should go")
+        s.commit("saying that we should go now")      // task 2 final, still overlaps
+        XCTAssertEqual(s.text, "I was saying that we should go now")
+    }
+
+    func testResetClears() {
+        var s = TranscriptStitcher()
+        s.commit("something")
+        s.reset()
+        XCTAssertEqual(s.text, "")
+    }
 }

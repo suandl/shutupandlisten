@@ -46,3 +46,45 @@ public enum TranscriptStitching {
         return base + " " + inc
     }
 }
+
+/// The stateful driver `SpeechTranscriber` owns. `committed` is text finalized
+/// by completed recognition tasks; `partial` is the active task's in-flight
+/// result. `text` overlays the partial onto committed via `merge`, so a
+/// replayed-tail partial de-dups and a task's final replaces its own partial.
+public struct TranscriptStitcher: Equatable, Sendable {
+    private var committed = ""
+    private var partial = ""
+    private let minOverlapWords: Int
+
+    public init(minOverlapWords: Int = 2) {
+        self.minOverlapWords = minOverlapWords
+    }
+
+    /// The active recognition task refined its in-flight partial.
+    public mutating func setPartial(_ text: String) {
+        partial = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The active task ended (a final result, or a proactive rotation). Fold its
+    /// text into the committed transcript — stripping any overlap a replayed
+    /// audio tail re-transcribed — and clear the partial for the next task.
+    public mutating func commit(_ text: String) {
+        committed = TranscriptStitching.merge(
+            committed: committed, incoming: text, minOverlapWords: minOverlapWords
+        )
+        partial = ""
+    }
+
+    /// A new session: empty everything.
+    public mutating func reset() {
+        committed = ""
+        partial = ""
+    }
+
+    /// One growing transcript: committed text with the live partial overlaid.
+    public var text: String {
+        TranscriptStitching.merge(
+            committed: committed, incoming: partial, minOverlapWords: minOverlapWords
+        )
+    }
+}
