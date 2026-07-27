@@ -497,7 +497,9 @@ final class SessionController: ObservableObject {
             record.transcriptJSON = transcriptJSON
             record.criteriaText = coverageCriteriaText
             record.coverageJSON = coverageResult.flatMap { try? JSONEncoder().encode($0) }
-            record.costUSD = sessionCost.dollars()
+            // Only store a figure when every call was metered; the usage-less
+            // proxy path leaves it nil (cost unknown, not zero).
+            record.costUSD = sessionCost.isExact ? sessionCost.dollars() : nil
         } else {
             record = SessionRecord(
                 startedAt: started,
@@ -507,7 +509,7 @@ final class SessionController: ObservableObject {
                 criteriaText: coverageCriteriaText,
                 coverageJSON: coverageResult.flatMap { try? JSONEncoder().encode($0) },
                 audioFileName: recordingFileName,
-                costUSD: sessionCost.dollars()
+                costUSD: sessionCost.isExact ? sessionCost.dollars() : nil
             )
             modelContext.insert(record)
             activeRecord = record
