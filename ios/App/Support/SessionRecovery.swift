@@ -90,9 +90,12 @@ enum SessionRecovery {
         Task {
             for item in work {
                 guard let segments = await FileTranscriber.transcribe(url: item.url) else { continue }
+                // Bind to a plain local: #Predicate can't capture a tuple member
+                // (`item.id`) — it must close over a simple value.
+                let recordID = item.id
                 await MainActor.run {
                     let descriptor = FetchDescriptor<SessionRecord>(
-                        predicate: #Predicate { $0.id == item.id }
+                        predicate: #Predicate { $0.id == recordID }
                     )
                     guard let record = try? context.fetch(descriptor).first else { return }
                     record.applyReconciledSegments(segments)
