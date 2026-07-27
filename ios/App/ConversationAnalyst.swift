@@ -28,6 +28,10 @@ final class ConversationAnalyst {
     private var lastRunMs: Double?
     private var pendingSince: Double?
     private var inFlight = false
+    /// Bumped by `reset()` to invalidate any cycle still in flight across a
+    /// session boundary — a late reply from the previous session must not
+    /// repopulate the new session's pool (its stale anchors would never expire).
+    private var generation = 0
 
     /// A finished substantive thinker turn — new content worth a cycle.
     func noteFinishedTurn(atMs t: Double) {
@@ -56,12 +60,14 @@ final class ConversationAnalyst {
         return pool.best(register: register)
     }
 
-    /// New session: cold pool, no history.
+    /// New session: cold pool, no history. Any cycle still in flight is
+    /// invalidated (its completion is dropped) via the generation bump.
     func reset() {
         pool = CandidatePool()
         lastRunMs = nil
         pendingSince = nil
         inFlight = false
+        generation += 1
         onCandidatesChanged([])
     }
 
@@ -71,6 +77,7 @@ final class ConversationAnalyst {
         lastRunMs = nowMs
         pendingSince = nil
         let anchor = transcript.count
+        let gen = generation
         let request = Analyst.buildRequest(transcript: transcript)
 
         Task { [weak self] in
@@ -79,6 +86,10 @@ final class ConversationAnalyst {
             let reply = try? await service.analyze(request)
             await MainActor.run {
                 guard let self else { return }
+                // Drop a stale cycle whose session was reset while it was in
+                // flight — its candidates are anchored to a transcript that no
+                // longer exists.
+                guard self.generation == gen else { return }
                 self.inFlight = false
                 guard let reply else { return }
                 self.onUsage(reply.usage)
