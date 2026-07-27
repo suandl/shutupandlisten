@@ -98,6 +98,13 @@ final class SessionController: ObservableObject {
     /// figure is ready if the toggle is on.
     @Published private(set) var sessionCost = SessionCost()
 
+    /// The top on-screen hints (spec §2/§3): the analyst's best 1–2 candidates,
+    /// republished from the background brain. Empty when the pool is cold.
+    @Published private(set) var hint: [Candidate] = []
+
+    /// The ambient analysis brain. Owned here; driven from the tick + turn-end.
+    private let analyst = ConversationAnalyst()
+
     // Coverage mode
     @Published private(set) var coverageResult: CoverageResult?
     @Published private(set) var coverageChecking = false
@@ -177,6 +184,12 @@ final class SessionController: ObservableObject {
         // Shortcuts reach the controller through the bridge (weak ref) —
         // App Intents cannot touch the SwiftUI-owned instance directly.
         IntentBridge.shared.register(self)
+
+        analyst.makeService = { [weak self] in self?.makeService() }
+        analyst.onUsage = { [weak self] usage in self?.sessionCost.add(usage) }
+        analyst.onCandidatesChanged = { [weak self] candidates in
+            self?.hint = Array(candidates.prefix(2))
+        }
     }
 
     /// Hand in the SwiftData container and the account layer. Idempotent —
@@ -249,6 +262,8 @@ final class SessionController: ObservableObject {
         pendingReply = nil
         transcript = []
         sessionCost = SessionCost()
+        analyst.reset()
+        hint = []
         coverageResult = nil
         activeRecord = nil
         ticksSinceCheckpoint = 0
@@ -352,6 +367,8 @@ final class SessionController: ObservableObject {
         isInterrupted = false
         machineState = .listening
         patienceProgress = nil
+        analyst.reset()
+        hint = []
         UIApplication.shared.isIdleTimerDisabled = false
         let fileName = recordingFileName
         persistSession(final: true)
@@ -605,6 +622,7 @@ final class SessionController: ObservableObject {
         } else {
             patienceProgress = nil
         }
+        analyst.tick(nowMs: now, transcript: transcriber.fullText)
     }
 
     private func feedEouEvidence(at t: Double) {
@@ -629,6 +647,10 @@ final class SessionController: ObservableObject {
             // Text is already up to date via partials; stamp when it closed.
             if let idx = transcript.lastIndex(where: { $0.speaker == .thinker && $0.turn == turn }) {
                 transcript[idx].endMs = t
+                // A finished substantive turn is new material for the analyst.
+                if wordCount(transcript[idx].text) >= defaultSubstantiveWords {
+                    analyst.noteFinishedTurn(atMs: t)
+                }
             }
 
         case .responseStart(let t, _):
@@ -704,7 +726,18 @@ final class SessionController: ObservableObject {
             }
 
         case .reflection, .question:
-            requestModelReply(tier: decision.tier, turn: turn, utterance: text)
+            // Prefer a ready, still-fresh candidate from the pool: what's heard
+            // matches the hint already on screen and it lands with no round-trip
+            // (spec §2). Already metered when analyzed, so no cost is added here.
+            if let candidate = analyst.candidate(
+                for: decision.tier, transcriptLength: transcriber.fullText.count
+            ) {
+                takeFloor(with: candidate.text, tier: decision.tier)
+            } else {
+                // Nothing fresh fits — fall back to a single live call (today's
+                // behavior, the safety net).
+                requestModelReply(tier: decision.tier, turn: turn, utterance: text)
+            }
         }
     }
 
