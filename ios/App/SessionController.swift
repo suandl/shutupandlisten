@@ -731,11 +731,12 @@ final class SessionController: ObservableObject {
             // (spec §2). Already metered when analyzed, so no cost is added here.
             if let candidate = analyst.candidate(
                 for: decision.tier, transcriptLength: transcriber.fullText.count
-            ) {
-                takeFloor(with: candidate.text, tier: decision.tier)
+            ), takeFloor(with: candidate.text, tier: decision.tier) {
+                // Spoke straight from the pool — already metered at analyze time.
             } else {
-                // Nothing fresh fits — fall back to a single live call (today's
-                // behavior, the safety net).
+                // Nothing fresh fits, or the floor couldn't be taken — fall back
+                // to a single live call (today's behavior, the safety net). A
+                // turn is never silently dropped.
                 requestModelReply(tier: decision.tier, turn: turn, utterance: text)
             }
         }
@@ -802,12 +803,17 @@ final class SessionController: ObservableObject {
     /// Answer `speak` with the response window sized to the real clip. If the
     /// thinker resumed while we deliberated the decision is stale and ignored
     /// by the machine — in that case the reply is discarded unspoken.
-    private func takeFloor(with text: String, tier: Tier) {
-        guard let detector, detector.state == .deciding else { return }
+    /// Returns whether the floor was actually taken. `false` ⇒ the machine had
+    /// already left `deciding` (the thinker resumed), so the reply is stale and
+    /// discarded — the caller may fall back to a live call.
+    @discardableResult
+    private func takeFloor(with text: String, tier: Tier) -> Bool {
+        guard let detector, detector.state == .deciding else { return false }
         pendingReply = (text, tier)
         detector.setKnobs { $0.responseDurationMs = SpeechOutput.estimateDurationMs(for: text) }
         feed(.decision(t: nowMs(), outcome: .speak))
         pendingReply = nil // consumed by response-start, or stale
+        return true
     }
 
     /// "Pull a thread now" — the upon-prompting path. Bypasses the gate's
@@ -817,9 +823,17 @@ final class SessionController: ObservableObject {
     func askNow() {
         guard isRunning else { return }
         let turn = detector?.currentTurn ?? 0
-        let text = transcriber.currentUtteranceText.isEmpty
+        let live = transcriber.currentUtteranceText.isEmpty
             ? transcriber.fullText
             : transcriber.currentUtteranceText
+        // Fall back to the accumulated transcript when the live recognizer text
+        // is momentarily empty (between turns, or while the recognizer is
+        // recovering): the user can see words on screen, so "nothing said" would
+        // be wrong.
+        let text = live.trimmingCharacters(in: .whitespaces).isEmpty
+            ? transcript.filter { $0.speaker == .thinker }.map(\.text)
+                .joined(separator: " ")
+            : live
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
             fail("Nothing has been said yet.")
             return
