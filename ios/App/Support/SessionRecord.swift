@@ -131,6 +131,34 @@ final class SessionRecord {
         entries.allSatisfy { $0.speaker != "listener" || $0.startMs != nil }
     }
 
+    /// Apply a file-derived reconciliation to this record and settle
+    /// `transcriptIsReconciled`. `segments` is the .m4a transcription (empty for
+    /// a no-speech file). The transcript is overwritten ONLY when the file
+    /// actually yielded thinker text and reconciliation produced entries —
+    /// otherwise the richer best-effort live transcript is kept. In every case
+    /// the record is marked reconciled, because re-running STT on the same audio
+    /// can't change the outcome; the caller only retries a NIL transcribe result
+    /// (recognition unavailable / file unreadable), never an empty one. A legacy
+    /// record whose untimed listener lines reconciliation can't preserve is left
+    /// untouched but still settled (keep-live-transcript is its final state).
+    @MainActor
+    func applyReconciledSegments(_ segments: [TranscriptSegment]) {
+        defer { transcriptIsReconciled = true }
+        guard canReconcileWithoutListenerLoss else { return }
+        guard !segments.isEmpty else { return }
+        let stored = TranscriptReconciler.reconcile(
+            segments: segments, turns: turnWindows, listenerLines: listenerLines
+        ).map {
+            StoredEntry(
+                speaker: $0.speaker.rawValue, text: $0.text, tier: $0.tier?.rawValue,
+                turn: $0.turn, startMs: $0.startMs, endMs: $0.endMs
+            )
+        }
+        guard !stored.isEmpty, let json = try? JSONEncoder().encode(stored) else { return }
+        transcriptJSON = json
+        title = SessionRecord.deriveTitle(from: stored)
+    }
+
     var coverage: CoverageResult? {
         guard let coverageJSON else { return nil }
         return try? JSONDecoder().decode(CoverageResult.self, from: coverageJSON)

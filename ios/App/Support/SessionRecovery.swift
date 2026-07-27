@@ -68,41 +68,34 @@ enum SessionRecovery {
     @MainActor
     static func reconcilePendingTranscripts(in context: ModelContext) {
         let records = (try? context.fetch(FetchDescriptor<SessionRecord>())) ?? []
+        // Gather reconcilable work on the main actor; settle legacy records
+        // (whose untimed listener lines reconciliation can't preserve) in place
+        // WITHOUT running the expensive file pass on them.
+        var work: [(id: UUID, url: URL)] = []
         for record in records where !record.transcriptIsReconciled {
             guard let fileName = record.audioFileName else { continue }
             let url = RecordingStorage.url(for: fileName)
             guard FileManager.default.fileExists(atPath: url.path) else { continue }
             guard record.canReconcileWithoutListenerLoss else {
-                // Legacy record: reconciliation would drop untimed listener
-                // lines (unrecoverable). Keep the live transcript and stop
-                // retrying — mark resolved as-is so we don't re-run STT each launch.
-                record.transcriptIsReconciled = true
-                try? context.save()
+                record.transcriptIsReconciled = true // keep live transcript; stop retrying
                 continue
             }
-            let recordID = record.id
-            let windows = record.turnWindows
-            let lines = record.listenerLines
-            Task {
-                guard let segments = await FileTranscriber.transcribe(url: url), !segments.isEmpty
-                else { return }
+            work.append((record.id, url))
+        }
+        try? context.save() // persist the legacy settles
+        guard !work.isEmpty else { return }
+        // Process SEQUENTIALLY — one on-device recognition at a time — so the
+        // first launch after this ships (every prior record unreconciled) does
+        // not spawn an unbounded fleet of SFSpeechURLRecognitionRequests.
+        Task {
+            for item in work {
+                guard let segments = await FileTranscriber.transcribe(url: item.url) else { continue }
                 await MainActor.run {
                     let descriptor = FetchDescriptor<SessionRecord>(
-                        predicate: #Predicate { $0.id == recordID }
+                        predicate: #Predicate { $0.id == item.id }
                     )
                     guard let record = try? context.fetch(descriptor).first else { return }
-                    let stored = TranscriptReconciler.reconcile(
-                        segments: segments, turns: windows, listenerLines: lines
-                    ).map {
-                        StoredEntry(
-                            speaker: $0.speaker.rawValue, text: $0.text, tier: $0.tier?.rawValue,
-                            turn: $0.turn, startMs: $0.startMs, endMs: $0.endMs
-                        )
-                    }
-                    guard !stored.isEmpty, let json = try? JSONEncoder().encode(stored) else { return }
-                    record.transcriptJSON = json
-                    record.title = SessionRecord.deriveTitle(from: stored)
-                    record.transcriptIsReconciled = true
+                    record.applyReconciledSegments(segments)
                     try? context.save()
                 }
             }
