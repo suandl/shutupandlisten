@@ -87,6 +87,10 @@ run_pass() {                      # $1 = light|dark
   local mode="$1"
   local rb="$RESULTS/$mode.xcresult"
   log "capture pass: $mode"
+  # The test run can leave the base device shut down; re-boot so every pass
+  # (and the appearance toggle + video recording below) has a live device.
+  xcrun simctl boot "$UDID" 2>/dev/null || true
+  xcrun simctl bootstatus "$UDID" -b
   xcrun simctl ui "$UDID" appearance "$mode"
 
   if [[ "$mode" == "light" ]]; then
@@ -95,6 +99,9 @@ run_pass() {                      # $1 = light|dark
   fi
 
   # Run the UITest in the background so we can feed audio while it dwells.
+  # -parallel-testing-enabled NO keeps the test on the booted base device
+  # instead of a throwaway clone — so recordVideo above actually captures the
+  # session, not an idle base simulator.
   ( xcodebuild test-without-building \
       -project "$PROJECT" \
       -scheme "$SCHEME" \
@@ -102,6 +109,7 @@ run_pass() {                      # $1 = light|dark
       -derivedDataPath "$DERIVED" \
       -resultBundlePath "$rb" \
       -only-testing:ShutUpAndListenUITests/CaptureUITests/testCaptureSession \
+      -parallel-testing-enabled NO \
       CODE_SIGNING_ALLOWED=NO ) &
   local test_pid=$!
 
