@@ -15,7 +15,6 @@ jobs:
 
       - name: Install capture tools
         run: |
-          brew install blackhole-2ch switchaudio-osx || true
           brew install chargepoint/xcparse/xcparse || true
 
       - name: Cache SwiftPM
@@ -25,10 +24,10 @@ jobs:
           key: spm-${{ hashFiles('ios/ShutUpAndListenKit/Package.swift') }}
 
       - name: Capture demo
-        env:
-          # The runner's audio HAL is unreliable for simulator mic injection;
-          # use the in-app transcript replay so the checkpoints still render.
-          CAPTURE_SEED_TRANSCRIPT: "1"
+        # The UITest drives the real pipeline from the bundled fixture in-app
+        # (design: in-app audio injection); the in-app watchdog paints the seed
+        # transcript only if injected transcription yields nothing. Set
+        # CAPTURE_SEED_TRANSCRIPT=1 here to force the display-only paint instead.
         run: ./ios/scripts/capture-demo.sh
 
       - name: Upload artifacts
