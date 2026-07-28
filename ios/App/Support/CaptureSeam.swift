@@ -8,14 +8,20 @@ import Foundation
 
 enum CaptureSeam {
     /// Launch argument that arms the whole capture path.
-    static let flag = "-uiTestCapture"
-    /// Optional fallback (design §reliability): drive the on-screen transcript
-    /// and hint from the fixture instead of real audio, for when host mic
-    /// injection is unavailable (e.g. the GitHub runner).
-    static let seedTranscriptFlag = "-captureSeedTranscript"
+    static let flag = CaptureFlags.capture
+    /// Drives the REAL pipeline from the bundled fixture `.wav` (design: in-app
+    /// audio injection) — the primary CI capture path. Requires `flag`.
+    static let injectAudioFlag = CaptureFlags.injectAudio
+    /// Optional fallback (design §reliability): paint the on-screen transcript
+    /// and hint from the fixture instead of real audio, for when real
+    /// transcription yields nothing (e.g. SFSpeech unavailable on the runner).
+    static let seedTranscriptFlag = CaptureFlags.seedTranscript
 
-    static var isActive: Bool { CommandLine.arguments.contains(flag) }
-    static var shouldSeedTranscript: Bool { CommandLine.arguments.contains(seedTranscriptFlag) }
+    static var isActive: Bool { CaptureFlags.isActive(CommandLine.arguments) }
+    /// True when launched to drive the pipeline from the fixture file (both
+    /// `flag` and `injectAudioFlag` present).
+    static var shouldInjectAudio: Bool { CaptureFlags.shouldInjectAudio(CommandLine.arguments) }
+    static var shouldSeedTranscript: Bool { CaptureFlags.shouldSeedTranscript(CommandLine.arguments) }
 
     /// Arm the seams. Called first thing from ShutUpAndListenApp.init.
     static func installIfNeeded() {
