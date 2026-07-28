@@ -4,11 +4,10 @@
 #
 #   1. build-for-testing (shared scheme)
 #   2. boot iPhone 16 Pro simulator
-#   3. host default input = BlackHole (best effort)
-#   4. per appearance (light, then dark): record video (light only), run the
-#      UITest, and feed fixtures/demo-conversation.wav into the host mic while
-#      it dwells
-#   5. extract screenshots from the .xcresult with xcparse into build/artifacts
+#   3. per appearance (light, then dark): record video (light only), run the
+#      UITest — which drives the REAL pipeline from the bundled fixture .wav
+#      in-app (design: in-app audio injection); no host audio device involved
+#   4. extract screenshots from the .xcresult with xcparse into build/artifacts
 #
 # Artifacts are always collected (even on failure) via an EXIT trap. Only a
 # genuine build failure fails the job.
@@ -17,11 +16,9 @@ set -euo pipefail
 # ── config (overridable via env) ──
 SCHEME="ShutUpAndListen"
 SIM_NAME="${CAPTURE_SIM:-iPhone 16 Pro}"
-BLACKHOLE_DEVICE="${CAPTURE_AUDIO_DEVICE:-BlackHole 2ch}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"          # ios/
 PROJECT="$ROOT/ShutUpAndListen.xcodeproj"
-FIXTURE_WAV="$ROOT/fixtures/demo-conversation.wav"
 DERIVED="$ROOT/build/DerivedData"
 ARTIFACTS="$ROOT/build/artifacts"
 RESULTS="$ROOT/build/results"
@@ -77,12 +74,6 @@ xcrun simctl bootstatus "$UDID" -b
 BUNDLE_ID="${CAPTURE_BUNDLE_ID:-sh.shutupandlisten.ios}"
 xcrun simctl privacy "$UDID" grant all "$BUNDLE_ID" >/dev/null 2>&1 || true
 
-# ── 3. host audio input = BlackHole (best effort) ──
-if command -v SwitchAudioSource >/dev/null 2>&1; then
-  log "set host input = $BLACKHOLE_DEVICE"
-  SwitchAudioSource -t input -s "$BLACKHOLE_DEVICE" || true
-fi
-
 run_pass() {                      # $1 = light|dark
   local mode="$1"
   local rb="$RESULTS/$mode.xcresult"
@@ -98,27 +89,20 @@ run_pass() {                      # $1 = light|dark
     VIDEO_PID=$!
   fi
 
-  # Run the UITest in the background so we can feed audio while it dwells.
+  # Run the UITest. It drives the pipeline from the bundled fixture in-app, so
+  # there is nothing to feed from the host and no pre-feed timing to align.
   # -parallel-testing-enabled NO keeps the test on the booted base device
   # instead of a throwaway clone — so recordVideo above actually captures the
   # session, not an idle base simulator.
-  ( xcodebuild test-without-building \
-      -project "$PROJECT" \
-      -scheme "$SCHEME" \
-      -destination "platform=iOS Simulator,id=$UDID" \
-      -derivedDataPath "$DERIVED" \
-      -resultBundlePath "$rb" \
-      -only-testing:ShutUpAndListenUITests/CaptureUITests/testCaptureSession \
-      -parallel-testing-enabled NO \
-      CODE_SIGNING_ALLOWED=NO ) &
-  local test_pid=$!
-
-  # Give the app time to launch + tap Start, then feed the fixture audio.
-  sleep 6
-  if [[ -f "$FIXTURE_WAV" ]] && command -v afplay >/dev/null 2>&1; then
-    afplay "$FIXTURE_WAV" || true
-  fi
-  wait "$test_pid" || true
+  xcodebuild test-without-building \
+    -project "$PROJECT" \
+    -scheme "$SCHEME" \
+    -destination "platform=iOS Simulator,id=$UDID" \
+    -derivedDataPath "$DERIVED" \
+    -resultBundlePath "$rb" \
+    -only-testing:ShutUpAndListenUITests/CaptureUITests/testCaptureSession \
+    -parallel-testing-enabled NO \
+    CODE_SIGNING_ALLOWED=NO || true
 
   if [[ "$mode" == "light" && -n "$VIDEO_PID" ]]; then
     kill -INT "$VIDEO_PID" 2>/dev/null || true
