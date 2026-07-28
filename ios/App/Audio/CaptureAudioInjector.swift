@@ -32,6 +32,10 @@ final class CaptureAudioInjector {
     /// Load + slice the fixture and begin pacing. No-op (calls `onFinished`) if
     /// the file is missing or unreadable — the seed-paint watchdog is the net.
     func start() {
+        // Reset per-run state so a reused instance replays from the top.
+        index = 0
+        buffers = []
+
         guard let url = Bundle.main.url(forResource: "demo-conversation", withExtension: "wav"),
               let file = try? AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
         else {
@@ -61,18 +65,32 @@ final class CaptureAudioInjector {
             return
         }
 
+        // Arm the timer ON `queue` so the `timer` property is only ever touched
+        // there — `stop()` (called from the main actor AND from `tick()` on EOF)
+        // mutates it on the same queue, so the two can't race. `buffers`/`index`
+        // are written above before this async block, so the serial queue orders
+        // those writes before any tick. Cancelling any prior timer here keeps a
+        // reused instance safe.
         let interval = plan.tickIntervalMs / 1000.0
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + interval, repeating: interval)
-        t.setEventHandler { [weak self] in self?.tick() }
-        timer = t
-        t.resume()
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.timer?.cancel()
+            let t = DispatchSource.makeTimerSource(queue: self.queue)
+            t.schedule(deadline: .now() + interval, repeating: interval)
+            t.setEventHandler { [weak self] in self?.tick() }
+            self.timer = t
+            t.resume()
+        }
     }
 
-    /// Stop pacing (idempotent). Called by SessionController.stopSession and on EOF.
+    /// Stop pacing (idempotent). Timer mutation is confined to `queue`, so this
+    /// is safe to call from the main actor (stopSession) while `tick()` may be
+    /// firing on `queue`. Called by SessionController.stopSession and on EOF.
     func stop() {
-        timer?.cancel()
-        timer = nil
+        queue.async { [weak self] in
+            self?.timer?.cancel()
+            self?.timer = nil
+        }
     }
 
     private func tick() {
