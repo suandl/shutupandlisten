@@ -453,6 +453,7 @@ struct SessionView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(controller.isThinking)
+                .accessibilityIdentifier("session.askNowButton")
                 .accessibilityLabel("Pull a thread now")
                 .accessibilityHint("Asks the listener for its one question right away.")
             }

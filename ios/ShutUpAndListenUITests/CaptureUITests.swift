@@ -15,9 +15,12 @@ final class CaptureUITests: XCTestCase {
 
     func testCaptureSession() {
         let app = XCUIApplication()
-        app.launchArguments = ["-uiTestCapture"]
-        // The runner (or a developer without working mic injection) sets this to
-        // paint the fixture transcript/hint so the checkpoints still render.
+        // Primary path: drive the real pipeline from the bundled fixture .wav
+        // (design: in-app audio injection). Real transcription/VAD/turn/gate,
+        // stubbed Claude replies. No BlackHole, no host audio.
+        app.launchArguments = ["-uiTestCapture", "-captureInjectAudio"]
+        // Last-resort display-only paint, opt-in via env (kept for a runner where
+        // even injected SFSpeech is unavailable).
         if ProcessInfo.processInfo.environment["CAPTURE_SEED_TRANSCRIPT"] == "1" {
             app.launchArguments.append("-captureSeedTranscript")
         }
@@ -35,6 +38,15 @@ final class CaptureUITests: XCTestCase {
         _ = app.otherElements["session.transcript"].waitForExistence(timeout: 10)
         sleep(6)
         snapshot(app, "02-live-transcript")
+
+        // Deterministic nudge (design §reliability): the natural gate escalation
+        // over the fixture is nondeterministic, so explicitly pull a thread —
+        // askNow() requests a question the stub answers, landing a REAL listener
+        // line built on the REAL transcript. Optional; tapped only if present.
+        let askNow = app.buttons["session.askNowButton"]
+        if askNow.waitForExistence(timeout: 10), askNow.isEnabled {
+            askNow.tap()
+        }
 
         // 03 — a listener reply landed inline (never asserted; capture regardless).
         _ = app.staticTexts["session.listenerReply"].firstMatch.waitForExistence(timeout: 30)
