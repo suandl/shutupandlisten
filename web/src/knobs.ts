@@ -92,9 +92,14 @@ export const TURN_KNOBS: KnobSpec[] = [
  * Spaced wide at the top and tight at the bottom because that is where the decision
  * lives: everything at/above ~1000ms is known-comfortable (it is the shipped
  * behaviour, minus a little), and the interesting question is where it starts to
- * cut people off. 200ms is the bottom rung — the shortest floor in the sweep, down
- * at the edge of the measured EOU cost. The feel-test (su-lou.10.6) landed here: it
- * held B1 with the veto on and read as clearly better, so 200ms is now the default.
+ * cut people off. 200ms is the bottom rung — the shortest floor in the sweep, and it
+ * sits BELOW the measured ~270ms warmed EOU cost (smart-turn.ts). The feel-test
+ * (su-lou.10.6) landed here; it is the ratified default. Mechanism, though: at a floor
+ * under that cost the verdict has not landed when the deadline fires (still null), so
+ * the smart-turn veto — which only EXTENDS the floor on an `incomplete` verdict — cannot
+ * gate the FIRST evaluation of a pause; it is answered blind. The late verdict arrives
+ * as EVIDENCE (spec §4b) that can supersede an in-flight `deciding`, not as the veto.
+ * su-lou.10.8 measures the residual blind-first-evaluation race this opens.
  */
 export const FLOOR_SWEEP_MS: readonly number[] = [1500, 1000, 750, 500, 350, 200];
 
