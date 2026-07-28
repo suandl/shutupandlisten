@@ -345,6 +345,19 @@ final class SessionController: ObservableObject {
             }
             self.injector = injector
             injector.start()
+            // Watchdog: if real transcription is still empty ~8 s in (SFSpeech
+            // unavailable on this sim), paint the fixture so the transcript/hint
+            // checkpoints still render. Injection stays primary; this is the net.
+            Timer.scheduledTimer(withTimeInterval: 8.0, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.isRunning else { return }
+                    let hasRealText = self.transcript.contains {
+                        $0.speaker == .thinker
+                            && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty
+                    }
+                    if !hasRealText { self.seedCaptureState() }
+                }
+            }
         }
 
         // Record the session audio (best-effort — the session runs regardless).
@@ -405,6 +418,14 @@ final class SessionController: ObservableObject {
     /// network path is untouched; inert unless the flag is present.
     private func seedCaptureStateIfNeeded() {
         guard CaptureSeam.shouldSeedTranscript else { return }
+        seedCaptureState()
+    }
+
+    /// Paint the fixture transcript + top hint onto the live screen (design
+    /// §reliability). Display only — the network path is untouched. Called by
+    /// the explicit `-captureSeedTranscript` flag AND by the injection-mode
+    /// watchdog when real transcription produced nothing.
+    private func seedCaptureState() {
         let fixture = CaptureURLProtocol.fixture
         var seeded: [TranscriptEntry] = []
         for (i, line) in fixture.seedTranscript.enumerated() where !line.isEmpty {
