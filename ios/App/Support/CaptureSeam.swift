@@ -33,8 +33,11 @@ enum CaptureSeam {
         guard isActive else { return }
         // Skip onboarding so the session screen is visible immediately.
         UserDefaults.standard.set(true, forKey: "hasOnboarded")
-        // Auth bypass: a fake developer key routes the listener through
-        // ClaudeClient → api.anthropic.com, which CaptureURLProtocol intercepts.
+        // Seed the fake key so a captured Settings screen shows a dev key
+        // populated. The listener's actual auth bypass no longer depends on
+        // this write (which can silently fail on an unsigned capture build):
+        // SessionController.resolveService short-circuits to a fakeAPIKey
+        // ClaudeClient under CaptureSeam.isActive, reaching CaptureURLProtocol.
         KeychainStore.apiKey = fakeAPIKey
         if let fixture = loadFixture() {
             CaptureURLProtocol.fixture = fixture
