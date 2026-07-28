@@ -13,5 +13,5 @@
     "isolatedModules": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"]
   },
-  "include": ["src", "vite.config.ts", "vite.works-check.config.ts"]
+  "include": ["src", "vite.config.ts", "vite.works-check.config.ts", "vite.feeltest.config.ts"]
 }
