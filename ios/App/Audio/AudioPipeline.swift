@@ -53,6 +53,12 @@ final class AudioPipeline: TTSPlaybackSink {
     /// only correct recovery is a fresh instance (`resume(rebuild: true)`).
     private var engine = AVAudioEngine()
     private var running = false
+    /// Capture injection mode (design: in-app audio injection). When true,
+    /// `startEngine()` skips the mic input tap — buffers arrive via
+    /// `injectForCapture(_:)` instead — but the engine still starts so the
+    /// listener's TTS renders through the AEC graph as in production. Set only
+    /// under the `-captureInjectAudio` launch flag; false in every shipped path.
+    private var isInjecting = false
     private var notificationObservers: [NSObjectProtocol] = []
 
     // ── TTS playback through THIS engine (see `TTSPlaybackSink`) ──
@@ -93,9 +99,10 @@ final class AudioPipeline: TTSPlaybackSink {
         (ProcessInfo.processInfo.systemUptime - clockOrigin) * 1000
     }
 
-    func start(clockOrigin: TimeInterval) throws {
+    func start(clockOrigin: TimeInterval, injecting: Bool = false) throws {
         guard !running else { return }
         self.clockOrigin = clockOrigin
+        self.isInjecting = injecting
         try activateSession()
         try startEngine()
         observeSessionNotifications()
@@ -114,6 +121,16 @@ final class AudioPipeline: TTSPlaybackSink {
         inSpeech = false
         speechBufferRun = 0
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    /// Capture-only entry point (design: in-app audio injection). Feed one
+    /// fixture buffer through the SAME fan-out the mic tap uses — recording
+    /// write + RMS VAD + `onBuffer`/`onLevel` — so transcription, turn-end, and
+    /// metering all run for real. There is deliberately ONE `process(_:)`
+    /// implementation, exercised by both the mic and the injector.
+    func injectForCapture(_ buffer: AVAudioPCMBuffer) {
+        guard running else { return }
+        process(buffer)
     }
 
     // ── interruption handling ──
@@ -163,9 +180,15 @@ final class AudioPipeline: TTSPlaybackSink {
         // AEC so our own TTS never reads as thinker speech (barge-in stays honest).
         try? input.setVoiceProcessingEnabled(true)
 
-        let format = input.outputFormat(forBus: 0)
-        input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
-            self?.process(buffer)
+        // Injection mode drives the pipeline from a bundled file via
+        // `injectForCapture(_:)`, so no live tap — the sim mic is silent and a
+        // tap would only add a noise floor. The engine still starts below so
+        // the listener's TTS renders through the AEC graph as in production.
+        if !isInjecting {
+            let format = input.outputFormat(forBus: 0)
+            input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+                self?.process(buffer)
+            }
         }
 
         // Voice-process the OUTPUT node too — the documented duplex pattern —
