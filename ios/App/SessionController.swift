@@ -150,6 +150,9 @@ final class SessionController: ObservableObject {
     private var detector: TurnDetector?
     private let pipeline = AudioPipeline()
     private let transcriber = SpeechTranscriber()
+    /// CI-only fixture driver (design: in-app audio injection). Non-nil only
+    /// while a `-captureInjectAudio` session is running.
+    private var injector: CaptureAudioInjector?
     private let speech = SpeechOutput()
     private var tickTimer: Timer?
     private var clockOrigin: TimeInterval = 0
@@ -327,12 +330,22 @@ final class SessionController: ObservableObject {
         }
 
         do {
-            try pipeline.start(clockOrigin: clockOrigin)
+            try pipeline.start(clockOrigin: clockOrigin, injecting: CaptureSeam.shouldInjectAudio)
         } catch {
             fail("Could not start the microphone: \(error.localizedDescription)")
             return
         }
         transcriber.start()
+
+        // CI capture: drive the real pipeline from the bundled fixture .wav
+        // instead of the (silent) simulator mic. Inert unless the flag is set.
+        if CaptureSeam.shouldInjectAudio {
+            let injector = CaptureAudioInjector { [weak self] buffer in
+                self?.pipeline.injectForCapture(buffer)
+            }
+            self.injector = injector
+            injector.start()
+        }
 
         // Record the session audio (best-effort — the session runs regardless).
         let fileName = UUID().uuidString + ".m4a"
@@ -358,6 +371,8 @@ final class SessionController: ObservableObject {
 
     func stopSession() {
         guard isRunning else { return }
+        injector?.stop()
+        injector = nil
         tickTimer?.invalidate()
         tickTimer = nil
         speech.stop()
