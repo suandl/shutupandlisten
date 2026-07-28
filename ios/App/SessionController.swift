@@ -155,6 +155,9 @@ final class SessionController: ObservableObject {
     private var injector: CaptureAudioInjector?
     private let speech = SpeechOutput()
     private var tickTimer: Timer?
+    /// One-shot CI capture watchdog (design §reliability); invalidated on stop
+    /// so a stale fire can't paint the seed into a later session.
+    private var seedWatchdogTimer: Timer?
     private var clockOrigin: TimeInterval = 0
 
     /// Latest EOU probability for the current pause (gate rule 2 evidence).
@@ -348,12 +351,12 @@ final class SessionController: ObservableObject {
             // Watchdog: if real transcription is still empty ~8 s in (SFSpeech
             // unavailable on this sim), paint the fixture so the transcript/hint
             // checkpoints still render. Injection stays primary; this is the net.
-            Timer.scheduledTimer(withTimeInterval: 8.0, repeats: false) { [weak self] _ in
+            seedWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, self.isRunning else { return }
                     let hasRealText = self.transcript.contains {
                         $0.speaker == .thinker
-                            && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty
+                            && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     }
                     if !hasRealText { self.seedCaptureState() }
                 }
@@ -388,6 +391,8 @@ final class SessionController: ObservableObject {
         injector = nil
         tickTimer?.invalidate()
         tickTimer = nil
+        seedWatchdogTimer?.invalidate()
+        seedWatchdogTimer = nil
         speech.stop()
         pipeline.stopRecording()
         transcriber.stop()
