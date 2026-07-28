@@ -1006,6 +1006,14 @@ final class SessionController: ObservableObject {
     /// is a valid state); only the reactive gate, when it actually needs to
     /// speak, raises the `.accountRequired` sign-in banner (via `makeService`).
     private func resolveService() -> (any ListenerService)? {
+        // Under CI capture the listener must reach the CaptureURLProtocol stub
+        // deterministically — bypass the keychain + account store (an unsigned
+        // capture build's keychain write can silently fail, which otherwise
+        // leaves askNow/the gate with no service and raises a spurious
+        // account-required alert). Inert outside the capture flag.
+        if CaptureSeam.isActive {
+            return ClaudeClient(config: ClaudeConfig(apiKey: CaptureSeam.fakeAPIKey))
+        }
         if let service = accountStore?.makeListenerService(devAPIKey: KeychainStore.apiKey) {
             return service
         }

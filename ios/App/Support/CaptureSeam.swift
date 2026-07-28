@@ -9,6 +9,11 @@ import Foundation
 enum CaptureSeam {
     /// Launch argument that arms the whole capture path.
     static let flag = CaptureFlags.capture
+    /// The stub developer key used during capture. Routes the listener through
+    /// `ClaudeClient` → api.anthropic.com, which `CaptureURLProtocol` intercepts.
+    /// Resolved directly (not via the keychain) so an unsigned capture build —
+    /// where the keychain write can silently fail — still reaches the stub.
+    static let fakeAPIKey = "ci-capture-fake-key"
     /// Drives the REAL pipeline from the bundled fixture `.wav` (design: in-app
     /// audio injection) — the primary CI capture path. Requires `flag`.
     static let injectAudioFlag = CaptureFlags.injectAudio
@@ -30,7 +35,7 @@ enum CaptureSeam {
         UserDefaults.standard.set(true, forKey: "hasOnboarded")
         // Auth bypass: a fake developer key routes the listener through
         // ClaudeClient → api.anthropic.com, which CaptureURLProtocol intercepts.
-        KeychainStore.apiKey = "ci-capture-fake-key"
+        KeychainStore.apiKey = fakeAPIKey
         if let fixture = loadFixture() {
             CaptureURLProtocol.fixture = fixture
         }
