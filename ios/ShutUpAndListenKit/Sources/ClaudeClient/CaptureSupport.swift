@@ -7,6 +7,31 @@
 import Foundation
 import TurnEngine
 
+/// The capture launch flags and how they compose. Pure so the App's thin
+/// `CaptureSeam` wrapper is `swift test`-covered here rather than only in the
+/// Xcode target. `injectAudio` supersedes `seedTranscript` as the primary
+/// driver but the two coexist as a fallback chain (design §Reliability).
+public enum CaptureFlags {
+    /// Arms the whole capture seam (auth bypass, network stub, permission skip).
+    public static let capture = "-uiTestCapture"
+    /// Drives the real pipeline from the bundled fixture `.wav`. Requires `capture`.
+    public static let injectAudio = "-captureInjectAudio"
+    /// Display-only fixture paint — the last-resort fallback.
+    public static let seedTranscript = "-captureSeedTranscript"
+
+    public static func isActive(_ args: [String]) -> Bool {
+        args.contains(capture)
+    }
+
+    public static func shouldInjectAudio(_ args: [String]) -> Bool {
+        args.contains(capture) && args.contains(injectAudio)
+    }
+
+    public static func shouldSeedTranscript(_ args: [String]) -> Bool {
+        args.contains(seedTranscript)
+    }
+}
+
 /// Which hosts the capture stub replaces with canned replies. Everything else
 /// — notably Apple's speech-recognition endpoints — passes through untouched so
 /// the real SpeechTranscriber still works.

@@ -34,6 +34,26 @@ final class CaptureSupportTests: XCTestCase {
         XCTAssertTrue(CaptureHosts.shouldIntercept(URL(string: "https://API.ANTHROPIC.COM/v1/messages")))
     }
 
+    // ── CaptureFlags ──
+
+    func testInjectAudioRequiresBothFlags() {
+        // -captureInjectAudio alone does nothing without the master capture flag.
+        XCTAssertFalse(CaptureFlags.shouldInjectAudio(["-captureInjectAudio"]))
+        XCTAssertTrue(CaptureFlags.shouldInjectAudio(["-uiTestCapture", "-captureInjectAudio"]))
+    }
+
+    func testCaptureActiveNeedsMasterFlag() {
+        XCTAssertTrue(CaptureFlags.isActive(["-uiTestCapture"]))
+        XCTAssertFalse(CaptureFlags.isActive(["-captureInjectAudio"]))
+        XCTAssertFalse(CaptureFlags.isActive([]))
+    }
+
+    func testSeedTranscriptIsIndependentOfMasterFlag() {
+        // The seed paint is a display-only fallback that can be launched on its own.
+        XCTAssertTrue(CaptureFlags.shouldSeedTranscript(["-captureSeedTranscript"]))
+        XCTAssertFalse(CaptureFlags.shouldSeedTranscript(["-uiTestCapture"]))
+    }
+
     // ── CaptureFixture ──
 
     func testDecodesFixtureShape() throws {
