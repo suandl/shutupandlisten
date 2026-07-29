@@ -19,6 +19,7 @@
 //
 //   # Demo: <title>            (or "# <title>")
 //   **Start:** `<url path + query>`
+//   **Auth:** yes|no           (optional; accepted and ignored — see below)
 //   <free prose>               (becomes the cover subtitle / description)
 //   ## Steps
 //   1. **<narration>**         (numbered item; bold = the burned-in caption)
@@ -26,6 +27,28 @@
 //      <free prose>            (step description; ignored by the driver)
 //      _Prove:_ <prose> `<assertion>`
 //      _Fail if:_ <prose> `<assertion>`   (both optional; assertion optional)
+//   ## Scrutiny                (optional)
+//   - <thing a viewer should check critically>
+//
+// ── Superset of the gc-toolkit dialect (su-lou.4.2) ──
+//
+// The per-PR flow drafts a script with the gc-toolkit `gc-demo-script` skill,
+// whose output is the generic `demo:capture` format: a `**Auth:**` line and a
+// `## Scrutiny` section, and `_Prove:_`/`_Fail if:_` as PROSE with no machine
+// assertion. This grammar is a strict superset, so a raw generated draft parses
+// and runs as-is (its steps simply record manual proofs) and adapting it for this
+// harness is additive — you add sim-mode actions and assertions, you never have to
+// restructure the file. Two generic-dialect constructs are handled explicitly:
+//
+//   • `**Auth:**` is accepted and dropped. This harness has no auth (the demo
+//     substrate is a local dev server), and the line is only in the format because
+//     the upstream skill targets authenticated apps. Dropping it deliberately —
+//     rather than letting it fall through as prose — keeps it out of the cover
+//     subtitle.
+//   • `## Scrutiny` bullets are parsed into `Demo.scrutiny` instead of being glued
+//     onto the last step's description. capture.ts renders them as a closing card,
+//     so the section a generated draft ships survives into the video rather than
+//     being silently swallowed.
 //
 // Actions:     goto <path> · wait <ms> · waitFor <selector> · waitForText <selector> ~ <substr> · click <selector> · scroll <selector>
 // Assertions:  visible <sel> · hidden <sel> · count <sel> <op> <n> · text <sel> ~ <matcher> · eval <js>
@@ -93,10 +116,12 @@ export interface Demo {
   /** Free prose between the header and `## Steps` — the cover subtitle. */
   description: string;
   steps: DemoStep[];
+  /** `## Scrutiny` bullets — what a viewer should check critically. Rendered as a closing card. */
+  scrutiny: string[];
 }
 
 /** Pull every inline-code span `` `...` `` out of a line, in order. */
-function inlineCodes(line: string): string[] {
+export function inlineCodes(line: string): string[] {
   const out: string[] = [];
   const re = /`([^`]+)`/g;
   let m: RegExpExecArray | null;
@@ -194,10 +219,26 @@ function parseContract(body: string): Contract {
 
 const H1 = /^#\s+(?:Demo:\s*)?(.+)$/i;
 const START = /^\*\*Start:\*\*\s*(.+)$/i;
-const STEPS_HEADER = /^##\s+Steps\b/i;
+/** Generic-dialect header line; accepted so it never lands in the cover subtitle. */
+const AUTH = /^\*\*Auth:\*\*/i;
+/** A `##` section heading (`###` and deeper stay prose). */
+const SECTION = /^##\s+(.+?)\s*$/;
+const STEPS_TITLE = /^Steps\b/i;
+const SCRUTINY_TITLE = /^Scrutiny\b/i;
 const STEP_ITEM = /^\d+\.\s+\*\*(.+?)\*\*\s*$/;
+const BULLET = /^[-*]\s+(.+)$/;
 const PROVE = /^_Prove:_\s*(.*)$/i;
 const FAIL_IF = /^_Fail if:_\s*(.*)$/i;
+
+/** A scrutiny bullet is read as human prose: markers and emphasis go, code-span TEXT stays. */
+function bulletText(s: string): string {
+  return s
+    .replace(/^[-*]\s+/, '')
+    .replace(/\*\*/g, '')
+    .replace(/`/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 /**
  * Parse a demo-script markdown string into a `Demo`. Tolerant: unknown lines become
@@ -211,8 +252,13 @@ export function parseDemoScript(md: string): Demo {
   let start = '';
   const descParts: string[] = [];
   const steps: DemoStep[] = [];
+  const scrutiny: string[] = [];
 
-  let inSteps = false;
+  // `head` until `## Steps`; any later `##` heading closes the steps section, so a
+  // trailing `## Scrutiny` (or any other section a generated draft carries) can
+  // never leak into the last step's description.
+  type Section = 'head' | 'steps' | 'scrutiny' | 'ignored';
+  let section: Section = 'head';
   let cur: DemoStep | null = null;
   const pushDesc = (s: string): void => {
     if (!cur) return;
@@ -222,7 +268,15 @@ export function parseDemoScript(md: string): Demo {
   for (const rawLine of lines) {
     const line = rawLine.trim();
 
-    if (!inSteps) {
+    const sec = line.match(SECTION);
+    if (sec) {
+      const heading = sec[1].trim();
+      section = STEPS_TITLE.test(heading) ? 'steps' : SCRUTINY_TITLE.test(heading) ? 'scrutiny' : 'ignored';
+      cur = null;
+      continue;
+    }
+
+    if (section === 'head') {
       if (!title) {
         const h = line.match(H1);
         if (h) {
@@ -235,14 +289,24 @@ export function parseDemoScript(md: string): Demo {
         start = s[1].trim().replace(/^`|`$/g, '').trim();
         continue;
       }
-      if (STEPS_HEADER.test(line)) {
-        inSteps = true;
-        continue;
-      }
+      if (AUTH.test(line)) continue; // generic-dialect field; this harness has no auth
       // Prose between the header and ## Steps → the description (skip the title line).
       if (line && !H1.test(line)) descParts.push(line);
       continue;
     }
+
+    if (section === 'scrutiny') {
+      const b = line.match(BULLET);
+      if (b) {
+        scrutiny.push(bulletText(b[1]));
+      } else if (line && scrutiny.length) {
+        // A wrapped bullet continues the item above it.
+        scrutiny[scrutiny.length - 1] = `${scrutiny[scrutiny.length - 1]} ${bulletText(line)}`.trim();
+      }
+      continue;
+    }
+
+    if (section === 'ignored') continue;
 
     // Inside the steps section.
     const item = line.match(STEP_ITEM);
@@ -282,7 +346,7 @@ export function parseDemoScript(md: string): Demo {
   if (!start) throw new Error('demo script: missing "**Start:** <url>"');
   if (steps.length === 0) throw new Error('demo script: no steps found under "## Steps"');
 
-  return { title, start, description: descParts.join(' ').replace(/\s+/g, ' ').trim(), steps };
+  return { title, start, description: descParts.join(' ').replace(/\s+/g, ' ').trim(), steps, scrutiny };
 }
 
 /** URL/file-safe slug of a title: lowercased, non-alphanumeric runs → '-', trimmed. */

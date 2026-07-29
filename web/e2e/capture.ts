@@ -360,6 +360,30 @@ async function captureCover(page: Page, demo: Demo, stepCount: number, capturesD
   return { file, narration: demo.title, duration: 5, observation: null, proof: 'passed', severity: null };
 }
 
+/**
+ * A closing card listing the script's `## Scrutiny` items — what a viewer should
+ * check critically. Generated drafts (gc-demo-script) always carry this section;
+ * rendering it keeps a demo from being read as "everything here is fine".
+ */
+async function captureScrutiny(page: Page, items: string[], capturesDir: string): Promise<Frame> {
+  const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  await page.setContent(
+    `<!doctype html><html><body style="margin:0;height:100vh;display:flex;flex-direction:column;justify-content:center;gap:22px;padding:0 8vw;
+       background:#0f1115;color:#e7e9ee;font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;">
+       <div style="color:#6ad08a;font-size:14px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;">scrutiny — look here critically</div>
+       <ul style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:16px;font-size:24px;line-height:1.4;max-width:70ch;">
+         ${items.map((s) => `<li style="display:flex;gap:14px;"><span style="color:#6ad08a;">·</span><span>${esc(s)}</span></li>`).join('')}
+       </ul>
+     </body></html>`,
+  );
+  await page.waitForTimeout(150);
+  const file = '99-scrutiny.png';
+  await page.screenshot({ path: path.join(capturesDir, file) });
+  // Reading a list takes longer than watching a step: 2.5s per item, within 6-14s.
+  const duration = Math.min(14, Math.max(6, items.length * 2.5));
+  return { file, narration: 'What to check critically', duration, observation: null, proof: 'passed', severity: null };
+}
+
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv);
   const log = (m: string): void => console.log(m);
@@ -417,7 +441,14 @@ async function main(): Promise<void> {
     }
 
     const cover = await captureCover(page, demo, demo.steps.length, capturesDir);
-    const manifest: Manifest = { title: demo.title, frames: [cover, ...frames] };
+    const scrutinyFrame = demo.scrutiny.length ? await captureScrutiny(page, demo.scrutiny, capturesDir) : null;
+    const manifest: Manifest = {
+      title: demo.title,
+      frames: [cover, ...frames, ...(scrutinyFrame ? [scrutinyFrame] : [])],
+      // Kept in the manifest too, so a reviewer reading a kept .captures/ dir sees
+      // the scrutiny list without having to re-read the script.
+      ...(demo.scrutiny.length ? { scrutiny: demo.scrutiny } : {}),
+    };
     writeFileSync(path.join(capturesDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
     writeFileSync(path.join(capturesDir, 'issues.json'), JSON.stringify(issues.filter(Boolean), null, 2));
 

@@ -34,6 +34,8 @@ export interface Frame {
 export interface Manifest {
   title: string;
   frames: Frame[];
+  /** The script's `## Scrutiny` items, when it had any (su-lou.4.2). Not used for assembly. */
+  scrutiny?: string[];
 }
 
 export interface AssembleOptions {

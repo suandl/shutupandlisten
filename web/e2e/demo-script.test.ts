@@ -133,3 +133,77 @@ test('slugify', () => {
   assert.equal(slugify('U6 Warmed Loop — VAD → TTS'), 'u6-warmed-loop-vad-tts');
   assert.equal(slugify('  Hello, World!  '), 'hello-world');
 });
+
+// ── The gc-toolkit generic dialect (su-lou.4.2) ──
+//
+// A raw `gc-demo-script` draft must parse and run unedited, so the per-PR flow can
+// capture first and sharpen after. This fixture is deliberately written in the
+// UNADAPTED upstream format: an `**Auth:**` line, prose-only proofs, no sim-mode
+// query, no directives, and a trailing `## Scrutiny` section.
+const GENERATED = `# Demo: Per-PR demo flow
+
+**Start:** /
+**Auth:** yes
+
+## Steps
+
+1. **The harness opens on the stage panel**
+   Navigate to the app.
+   _Prove:_ The stage panel is visible with a state badge
+   _Fail if:_ The page is blank
+
+2. **A turn lands in the transcript**
+   Wait for the first scripted turn.
+   _Prove:_ A reply is rendered under the turn
+   _Fail if:_ The transcript is still empty
+
+## Scrutiny
+
+- Latency numbers are per-stage, not one lumped total
+- No microphone permission is ever requested
+`;
+
+test('generic dialect: **Auth:** is accepted and kept out of the cover subtitle', () => {
+  const d = parseDemoScript(GENERATED);
+  assert.equal(d.title, 'Per-PR demo flow');
+  assert.equal(d.start, '/');
+  assert.equal(d.description, ''); // NOT "Auth: yes"
+});
+
+test('generic dialect: an unadapted draft still yields runnable steps (manual proofs)', () => {
+  const d = parseDemoScript(GENERATED);
+  assert.equal(d.steps.length, 2);
+  assert.deepEqual(d.steps[0].actions, []);
+  assert.equal(d.steps[0].prove?.assertion, undefined);
+  assert.equal(d.steps[0].prove?.prose, 'The stage panel is visible with a state badge');
+  assert.equal(d.steps[1].failIf?.prose, 'The transcript is still empty');
+});
+
+test('## Scrutiny parses into its own list, never into the last step', () => {
+  const d = parseDemoScript(GENERATED);
+  assert.deepEqual(d.scrutiny, [
+    'Latency numbers are per-stage, not one lumped total',
+    'No microphone permission is ever requested',
+  ]);
+  // The regression this guards: scrutiny bullets used to be appended as prose to
+  // whichever step happened to be last.
+  assert.equal(d.steps[1].description, 'Wait for the first scripted turn.');
+});
+
+test('scrutiny: wrapped bullets join their item, code spans keep their text', () => {
+  const d = parseDemoScript(
+    `# Demo: X\n**Start:** /\n## Steps\n1. **s**\n## Scrutiny\n- The \`#loop-metrics\` panel reports\n  every stage\n- Second item\n`,
+  );
+  assert.deepEqual(d.scrutiny, ['The #loop-metrics panel reports every stage', 'Second item']);
+});
+
+test('a section after ## Steps closes the steps block instead of leaking into a step', () => {
+  const d = parseDemoScript(`# Demo: X\n**Start:** /\n## Steps\n1. **s**\n   real prose\n## Notes\nignored prose here\n`);
+  assert.equal(d.steps.length, 1);
+  assert.equal(d.steps[0].description, 'real prose');
+  assert.deepEqual(d.scrutiny, []);
+});
+
+test('a script with no ## Scrutiny section yields an empty list', () => {
+  assert.deepEqual(parseDemoScript(SCRIPT).scrutiny, []);
+});
