@@ -69,6 +69,7 @@ export interface DemoAction {
 }
 
 export type AssertionKind = 'visible' | 'hidden' | 'count' | 'text' | 'eval';
+export const ASSERTION_KINDS: readonly AssertionKind[] = ['visible', 'hidden', 'count', 'text', 'eval'];
 export type CountOp = '>=' | '>' | '==' | '<=' | '<';
 export const COUNT_OPS: readonly CountOp[] = ['>=', '>', '==', '<=', '<'];
 
@@ -95,6 +96,12 @@ export interface Assertion {
 export interface Contract {
   prose: string;
   assertion?: Assertion;
+  /**
+   * Every inline-code span on the line, whether or not one parsed as the assertion.
+   * The driver ignores this; the linter uses it to tell "prose-only by intent" from
+   * "carries something that LOOKS like a check but did not parse".
+   */
+  codes: string[];
 }
 
 export interface DemoStep {
@@ -107,6 +114,13 @@ export interface DemoStep {
   failIf?: Contract;
   /** Free prose under the step (context; not executed). */
   description: string;
+  /**
+   * Inline-code spans on the step's body lines that did NOT parse as an action.
+   * The driver drops them (tolerance is deliberate: prose cites selectors and URLs
+   * in backticks), but a typo'd verb lands here too and then the step silently
+   * loses its wait or click — so the linter gets to see them.
+   */
+  droppedCodes: string[];
 }
 
 export interface Demo {
@@ -214,7 +228,7 @@ function parseContract(body: string): Contract {
       break;
     }
   }
-  return { prose: proseOf(body), assertion };
+  return { prose: proseOf(body), assertion, codes };
 }
 
 const H1 = /^#\s+(?:Demo:\s*)?(.+)$/i;
@@ -311,7 +325,7 @@ export function parseDemoScript(md: string): Demo {
     // Inside the steps section.
     const item = line.match(STEP_ITEM);
     if (item) {
-      cur = { index: steps.length + 1, narration: item[1].trim(), actions: [], description: '' };
+      cur = { index: steps.length + 1, narration: item[1].trim(), actions: [], description: '', droppedCodes: [] };
       steps.push(cur);
       continue;
     }
@@ -331,6 +345,11 @@ export function parseDemoScript(md: string): Demo {
     // Any inline-code action directives on this line?
     const codes = inlineCodes(line);
     const actions = codes.map(parseAction).filter((a): a is DemoAction => a !== null);
+    // Spans that are not directives: usually prose citing a selector or a URL, but
+    // a typo'd verb is indistinguishable here — keep them for the linter to judge.
+    for (const c of codes) {
+      if (parseAction(c) === null) cur.droppedCodes.push(c);
+    }
     if (actions.length) {
       cur.actions.push(...actions);
       // Keep any non-directive prose on the same line as description.
