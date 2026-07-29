@@ -11,11 +11,19 @@ from the suspended signal-loom rig's `demo-capture` skill; built from scratch to
 su (npm, not pnpm; the Playwright **library**, not the MCP server; ffmpeg via
 `ffmpeg-static`, not system ffmpeg or ImageMagick).
 
+**This file is the engine reference — the grammar and the flags.** For the end-to-end
+per-PR procedure (draft a script from a bead with the gc-toolkit `gc-demo-script`
+skill, adapt, lint, capture, commit the MP4 through git-LFS), see
+[`docs/pr-demo-flow.md`](../../docs/pr-demo-flow.md).
+
 ## Quick start
 
 ```bash
 # one command: spins up the pinned :5173 dev server, drives the demo, tears down
 npm run demo:u6
+
+# check a script BEFORE spending a capture run on it
+npm run demo:lint -- e2e/demos/<script>.md
 
 # or point at any demo script
 npm run demo:capture -- e2e/demos/<script>.md
@@ -25,8 +33,13 @@ npm run demo:capture -- e2e/demos/u6-warmed-loop.md --base-url http://localhost:
 ```
 
 Output lands at `e2e/demos/<script-name>.mp4` (silent) — or `<name>-narrated.mp4` when
-narration is enabled (below). Flags: `--output <file.mp4>`, `--no-narrate`, `--keep`
-(keep the `.captures/<run>/` frames + `manifest.json` + `issues.json`).
+narration is enabled (below). The MP4 keeps the script's basename verbatim, so a
+bead-named script stays findable from its bead (`su-lou.10.6-silence-floor.md` →
+`su-lou.10.6-silence-floor.mp4`). Flags: `--output <file.mp4>`, `--no-narrate`,
+`--keep` (keep the `.captures/<run>/` frames + `manifest.json` + `issues.json`).
+
+Committed MP4s under `demos/` are stored in **git-LFS** (root `.gitattributes`);
+`git lfs install` once per machine before committing one.
 
 **Exit code is non-zero if any step's proof fails** — the video is still written and
 the `.captures/<run>/` dir (frames + `manifest.json` + `issues.json`) is kept even
@@ -56,6 +69,7 @@ same file documents the proof and drives it. See `demos/u6-warmed-loop.md`.
 # Demo: <title>
 
 **Start:** `/?demo=<scenario>&llm=off&tts=off`
+**Auth:** yes                        ← optional; accepted and ignored (no auth here)
 
 <free prose → the cover subtitle>
 
@@ -66,7 +80,17 @@ same file documents the proof and drives it. See `demos/u6-warmed-loop.md`.
    <free prose → step description>
    _Prove:_ <human prose> `<assertion>`
    _Fail if:_ <human prose> `<assertion>`
+
+## Scrutiny                          ← optional; rendered as a closing card
+- <what a viewer should check critically>
 ```
+
+**Superset of the gc-toolkit dialect.** `gc-demo-script` drafts scripts in the generic
+`demo:capture` format — an `**Auth:**` line, a `## Scrutiny` section, and prose-only
+`_Prove:_`/`_Fail if:_`. All of it parses here, so a raw draft runs unedited (its steps
+record *manual* proofs, and the run output marks them as such) and adapting it is
+purely additive: add the sim entrypoint, directives and assertions. Run
+`npm run demo:lint` to see exactly which steps are still unproven.
 
 **Actions:** `goto <path>` · `wait <ms>` · `waitFor <selector>` ·
 `waitForText <selector> ~ <substring>` · `click <selector>` · `scroll <selector>`
@@ -86,8 +110,15 @@ browser step by step: run the actions, check the assertion against the live DOM,
 the caption in as a DOM overlay (so the screenshot carries crisp text in the app's own
 font — no ffmpeg `drawtext`/ImageMagick), and screenshot the proof frame. It writes
 `manifest.json` + `issues.json`, then `assemble.ts` concatenates the frames into an MP4
-(with optional narration). Intermediate frames live under `.captures/` (gitignored);
-only the final MP4 under `demos/` is committed.
+(with optional narration). The frame order is cover → steps → scrutiny card (when the
+script has a `## Scrutiny` section). Intermediate frames live under `.captures/`
+(gitignored, and where `gc-demo-script` drops its drafts under `demo-scripts/`); only
+the demo script and the final MP4 under `demos/` are committed.
+
+`lint.ts` is the pre-flight over the same parse: it reports what the driver would
+silently ignore — unregistered `?demo=` scenarios, steps with no machine assertion,
+directives dropped for a typo, over-long captions, missing git-LFS. Its `lintDemo()` is
+pure over an explicit environment, so the rules are unit-tested in `lint.test.ts`.
 
 ## Deterministic sim substrate
 
