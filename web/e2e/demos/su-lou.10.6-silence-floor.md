@@ -11,7 +11,7 @@ settings and the difference is only the knob.
 
 Generated from bead su-lou.10.6 with the gc-toolkit `gc-demo-script` skill, then adapted
 to this harness: sim-mode entrypoint, directives, and a machine assertion per step (see
-docs/pr-demo-flow.md).
+the pr-demo skill, .claude/skills/pr-demo/SKILL.md).
 
 ## Steps
 

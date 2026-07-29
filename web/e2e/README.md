@@ -13,8 +13,8 @@ su (npm, not pnpm; the Playwright **library**, not the MCP server; ffmpeg via
 
 **This file is the engine reference — the grammar and the flags.** For the end-to-end
 per-PR procedure (draft a script from a bead with the gc-toolkit `gc-demo-script`
-skill, adapt, lint, capture, commit the MP4 through git-LFS), see
-[`docs/pr-demo-flow.md`](../../docs/pr-demo-flow.md).
+skill, adapt, lint, capture, commit the MP4 through git-LFS), see the
+[`pr-demo`](../../.claude/skills/pr-demo/SKILL.md) skill.
 
 ## Quick start
 
