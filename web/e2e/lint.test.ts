@@ -70,10 +70,29 @@ test('a raw draft is flagged: no sim scenario, thin step count, prose-only proof
   const findings = messagesFor(DRAFT);
   assert.equal(findings.filter((f) => f.severity === 'error').length, 0); // nothing fatal — it WOULD run
   const warns = findings.filter((f) => f.severity === 'warn');
-  assert.match(warns[0].message, /no `\?demo=<scenario>`/);
+  assert.match(warns[0].message, /no `\?demo=<scenario>` and no step clicks anything/);
   assert.ok(warns.some((f) => /2 steps — under 5/.test(f.message)));
   assert.equal(warns.filter((f) => /`_Prove:_` is prose only/.test(f.message)).length, 2);
   assert.equal(warns.filter((f) => /`_Fail if:_` is prose only/.test(f.message)).length, 1);
+});
+
+test('a script with no ?demo= but a click on the sim controls is NOT flagged', () => {
+  // The classic timing scripts have no `?demo=` entrypoint — clicking one in the sim
+  // controls is the supported way to arm them, and a demo of the floor knob needs it.
+  const md = `# Demo: X
+
+**Start:** \`/?llm=off&tts=off\`
+
+## Steps
+
+1. **A scenario is played from the controls**
+   \`click #sim-controls button:has-text("Thinking pause")\`
+   _Prove:_ the window stayed open — \`count #log .evaluate == 0\`
+`;
+  assert.equal(
+    messagesFor(md).filter((f) => /has no `\?demo=/.test(f.message)).length,
+    0,
+  );
 });
 
 test('an unregistered ?demo= scenario is an ERROR — the harness would boot unarmed', () => {

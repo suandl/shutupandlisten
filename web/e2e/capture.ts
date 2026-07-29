@@ -30,7 +30,7 @@ import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { parseDemoScript, slugify, type Demo, type DemoStep, type Assertion } from './demo-script.ts';
+import { parseDemoScript, slugify, outputSlug, type Demo, type DemoStep, type Assertion } from './demo-script.ts';
 import { assembleVideo, type Frame, type Manifest } from './assemble.ts';
 
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -394,7 +394,7 @@ async function main(): Promise<void> {
 
   // Output + captures dir are keyed off the SCRIPT filename (stable + predictable —
   // one script → one <name>.mp4); the title is only for the cover/caption text.
-  const slug = slugify(path.basename(opts.scriptPath, path.extname(opts.scriptPath)));
+  const slug = outputSlug(path.basename(opts.scriptPath, path.extname(opts.scriptPath)));
   const capturesDir = path.join(WEB_DIR, 'e2e', '.captures', `${slug}-${Date.now()}`);
   mkdirSync(capturesDir, { recursive: true });
   const outputPath = opts.outputPath ? path.resolve(opts.outputPath) : path.join(WEB_DIR, 'e2e', 'demos', `${slug}.mp4`);

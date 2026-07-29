@@ -368,6 +368,21 @@ export function parseDemoScript(md: string): Demo {
   return { title, start, description: descParts.join(' ').replace(/\s+/g, ' ').trim(), steps, scrutiny };
 }
 
+/**
+ * File-safe form of a demo script's BASENAME, used to name its MP4 and captures dir.
+ *
+ * Deliberately NOT `slugify`: the per-PR flow names a script after the bead it demos
+ * (`su-lou.10.6-silence-floor.md`), and slugify would flatten the dots to
+ * `su-lou-10-6-…`, breaking the one mapping the flow depends on — finding the demo
+ * for a given bead. Dots, dashes and underscores survive; everything else collapses.
+ */
+export function outputSlug(basename: string): string {
+  return basename
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[-.]+|-+$/g, '')
+    .toLowerCase();
+}
+
 /** URL/file-safe slug of a title: lowercased, non-alphanumeric runs → '-', trimmed. */
 export function slugify(title: string): string {
   return title

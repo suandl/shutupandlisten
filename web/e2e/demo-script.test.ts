@@ -15,6 +15,7 @@ import {
   parseAssertion,
   parseMatcher,
   slugify,
+  outputSlug,
 } from './demo-script.ts';
 
 const SCRIPT = `# Demo: U6 Warmed Loop
@@ -132,6 +133,15 @@ test('missing title / start / steps each throw', () => {
 test('slugify', () => {
   assert.equal(slugify('U6 Warmed Loop — VAD → TTS'), 'u6-warmed-loop-vad-tts');
   assert.equal(slugify('  Hello, World!  '), 'hello-world');
+});
+
+test('outputSlug keeps the bead id intact (dots survive), unlike slugify', () => {
+  // The artifact must stay findable from the bead it demos.
+  assert.equal(outputSlug('su-lou.10.6-silence-floor'), 'su-lou.10.6-silence-floor');
+  assert.equal(slugify('su-lou.10.6-silence-floor'), 'su-lou-10-6-silence-floor'); // the old behaviour
+  assert.equal(outputSlug('u6-warmed-loop'), 'u6-warmed-loop'); // unchanged for existing demos
+  assert.equal(outputSlug('My Demo (v2)!'), 'my-demo-v2');
+  assert.equal(outputSlug('..leading-dots'), 'leading-dots');
 });
 
 // ── The gc-toolkit generic dialect (su-lou.4.2) ──

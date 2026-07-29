@@ -32,7 +32,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { parseDemoScript, ACTION_VERBS, ASSERTION_KINDS, slugify, type Demo } from './demo-script.ts';
+import { parseDemoScript, ACTION_VERBS, ASSERTION_KINDS, outputSlug, type Demo } from './demo-script.ts';
 
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -130,14 +130,23 @@ export function lintDemo(demo: Demo, env: LintEnv): Finding[] {
   };
 
   // ── Substrate: is this driven against the deterministic sim scenario? ──
+  //
+  // A `?demo=` scenario is one of two legitimate ways to arm the harness; the other
+  // is clicking a scenario in the sim controls (the classic timing scripts have no
+  // `?demo=` entrypoint). Only a script that does NEITHER opens on an idle page and
+  // captures a still life.
   const scenario = demoScenarioOf(demo.start);
+  const drivesByClick = demo.steps.some((s) => s.actions.some((a) => a.verb === 'click'));
   if (!scenario) {
-    add(
-      'warn',
-      null,
-      `**Start:** \`${demo.start}\` has no \`?demo=<scenario>\` — the capture will open the harness idle, ` +
-        `with nothing to observe. Point it at a loop-driving sim scenario (${env.scenarios.join(', ') || 'none registered'}).`,
-    );
+    if (!drivesByClick) {
+      add(
+        'warn',
+        null,
+        `**Start:** \`${demo.start}\` has no \`?demo=<scenario>\` and no step clicks anything — the capture will open ` +
+          `the harness idle, with nothing to observe. Arm it with a loop-driving scenario ` +
+          `(${env.scenarios.join(', ') || 'none registered'}) or drive the sim controls.`,
+      );
+    }
   } else if (!env.scenarios.includes(scenario)) {
     add(
       'error',
@@ -208,7 +217,7 @@ export function lintDemo(demo: Demo, env: LintEnv): Finding[] {
 
 /** The MP4 path capture.ts would write for this script (same derivation: script filename, slugified). */
 export function outputPathFor(scriptPath: string): string {
-  const slug = slugify(path.basename(scriptPath, path.extname(scriptPath)));
+  const slug = outputSlug(path.basename(scriptPath, path.extname(scriptPath)));
   return path.join(WEB_DIR, 'e2e', 'demos', `${slug}.mp4`);
 }
 
