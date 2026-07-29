@@ -1,0 +1,15 @@
+# Demo videos are committed for posterity (su-lou.4 operator decision) but must
+# never enter plain git history: a PR demo is ~0.5-5 MB, every re-capture adds
+# ANOTHER full copy, and git keeps all of them in every clone forever. git-LFS
+# stores a small text pointer in history and the bytes in LFS storage, so the
+# videos survive but a clone stays lean.
+#
+# Requires git-lfs on the machine that COMMITS a video:
+#
+#   sudo apt install git-lfs && git lfs install     # once per machine
+#
+# Without it git silently commits the raw bytes while this file claims the blob
+# is a pointer -- the one failure mode that is hard to notice and painful to
+# undo. `npm run demo:lint` (web/) checks for it before you capture; see
+# docs/pr-demo-flow.md.
+*.mp4 filter=lfs diff=lfs merge=lfs -text
