@@ -268,9 +268,11 @@ export function parseDemoScript(md: string): Demo {
   const steps: DemoStep[] = [];
   const scrutiny: string[] = [];
 
-  // `head` until `## Steps`; any later `##` heading closes the steps section, so a
-  // trailing `## Scrutiny` (or any other section a generated draft carries) can
-  // never leak into the last step's description.
+  // Every `##` heading switches section: `Steps` and `Scrutiny` are consumed, anything
+  // else is ignored until the next heading. That is what stops a trailing `## Scrutiny`
+  // from leaking into the last step's description (it used to), and it also means prose
+  // under some other pre-Steps heading is NOT taken as cover subtitle — only the free
+  // prose directly under the title is.
   type Section = 'head' | 'steps' | 'scrutiny' | 'ignored';
   let section: Section = 'head';
   let cur: DemoStep | null = null;
