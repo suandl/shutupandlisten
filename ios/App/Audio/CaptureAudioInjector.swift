@@ -3,8 +3,11 @@
 // FileInjectionPlan (TurnEngine), and paces them — in real time — into a sink
 // wired to AudioPipeline.injectForCapture. That drives the WHOLE downstream
 // chain (VAD → turn-end → gate → analyst) from real speech, with no mic and no
-// virtual audio device. Compiled in but inert unless SessionController starts it
-// under -captureInjectAudio.
+// virtual audio device. DEBUG-only: `#if DEBUG`-guarded and excluded from the
+// app target's Release build phase, so it never ships in a Release binary
+// (su-uzy9.1, f4). Inert even in DEBUG unless SessionController starts it under
+// -captureInjectAudio.
+#if DEBUG
 
 import AVFoundation
 import Foundation
@@ -118,3 +121,5 @@ final class CaptureAudioInjector {
         return out
     }
 }
+
+#endif

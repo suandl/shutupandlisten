@@ -2,6 +2,13 @@
 // unless the app was launched with -uiTestCapture, so production behavior is
 // untouched. Install order matters: seed auth + onboarding and register the
 // network stub BEFORE any view renders or any request is made.
+//
+// Compiled into DEBUG builds ONLY. The whole capture seam — this file,
+// CaptureURLProtocol, and CaptureAudioInjector — is `#if DEBUG`-guarded AND
+// excluded from the app target's Release build phase, so the network-
+// interception URLProtocol and the auth bypass never ship in an App Store
+// (Release) binary (su-uzy9.1, f4).
+#if DEBUG
 
 import ClaudeClient
 import Foundation
@@ -11,8 +18,9 @@ enum CaptureSeam {
     static let flag = CaptureFlags.capture
     /// The stub developer key used during capture. Routes the listener through
     /// `ClaudeClient` → api.anthropic.com, which `CaptureURLProtocol` intercepts.
-    /// Resolved directly (not via the keychain) so an unsigned capture build —
-    /// where the keychain write can silently fail — still reaches the stub.
+    /// Resolved directly in-memory (never written to the keychain) so a capture
+    /// run leaves the developer's real stored dev key untouched while still
+    /// reaching the stub.
     static let fakeAPIKey = "ci-capture-fake-key"
     /// Drives the REAL pipeline from the bundled fixture `.wav` (design: in-app
     /// audio injection) — the primary CI capture path. Requires `flag`.
@@ -33,12 +41,11 @@ enum CaptureSeam {
         guard isActive else { return }
         // Skip onboarding so the session screen is visible immediately.
         UserDefaults.standard.set(true, forKey: "hasOnboarded")
-        // Seed the fake key so a captured Settings screen shows a dev key
-        // populated. The listener's actual auth bypass no longer depends on
-        // this write (which can silently fail on an unsigned capture build):
-        // SessionController.resolveService short-circuits to a fakeAPIKey
-        // ClaudeClient under CaptureSeam.isActive, reaching CaptureURLProtocol.
-        KeychainStore.apiKey = fakeAPIKey
+        // The listener's auth bypass is entirely in-memory and never touches
+        // the keychain: SessionController.resolveService short-circuits to a
+        // fakeAPIKey ClaudeClient under CaptureSeam.isActive, reaching
+        // CaptureURLProtocol. Leaving the keychain alone means a developer's
+        // real stored dev key survives a local capture run.
         if let fixture = loadFixture() {
             CaptureURLProtocol.fixture = fixture
         }
@@ -52,3 +59,5 @@ enum CaptureSeam {
         return try? CaptureFixture.decode(from: data)
     }
 }
+
+#endif

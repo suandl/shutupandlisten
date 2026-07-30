@@ -14,9 +14,12 @@ struct ShutUpAndListenApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        #if DEBUG
         // Arm the CI capture seams before any view renders or request is made.
-        // Inert unless launched with -uiTestCapture.
+        // Inert unless launched with -uiTestCapture. The seam is compiled out
+        // of Release (su-uzy9.1, f4), leaving init() empty in that build.
         CaptureSeam.installIfNeeded()
+        #endif
     }
 
     var body: some Scene {

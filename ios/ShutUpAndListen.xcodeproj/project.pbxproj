@@ -358,6 +358,12 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 47BY3273S8;
 				ENABLE_PREVIEWS = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = (
+					CaptureSeam.swift,
+					CaptureURLProtocol.swift,
+					CaptureAudioInjector.swift,
+					"demo-conversation.wav",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "shutupandlisten listens while you think out loud so it can wait for a thought to land before saying anything.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Your dictation is transcribed (on-device when available) so the companion can pull on a specific thread of what you actually said.";

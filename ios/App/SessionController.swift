@@ -150,9 +150,12 @@ final class SessionController: ObservableObject {
     private var detector: TurnDetector?
     private let pipeline = AudioPipeline()
     private let transcriber = SpeechTranscriber()
+    #if DEBUG
     /// CI-only fixture driver (design: in-app audio injection). Non-nil only
-    /// while a `-captureInjectAudio` session is running.
+    /// while a `-captureInjectAudio` session is running. DEBUG-only — the
+    /// capture seam is compiled out of Release (su-uzy9.1, f4).
     private var injector: CaptureAudioInjector?
+    #endif
     private let speech = SpeechOutput()
     private var tickTimer: Timer?
     /// One-shot CI capture watchdog (design §reliability); invalidated on stop
@@ -252,7 +255,14 @@ final class SessionController: ObservableObject {
         // Under CI capture (-uiTestCapture) the simulator's privacy is pre-granted
         // by capture-demo.sh, so skip the interactive permission requests — a TCC
         // dialog would otherwise suspend startup and the session would never go live.
-        if !CaptureSeam.isActive {
+        // `captureActive` is a compile-time `false` in Release (the seam is
+        // DEBUG-only, su-uzy9.1 f4), so production always runs the real requests.
+        #if DEBUG
+        let captureActive = CaptureSeam.isActive
+        #else
+        let captureActive = false
+        #endif
+        if !captureActive {
             guard await AVAudioApplication.requestRecordPermission() else {
                 fail("Microphone access is required to listen.")
                 return
@@ -332,17 +342,24 @@ final class SessionController: ObservableObject {
             }
         }
 
+        #if DEBUG
+        let injectingCapture = CaptureSeam.shouldInjectAudio
+        #else
+        let injectingCapture = false
+        #endif
+
         do {
-            try pipeline.start(clockOrigin: clockOrigin, injecting: CaptureSeam.shouldInjectAudio)
+            try pipeline.start(clockOrigin: clockOrigin, injecting: injectingCapture)
         } catch {
             fail("Could not start the microphone: \(error.localizedDescription)")
             return
         }
         transcriber.start()
 
+        #if DEBUG
         // CI capture: drive the real pipeline from the bundled fixture .wav
         // instead of the (silent) simulator mic. Inert unless the flag is set.
-        if CaptureSeam.shouldInjectAudio {
+        if injectingCapture {
             let injector = CaptureAudioInjector { [weak self] buffer in
                 self?.pipeline.injectForCapture(buffer)
             }
@@ -362,6 +379,7 @@ final class SessionController: ObservableObject {
                 }
             }
         }
+        #endif
 
         // Record the session audio (best-effort — the session runs regardless).
         let fileName = UUID().uuidString + ".m4a"
@@ -378,7 +396,9 @@ final class SessionController: ObservableObject {
 
         isRunning = true
         machineState = .listening
+        #if DEBUG
         seedCaptureStateIfNeeded()
+        #endif
         // Thinking out loud means long stretches of not touching the screen —
         // don't let auto-lock read that as absence. Background audio makes a
         // lock survivable, but mid-session lock is still a jolt.
@@ -387,8 +407,10 @@ final class SessionController: ObservableObject {
 
     func stopSession() {
         guard isRunning else { return }
+        #if DEBUG
         injector?.stop()
         injector = nil
+        #endif
         tickTimer?.invalidate()
         tickTimer = nil
         seedWatchdogTimer?.invalidate()
@@ -416,11 +438,13 @@ final class SessionController: ObservableObject {
         }
     }
 
+    #if DEBUG
     /// CI capture fallback (design §reliability): when launched with
     /// -captureSeedTranscript, paint the fixture's transcript + top hint onto
     /// the live screen so the "live transcript" and "SUGGESTED" checkpoints
     /// render even if host mic injection produced no audio. Display only — the
-    /// network path is untouched; inert unless the flag is present.
+    /// network path is untouched; inert unless the flag is present. DEBUG-only —
+    /// the capture seam is compiled out of Release (su-uzy9.1, f4).
     private func seedCaptureStateIfNeeded() {
         guard CaptureSeam.shouldSeedTranscript else { return }
         seedCaptureState()
@@ -451,6 +475,7 @@ final class SessionController: ObservableObject {
             return Candidate(text: candidate.text, register: register, anchorPosition: 0)
         }
     }
+    #endif
 
     // ── lifecycle: interruptions & scene phase ──
 
@@ -1012,14 +1037,17 @@ final class SessionController: ObservableObject {
     /// is a valid state); only the reactive gate, when it actually needs to
     /// speak, raises the `.accountRequired` sign-in banner (via `makeService`).
     private func resolveService() -> (any ListenerService)? {
+        #if DEBUG
         // Under CI capture the listener must reach the CaptureURLProtocol stub
         // deterministically — bypass the keychain + account store (an unsigned
         // capture build's keychain write can silently fail, which otherwise
         // leaves askNow/the gate with no service and raises a spurious
-        // account-required alert). Inert outside the capture flag.
+        // account-required alert). Inert outside the capture flag, and compiled
+        // out of Release entirely so no auth bypass ships (su-uzy9.1, f4).
         if CaptureSeam.isActive {
             return ClaudeClient(config: ClaudeConfig(apiKey: CaptureSeam.fakeAPIKey))
         }
+        #endif
         if let service = accountStore?.makeListenerService(devAPIKey: KeychainStore.apiKey) {
             return service
         }

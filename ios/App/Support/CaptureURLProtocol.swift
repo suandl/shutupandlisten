@@ -4,6 +4,11 @@
 // deterministic even though real speech transcription is not. Every other host
 // (Apple speech) passes through untouched. All decision logic lives in the Kit
 // (CaptureHosts / CaptureResponder); this class is thin glue.
+//
+// DEBUG-only: `#if DEBUG`-guarded and excluded from the app target's Release
+// build phase, so this network-interception URLProtocol never ships in a
+// Release (App Store) binary (su-uzy9.1, f4).
+#if DEBUG
 
 import ClaudeClient
 import Foundation
@@ -68,3 +73,5 @@ final class CaptureURLProtocol: URLProtocol {
         return data
     }
 }
+
+#endif
