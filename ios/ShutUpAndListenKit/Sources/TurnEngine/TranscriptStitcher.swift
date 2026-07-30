@@ -75,6 +75,17 @@ public struct TranscriptStitcher: Equatable, Sendable {
         partial = ""
     }
 
+    /// The active task went away WITHOUT a final — a proactive rotation, or a
+    /// task that died with an error. Lock in whatever it had heard: the live
+    /// partial becomes committed text, so the replacement task's first partial
+    /// (which only re-covers the short replayed tail) can't overwrite the
+    /// minute of speech that lived only here. `text` is unchanged by this call
+    /// — it just stops being fragile — and with no partial in flight it is a
+    /// no-op, so callers can fire it on any teardown path.
+    public mutating func commitPartial() {
+        commit(partial)
+    }
+
     /// A new session: empty everything.
     public mutating func reset() {
         committed = ""

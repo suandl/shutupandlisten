@@ -4,11 +4,13 @@
 // Prefers on-device recognition when available. SFSpeechRecognizer has a
 // ~1-min duty-cycle limit, so the recognition task is rotated INTERNALLY — a
 // detail no consumer sees. To keep the live transcript from dropping words
-// across a rotation, we rotate a beat BEFORE the limit and replay a short tail
-// of buffered mic audio into the replacement task; the replacement then
-// re-transcribes that tail, and TranscriptStitcher (TurnEngine) de-dups the
-// overlap. The live string is best-effort by design — the authoritative saved
-// transcript is derived from the .m4a by TranscriptReconciler, not from here.
+// across a rotation, we rotate a beat BEFORE the limit, commit the outgoing
+// task's in-flight partial so nothing it heard depends on it saying goodbye,
+// and replay a short tail of buffered mic audio into the replacement task; the
+// replacement then re-transcribes that tail, and TranscriptStitcher
+// (TurnEngine) de-dups the overlap. The live string is best-effort by design —
+// the authoritative saved transcript is derived from the .m4a by
+// TranscriptReconciler, not from here.
 //
 // Utterance boundaries (the gate reads the WHOLE utterance so far) are anchored
 // by character offset at turn start, exactly as before.
@@ -53,9 +55,9 @@ final class SpeechTranscriber: NSObject {
     /// Bumped each time a new recognition task is started. A recognition
     /// task's completion closure captures the generation it was created with;
     /// if a proactive rotation has since moved `generation` forward, that
-    /// task's late/forced-final callback is a stale duplicate and is dropped
-    /// (its replacement was already fed the replayed tail, so nothing is lost).
-    /// Touched only on main — no lock needed.
+    /// task's late callback is stale and is ignored entirely — the rotation
+    /// already committed everything that task had heard, so there is nothing
+    /// left to salvage from it. Touched only on main — no lock needed.
     private var generation = 0
 
     private func locked<T>(_ body: () -> T) -> T {
@@ -183,32 +185,40 @@ final class SpeechTranscriber: NSObject {
             DispatchQueue.main.async {
                 let isCurrent = (myGeneration == self.generation)
 
-                if let result {
+                if let result, isCurrent {
+                    // Only the CURRENT task speaks for the transcript. A
+                    // superseded task's late result — partial OR final — is
+                    // dropped: rotateProactively() already committed everything
+                    // that task had heard, and its final would arrive as the
+                    // task's WHOLE ~50 s transcript, which merge() cannot align
+                    // against a committed tail that is that same transcript's
+                    // end. One revised opening word (the final adds punctuation
+                    // and casing) breaks the overlap and the minute lands twice.
                     let text = result.bestTranscription.formattedString
                     if result.isFinal {
-                        // A final ALWAYS folds in — even from a task superseded by
-                        // a proactive rotation. A proactive rotation's endAudio()
-                        // forces exactly this final, and dropping it would lose
-                        // everything the superseded task heard beyond the ~1.5 s
-                        // replay tail. merge() de-dups the overlap the
-                        // replacement's replayed tail re-transcribed.
+                        // The live task ended on its own terms: its final
+                        // supersedes its own partial, and merge() strips the
+                        // overlap its replayed tail re-transcribed.
                         self.stitcher.commit(text)
-                        self.onTranscriptUpdate?()
-                    } else if isCurrent {
-                        // Only the ACTIVE task drives the live partial; a stale
-                        // task's partial would clobber the current task's
-                        // in-flight text.
+                    } else {
                         self.stitcher.setPartial(text)
-                        self.onTranscriptUpdate?()
                     }
+                    self.onTranscriptUpdate?()
                 }
 
                 if isCurrent, error != nil || (result?.isFinal ?? false) {
                     // Only the CURRENT task tears down + rotates. A superseded
                     // task's late terminal callback must NOT nil the fresh
                     // request/task or trigger another rotation (that was the
-                    // orphaned-task cascade) — its final was already folded in
-                    // above, so nothing further is needed from it.
+                    // orphaned-task cascade).
+                    //
+                    // A task that died with an error left no final to fold in,
+                    // so lock in what it had reached — the same move
+                    // rotateProactively() makes, for the same reason. After a
+                    // final, commit() already emptied the partial and this is a
+                    // no-op; either way `fullText` is unchanged, so no update
+                    // needs firing.
+                    self.stitcher.commitPartial()
                     self.locked { self.request = nil }
                     self.task = nil
                     if self.running { self.rotate(replayTail: true) }
@@ -229,13 +239,26 @@ final class SpeechTranscriber: NSObject {
     }
 
     /// Timer-driven rotation: lock in the in-flight partial, then hop with a
-    /// replayed tail. Ending the old request's audio makes it finalize; we don't
-    /// wait for that final (its late commit de-dups harmlessly) — and since
-    /// `rotate(replayTail:)` below calls `beginTask`, which bumps `generation`
-    /// BEFORE that forced-final callback can run, the guard in the callback
-    /// drops it as stale rather than tearing down the new task.
+    /// replayed tail.
+    ///
+    /// The lock-in is the load-bearing step. This used to lean on `endAudio()`
+    /// forcing the outgoing task to deliver a final that the callback folded
+    /// in — but `cancel()` on the very next line races that final and normally
+    /// wins: cancelling ends a task with an error and no further results, and
+    /// only `finish()` promises the pending final. Lose that race and up to
+    /// ~50 s of speech, alive only as the stitcher's partial, is wiped the
+    /// instant the replacement reports its first partial — which re-covers just
+    /// the ~1.5 s replay tail. Committing here means the hop never bets on a
+    /// race: every task's words reach the committed transcript exactly once,
+    /// via its own final while it is current, or via this commit when we rotate
+    /// away from it.
+    ///
+    /// `endAudio()` and `cancel()` still tear the old task down promptly — one
+    /// releases the request, the other stops the work — and whatever it says on
+    /// the way out is ignored as stale (see `generation`).
     private func rotateProactively() {
         guard running else { return }
+        stitcher.commitPartial()
         let oldRequest = locked { request }
         oldRequest?.endAudio()
         task?.cancel()
