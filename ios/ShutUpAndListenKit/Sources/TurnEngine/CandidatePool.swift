@@ -47,6 +47,17 @@ public struct CandidatePool: Equatable, Sendable {
         candidates = Array(fresh.prefix(maxCount))
     }
 
+    /// Drop a candidate that has been SPOKEN, so the pool can never offer the
+    /// same line twice (a second pause inside one cadence window would otherwise
+    /// repeat it verbatim, and the on-screen hint would keep advertising a line
+    /// already said). Siblings stay — they are still-fresh, differently-anchored
+    /// options; expiry and the next cycle retire them normally. Matched by text:
+    /// the caller holds the value it spoke, not an index into a pool that may
+    /// have been replaced since.
+    public mutating func remove(_ candidate: Candidate) {
+        candidates.removeAll { $0.text == candidate.text }
+    }
+
     /// Drop candidates the thinker has clearly moved past.
     public mutating func expire(currentPosition: Int) {
         candidates.removeAll { currentPosition - $0.anchorPosition > maxDrift }

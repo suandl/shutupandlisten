@@ -397,6 +397,9 @@ struct SessionView: View {
         .animation(.easeInOut(duration: 0.6), value: controller.hint)
         .accessibilityElement()
         .accessibilityLabel(controller.hint.first.map { "Suggested: \($0.text)" } ?? "")
+        // A cold pool is reserved layout space and nothing else — hide it from
+        // VoiceOver rather than parking an unlabelled element in the rotor.
+        .accessibilityHidden(controller.hint.isEmpty)
         .accessibilityIdentifier("session.hint")
     }
 

@@ -66,6 +66,21 @@ final class CandidatePoolTests: XCTestCase {
         XCTAssertEqual(pool.candidates.map(\.text), ["edge"])
     }
 
+    func testRemoveDropsOnlyTheSpokenCandidate() {
+        var pool = CandidatePool()
+        let spoken = c("said it", .reflection, anchor: 0)
+        pool.replace(with: [spoken, c("still fresh", .reflection, anchor: 0), c("q?", .question, anchor: 0)])
+        pool.remove(spoken)
+        XCTAssertEqual(pool.candidates.map(\.text), ["still fresh", "q?"])
+    }
+
+    func testRemoveOfAbsentCandidateLeavesPoolUnchanged() {
+        var pool = CandidatePool()
+        pool.replace(with: [c("one", .reflection, anchor: 0)])
+        pool.remove(c("never in the pool", .reflection, anchor: 0))
+        XCTAssertEqual(pool.candidates.map(\.text), ["one"])
+    }
+
     func testReplaceDiscardsPreviousSet() {
         var pool = CandidatePool()
         pool.replace(with: [c("old", .question, anchor: 0)])

@@ -722,8 +722,10 @@ final class SessionController: ObservableObject {
             // Text is already up to date via partials; stamp when it closed.
             if let idx = transcript.lastIndex(where: { $0.speaker == .thinker && $0.turn == turn }) {
                 transcript[idx].endMs = t
-                // A finished substantive turn is new material for the analyst.
-                if wordCount(transcript[idx].text) >= defaultSubstantiveWords {
+                // A finished substantive turn is new material for the analyst —
+                // read "substantive" off the SAME derived config the gate uses,
+                // so a retuned knob can never leave the two disagreeing.
+                if wordCount(transcript[idx].text) >= GateConfig.derived(from: knobs).substantiveWords {
                     analyst.noteFinishedTurn(atMs: t)
                 }
             }
@@ -808,6 +810,10 @@ final class SessionController: ObservableObject {
                 for: decision.tier, transcriptLength: transcriber.fullText.count
             ), takeFloor(with: candidate.text, tier: decision.tier) {
                 // Spoke straight from the pool — already metered at analyze time.
+                // Consume it only now that the floor was actually taken: a line
+                // that has been said must not be said again at the next pause in
+                // this cadence window, nor keep sitting on screen as a hint.
+                analyst.consume(candidate)
             } else {
                 // Nothing fresh fits, or the floor couldn't be taken — fall back
                 // to a single live call (today's behavior, the safety net). A

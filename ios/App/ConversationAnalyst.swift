@@ -60,6 +60,17 @@ final class ConversationAnalyst {
         return pool.best(register: register)
     }
 
+    /// A pool candidate was just SPOKEN — drop it. Nothing else removes it, so
+    /// without this a second substantive pause inside the same cadence window
+    /// (~25 s) speaks the same line again (reflections carry no cooldown) and the
+    /// hint keeps showing a line already said. Only the spoken one goes: its
+    /// siblings are still fresh, differently-anchored options.
+    func consume(_ candidate: Candidate) {
+        let before = pool.candidates
+        pool.remove(candidate)
+        if pool.candidates != before { onCandidatesChanged(pool.candidates) }
+    }
+
     /// New session: cold pool, no history. Any cycle still in flight is
     /// invalidated (its completion is dropped) via the generation bump.
     func reset() {
@@ -72,7 +83,17 @@ final class ConversationAnalyst {
     }
 
     private func recompute(nowMs: Double, transcript: String) {
-        guard !transcript.isEmpty, let service = makeService() else { return }
+        guard !transcript.isEmpty else { return }
+        guard let service = makeService() else {
+            // Signed out (or no dev key): nothing to analyze with. Count it as a
+            // run anyway so the probe — which reads the keychain — is paced by
+            // the cadence interval (~25 s) instead of firing on every 0.1 s tick
+            // for as long as a turn stays pending. `pendingSince` is deliberately
+            // left set, so signing in mid-session still earns a real cycle within
+            // one interval rather than waiting for the next finished turn.
+            lastRunMs = nowMs
+            return
+        }
         inFlight = true
         lastRunMs = nowMs
         pendingSince = nil
@@ -92,7 +113,19 @@ final class ConversationAnalyst {
                 guard self.generation == gen else { return }
                 self.inFlight = false
                 guard let reply else { return }
-                self.onUsage(reply.usage)
+                // Bill only cycles that actually reached a model. The
+                // ListenerService default `analyze` (a backend with no analyst
+                // endpoint — the proxy today) returns an empty result with no
+                // usage and makes NO network call; billing that no-op would flip
+                // the session tally to "approximate" (the "≈" readout) though
+                // nothing was spent. A real metered call that failed to surface
+                // usage must still flip it, so the no-op is identified by BOTH
+                // signals together — empty candidates AND nil usage. The one
+                // misread left (a real call that returned nothing and reported
+                // nothing) is indistinguishable from the offline default here.
+                if reply.usage != nil || !reply.result.candidates.isEmpty {
+                    self.onUsage(reply.usage)
+                }
                 let fresh = reply.result.candidates.compactMap { c -> Candidate? in
                     guard let register = Tier(rawValue: c.register),
                           register == .reflection || register == .question
