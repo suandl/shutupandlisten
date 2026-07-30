@@ -138,17 +138,30 @@ candidate interjections**.
   hint empty and the pool cold; the screen-free experience and the fallback
   spoken path are unaffected.
 - **Reprocess the whole transcript, kept cheap by prompt caching.** Each cycle
-  re-sends the whole conversation so far (simplest correct thing). The transcript
-  grows only at the end, so it's a stable prefix — mark it with a `cache_control`
-  breakpoint and each subsequent cycle reads the prior prefix from cache (~0.1×
-  input cost) instead of re-billing it. `ClaudeClient` must gain `cache_control`
-  support (it sends none today, `ClaudeClient.swift:120-125`). Caveats to honor:
-  Opus 4.8's minimum cacheable prefix is ~4096 tokens, so short early
-  conversations won't cache (that's fine — they're cheap); and the cached prefix
-  must stay byte-identical, so the volatile "what should the hint be right now"
-  instruction goes *after* the breakpoint. A future optimization (out of scope
-  now) is compaction/summary for very long sessions so the prefix doesn't grow
-  unbounded — noted as a known follow-up.
+  re-sends the whole conversation so far (simplest correct thing) and marks a
+  `cache_control` breakpoint so later cycles read the prefix back at ~0.1× input
+  cost instead of re-billing it. `ClaudeClient` must gain `cache_control`
+  support (it sends none today, `ClaudeClient.swift:120-125`).
+
+  The subtlety this design originally got wrong: a cache hit requires the block
+  sequence to be **byte-identical up to the breakpoint**, and the cadence fires
+  only *after* new transcript has arrived. Putting the whole transcript in one
+  block and marking that block therefore never hits — its text has changed every
+  single cycle — so every ~25 s cycle would pay cache-**write** pricing (1.25×
+  input) on the entire transcript and never earn a read, which is worse than
+  sending it uncached and gets worse as the transcript grows. "Grows only at the
+  end" makes the transcript a stable prefix *of itself*, not a stable *block*.
+  So the transcript is instead split into an append-only sequence of system
+  blocks at fixed 4000-character boundaries, with the breakpoint on the last
+  **full** chunk: earlier chunks stay byte-identical across cycles and are read
+  from cache, each cycle writes at most one newly-completed chunk, and most
+  cycles complete none and are a pure read. The still-growing tail and the
+  volatile "what should the hint be right now" instruction sit in the final,
+  uncached block after the breakpoint. Caveat to honor: Opus 4.8's minimum
+  cacheable prefix is ~1024 tokens, so the breakpoint is a silent no-op until
+  the transcript passes its first chunk (that's fine — short conversations are
+  cheap). A future optimization (out of scope now) is compaction/summary for very
+  long sessions so the prefix doesn't grow unbounded — noted as a known follow-up.
 
 ### 3. Live screen — transcript is the stage
 

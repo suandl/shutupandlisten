@@ -74,8 +74,7 @@ public final class ClaudeClient: @unchecked Sendable {
     /// the response carried no `usage` block).
     public func respondWithUsage(to request: ListenerRequest) async throws -> ListenerReply {
         let result = try await complete(
-            system: request.system,
-            cachedSystemPrefix: request.cachedSystemPrefix,
+            systemField: Self.systemField(request.system, cachedPrefix: request.cachedSystemPrefix),
             messages: request.messages.map { ["role": $0.role.rawValue, "content": $0.content] },
             maxTokens: request.maxTokens,
             // A text-less reply is the model choosing silence — a valid outcome
@@ -96,7 +95,7 @@ public final class ClaudeClient: @unchecked Sendable {
         criteria: [CoverageCriterion]
     ) async throws -> CoverageResult {
         let result = try await complete(
-            system: Coverage.systemPrompt,
+            systemField: Self.systemField(Coverage.systemPrompt, cachedPrefix: nil),
             messages: [[
                 "role": "user",
                 "content": Coverage.userMessage(transcript: transcript, criteria: criteria),
@@ -114,13 +113,13 @@ public final class ClaudeClient: @unchecked Sendable {
         }
     }
 
-    /// One analyst cycle: whole-transcript request (with the transcript sent as
-    /// a cache_control prefix) → parsed `AnalystResult` + token usage. Uses the
-    /// Messages API structured outputs so the candidate list parses cleanly.
+    /// One analyst cycle: whole-transcript request (sent as the analyst's block
+    /// sequence, cache breakpoint included) → parsed `AnalystResult` + token
+    /// usage. Uses the Messages API structured outputs so the candidate list
+    /// parses cleanly.
     public func analyze(_ request: AnalystRequest) async throws -> AnalystReply {
         let result = try await complete(
-            system: request.system,
-            cachedSystemPrefix: request.cachedSystemPrefix,
+            systemField: Self.systemField(blocks: request.systemBlocks),
             messages: request.messages.map { ["role": $0.role.rawValue, "content": $0.content] },
             maxTokens: request.maxTokens,
             outputSchema: Analyst.resultSchema
@@ -140,9 +139,11 @@ public final class ClaudeClient: @unchecked Sendable {
 
     private struct CompletionResult { let text: String; let usage: Usage? }
 
+    /// `systemField` is the already-serialized Messages API `system` value —
+    /// a plain string or a block array, built by one of the `systemField`
+    /// helpers below.
     private func complete(
-        system: String,
-        cachedSystemPrefix: String? = nil,
+        systemField: Any,
         messages: [[String: String]],
         maxTokens: Int,
         outputSchema: [String: Any]? = nil,
@@ -155,7 +156,7 @@ public final class ClaudeClient: @unchecked Sendable {
         var body: [String: Any] = [
             "model": config.model,
             "max_tokens": maxTokens,
-            "system": Self.systemField(system, cachedPrefix: cachedSystemPrefix),
+            "system": systemField,
             "messages": messages,
         ]
         if let outputSchema {
@@ -234,6 +235,19 @@ public final class ClaudeClient: @unchecked Sendable {
             blocks.append(["type": "text", "text": suffix])
         }
         return blocks
+    }
+
+    /// Build the Messages API `system` field from an explicit block list (the
+    /// analyst path): one `{"type":"text","text":…}` per block, with the
+    /// cache_control breakpoint on the flagged one. Empty blocks are dropped —
+    /// the API rejects empty text blocks — though `Analyst.buildRequest` never
+    /// emits one.
+    private static func systemField(blocks: [SystemBlock]) -> Any {
+        blocks.filter { !$0.text.isEmpty }.map { block -> [String: Any] in
+            var out: [String: Any] = ["type": "text", "text": block.text]
+            if block.cached { out["cache_control"] = ["type": "ephemeral"] }
+            return out
+        }
     }
 
     private struct MessagesResponse: Decodable {

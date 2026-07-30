@@ -117,7 +117,8 @@ final class ClaudeClientTests: XCTestCase {
         XCTAssertNil(reply.usage, "no usage block ⇒ nil, not zeros")
     }
 
-    // ── cache_control on the system prompt (analyst prefix caching) ──
+    // ── the listener path's string + optional-prefix system field ──
+    // (the analyst uses the block-list path instead — see below)
 
     func testSystemSentAsPlainStringWithoutCachePrefix() async throws {
         MockURLProtocol.stub(
@@ -191,7 +192,7 @@ final class ClaudeClientTests: XCTestCase {
         XCTAssertEqual((blocks?[0]["cache_control"] as? [String: Any])?["type"] as? String, "ephemeral")
     }
 
-    // ── analyze: structured candidate list, cached transcript prefix, usage ──
+    // ── analyze: structured candidate list, chunked transcript blocks, usage ──
 
     func testAnalyzeDecodesCandidatesAndUsage() async throws {
         MockURLProtocol.stub(
@@ -213,18 +214,49 @@ final class ClaudeClientTests: XCTestCase {
         XCTAssertEqual(reply.usage?.cacheReadInputTokens, 4096)
     }
 
-    func testAnalyzeSendsStructuredSchemaAndCachedPrefixBlocks() async throws {
-        MockURLProtocol.stub(
-            status: 200,
-            body: #"{ "content": [{ "type": "text", "text": "{\"candidates\":[]}" }], "stop_reason": "end_turn" }"#
-        )
+    private static let emptyCandidates =
+        #"{ "content": [{ "type": "text", "text": "{\"candidates\":[]}" }], "stop_reason": "end_turn" }"#
+
+    /// The `system` blocks the last request actually put on the wire.
+    private func sentSystemBlocks() throws -> [[String: Any]] {
+        let system = MockURLProtocol.lastRequest?.bodyJSON?["system"]
+        return try XCTUnwrap(system as? [[String: Any]], "analyst sends a block-array system")
+    }
+
+    private func isCached(_ block: [String: Any]) -> Bool {
+        (block["cache_control"] as? [String: Any])?["type"] as? String == "ephemeral"
+    }
+
+    func testAnalyzeSendsStructuredSchemaAndTextBlockArray() async throws {
+        MockURLProtocol.stub(status: 200, body: Self.emptyCandidates)
 
         _ = try await makeClient().analyze(Analyst.buildRequest(transcript: "some transcript text"))
 
-        let body = MockURLProtocol.lastRequest?.bodyJSON
-        XCTAssertNotNil(body?["output_config"], "analyst uses structured outputs")
-        XCTAssertTrue(body?["system"] is [[String: Any]],
-                      "the transcript prefix is cached ⇒ block-array system")
+        XCTAssertNotNil(MockURLProtocol.lastRequest?.bodyJSON?["output_config"],
+                        "analyst uses structured outputs")
+        let blocks = try sentSystemBlocks()
+        XCTAssertEqual(blocks.count, 2, "under one chunk: instructions + volatile tail")
+        for block in blocks {
+            XCTAssertEqual(block["type"] as? String, "text")
+        }
+        XCTAssertTrue(isCached(blocks[0]))
+        XCTAssertFalse(isCached(blocks[1]), "the growing tail is never cached")
+    }
+
+    func testAnalyzeMarksOnlyTheLastFrozenChunkWithCacheControl() async throws {
+        MockURLProtocol.stub(status: 200, body: Self.emptyCandidates)
+
+        // 9000 chars ⇒ two full 4000-char chunks + a 1000-char remainder.
+        let transcript = String(repeating: "x", count: 9000)
+        _ = try await makeClient().analyze(Analyst.buildRequest(transcript: transcript))
+
+        let blocks = try sentSystemBlocks()
+        XCTAssertEqual(blocks.count, 4, "instructions + 2 chunks + tail")
+        XCTAssertEqual(blocks.filter(isCached).count, 1, "exactly one breakpoint")
+        XCTAssertTrue(isCached(blocks[2]), "the breakpoint ends the last frozen chunk")
+        XCTAssertEqual((blocks[2]["text"] as? String)?.count, Analyst.transcriptChunkSize)
+        XCTAssertTrue((blocks[3]["text"] as? String)?.contains(Analyst.volatileInstruction) == true,
+                      "the volatile instruction stays after the breakpoint")
     }
 
     // ── errors that are NOT silence still surface ──
