@@ -28,7 +28,7 @@ public enum CaptureFlags {
     }
 
     public static func shouldSeedTranscript(_ args: [String]) -> Bool {
-        args.contains(seedTranscript)
+        args.contains(capture) && args.contains(seedTranscript)
     }
 }
 

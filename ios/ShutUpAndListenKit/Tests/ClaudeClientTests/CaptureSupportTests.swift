@@ -48,9 +48,14 @@ final class CaptureSupportTests: XCTestCase {
         XCTAssertFalse(CaptureFlags.isActive([]))
     }
 
-    func testSeedTranscriptIsIndependentOfMasterFlag() {
-        // The seed paint is a display-only fallback that can be launched on its own.
-        XCTAssertTrue(CaptureFlags.shouldSeedTranscript(["-captureSeedTranscript"]))
+    func testSeedTranscriptRequiresBothFlags() {
+        // The seed paint is a display-only fallback WITHIN a capture run, not a
+        // standalone mode — matching -captureInjectAudio. -captureSeedTranscript
+        // alone is inert: it would otherwise paint from an empty fixture (the
+        // seam's installIfNeeded, which loads the fixture, never runs without
+        // the master flag), and in Release the whole seam is compiled out.
+        XCTAssertFalse(CaptureFlags.shouldSeedTranscript(["-captureSeedTranscript"]))
+        XCTAssertTrue(CaptureFlags.shouldSeedTranscript(["-uiTestCapture", "-captureSeedTranscript"]))
         XCTAssertFalse(CaptureFlags.shouldSeedTranscript(["-uiTestCapture"]))
     }
 
