@@ -39,6 +39,14 @@ The prompt is meant to be pasted into:
 See [`promptfoo/README.md`](promptfoo/README.md) for how to run the
 evals locally, what they measure, and the edit-run-compare loop.
 
+## Demoing a PR
+
+A landed PR of the web harness can be turned into a short video that
+proves what it changed, committed here for posterity (via git-LFS). The
+end-to-end flow is the agent-invocable
+[`pr-demo`](.claude/skills/pr-demo/SKILL.md) skill; see
+[`web/e2e/README.md`](web/e2e/README.md) for the capture engine.
+
 ## Site
 
 A public site at `shutupandlisten.sh` is planned but **not live yet**.

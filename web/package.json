@@ -19,6 +19,7 @@
     "measure:race": "node src/measure-race.ts",
     "measure:loop": "node scripts/loop-latency.mjs",
     "demo:capture": "node e2e/capture.ts",
+    "demo:lint": "node e2e/lint.ts",
     "demo:u6": "node e2e/capture.ts e2e/demos/u6-warmed-loop.md",
     "works-check": "node scripts/works-check.mjs"
   },
