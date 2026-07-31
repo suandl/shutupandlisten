@@ -173,6 +173,28 @@ final class SessionController: ObservableObject {
     /// The reply text currently holding (or about to hold) the floor.
     private var pendingReply: (text: String, tier: Tier)?
 
+    /// The machine's identity for one evaluated pause: which thought (`turn`)
+    /// and which patience-window closure within it (`evaluation`) — spec §4b's
+    /// two ids.
+    private struct PauseKey: Hashable {
+        let turn: Int
+        let evaluation: Int
+    }
+
+    /// Evaluated pauses already handed to the analyst. A pause can be
+    /// re-evaluated on fresh EOU evidence under the SAME evaluation id, and a
+    /// `speak` verdict replays that id onto `turnEnd`, so de-duping here makes
+    /// one substantive pause worth exactly one mark however often we see it.
+    private var analyzedPauses: Set<PauseKey> = []
+
+    /// Bumped on every session start and stop. A model call captures the value
+    /// it was launched under and drops its reply unless the token still
+    /// matches: a reply landing after stop/start belongs to a conversation that
+    /// no longer exists and must not add cost, answer this session's machine,
+    /// speak, or append to its transcript. The analyst holds its own generation
+    /// counter for the same reason (`ConversationAnalyst.reset`).
+    private var sessionGeneration = 0
+
     // ── app context (late-bound from the SwiftUI environment) ──
     private var modelContext: ModelContext?
     private var accountStore: AccountStore?
@@ -273,6 +295,9 @@ final class SessionController: ObservableObject {
             }
         }
 
+        // A new conversation: anything still in flight from the last one is
+        // now stale and must not touch this session's state.
+        sessionGeneration += 1
         clockOrigin = ProcessInfo.processInfo.systemUptime
         sessionStartDate = Date()
         lastSavedRecordID = nil
@@ -280,12 +305,15 @@ final class SessionController: ObservableObject {
         lastSpeechEndMs = .nan
         lastFloorReleaseMs = .infinity
         decisionsByTurn = [:]
+        analyzedPauses = []
         pendingReply = nil
         transcript = []
         sessionCost = SessionCost()
         analyst.reset()
         hint = []
         coverageResult = nil
+        coverageChecking = false
+        isThinking = false
         activeRecord = nil
         ticksSinceCheckpoint = 0
         isInterrupted = false
@@ -407,6 +435,9 @@ final class SessionController: ObservableObject {
 
     func stopSession() {
         guard isRunning else { return }
+        // Retire the token first: a model call already in flight is answering a
+        // conversation that ends here, and its reply must land nowhere.
+        sessionGeneration += 1
         #if DEBUG
         injector?.stop()
         injector = nil
@@ -428,6 +459,11 @@ final class SessionController: ObservableObject {
         isInterrupted = false
         machineState = .listening
         patienceProgress = nil
+        // The in-flight indicators belong to calls whose replies are now
+        // discarded by the generation guard — clear them here rather than
+        // leaving a spinner up for a session that has ended.
+        isThinking = false
+        coverageChecking = false
         analyst.reset()
         hint = []
         UIApplication.shared.isIdleTimerDisabled = false
@@ -740,19 +776,24 @@ final class SessionController: ObservableObject {
                 speaker: .thinker, text: "", tier: nil, turn: turn, startMs: t
             ))
 
-        case .evaluate(_, let turn, _, let reason, _):
-            evaluate(turn: turn, reason: reason)
+        case .evaluate(_, let turn, let evaluation, let reason, _):
+            evaluate(turn: turn, evaluation: evaluation, reason: reason)
 
-        case .turnEnd(let t, let turn, _, _):
+        case .turnEnd(let t, let turn, let evaluation, _):
             // Text is already up to date via partials; stamp when it closed.
             if let idx = transcript.lastIndex(where: { $0.speaker == .thinker && $0.turn == turn }) {
                 transcript[idx].endMs = t
-                // A finished substantive turn is new material for the analyst —
-                // read "substantive" off the SAME derived config the gate uses,
-                // so a retuned knob can never leave the two disagreeing.
-                if wordCount(transcript[idx].text) >= GateConfig.derived(from: knobs).substantiveWords {
-                    analyst.noteFinishedTurn(atMs: t)
-                }
+                // The evaluation that ended this turn was already marked when it
+                // was answered, unless the words only crossed the substantive
+                // line while the model deliberated — the de-dupe collapses the
+                // two into one mark.
+                noteAnalyzablePause(
+                    turn: turn,
+                    evaluation: evaluation,
+                    text: transcript[idx].text,
+                    config: GateConfig.derived(from: knobs),
+                    at: t
+                )
             }
 
         case .responseStart(let t, _):
@@ -784,9 +825,35 @@ final class SessionController: ObservableObject {
         }
     }
 
+    /// Hand a substantive evaluated pause to the analyst, so the candidate pool
+    /// warms on the pause itself rather than on the listener's answer to it.
+    ///
+    /// The analyst's cadence fires on "new material since the last cycle", and
+    /// the only thing that used to mark material was `turnEnd` — which the
+    /// machine emits ONLY when the gate answers `speak` (spec §4b). A pause the
+    /// gate met with silence (or a silent acknowledge) therefore left the pool
+    /// cold precisely where the pre-warmed hint was supposed to be ready: after
+    /// a substantive stretch, one pause before the listener finally speaks.
+    /// Marking on the EVALUATED pause makes the trigger independent of the
+    /// gate's answer; the (turn, evaluation) key keeps one pause worth one mark
+    /// across evidence-driven re-evaluations and the replayed `turnEnd`.
+    private func noteAnalyzablePause(
+        turn: Int,
+        evaluation: Int,
+        text: String,
+        config: GateConfig,
+        at t: Double
+    ) {
+        // Read "substantive" off the SAME derived config the gate uses, so a
+        // retuned knob can never leave the two disagreeing.
+        guard wordCount(text) >= config.substantiveWords else { return }
+        guard analyzedPauses.insert(PauseKey(turn: turn, evaluation: evaluation)).inserted else { return }
+        analyst.noteFinishedTurn(atMs: t)
+    }
+
     /// Answer an `evaluate`. Rules tiers answer synchronously; model tiers
     /// leave the machine in `deciding` until the reply lands.
-    private func evaluate(turn: Int, reason: PatienceReason) {
+    private func evaluate(turn: Int, evaluation: Int, reason: PatienceReason) {
         let now = nowMs()
         let text = transcriber.currentUtteranceText
         // With the EOU heuristic off we fall back to the two-valued bridge the
@@ -808,6 +875,10 @@ final class SessionController: ObservableObject {
         )
         var gateConfig = GateConfig.derived(from: knobs)
         gateConfig.justListen = activeJustListen
+        // New material for the analyst regardless of what the gate answers next.
+        noteAnalyzablePause(
+            turn: turn, evaluation: evaluation, text: text, config: gateConfig, at: now
+        )
         let decision = decideTier(ctx, config: gateConfig)
         decisionsByTurn[turn] = decision.tier
 
@@ -879,12 +950,20 @@ final class SessionController: ObservableObject {
         }
 
         isThinking = true
+        // The conversation this call belongs to. Everything below is dropped if
+        // the session has since stopped or restarted (see `isCurrent`).
+        let generation = sessionGeneration
         Task { [weak self] in
-            defer { Task { @MainActor [weak self] in self?.isThinking = false } }
+            defer {
+                Task { @MainActor [weak self] in
+                    guard let self, self.isCurrent(generation) else { return }
+                    self.isThinking = false
+                }
+            }
             do {
                 let reply = try await client.respondWithUsage(to: request)
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.isCurrent(generation) else { return }
                     self.sessionCost.add(reply.usage)
                     if reply.text.isEmpty {
                         // The model chose silence — the prompt says that is the
@@ -897,7 +976,7 @@ final class SessionController: ObservableObject {
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.isCurrent(generation) else { return }
                     self.report(error)
                     self.decisionsByTurn[turn] = .silence
                     self.feed(.decision(t: self.nowMs(), outcome: .silence))
@@ -952,12 +1031,21 @@ final class SessionController: ObservableObject {
             history: conversationHistory(before: turn)
         )
         isThinking = true
+        // Same guard as `requestModelReply`: an out-of-band pull-a-thread reply
+        // that lands after stop/start would otherwise speak into — and append to
+        // the transcript of — a session that never asked for it.
+        let generation = sessionGeneration
         Task { [weak self] in
-            defer { Task { @MainActor [weak self] in self?.isThinking = false } }
+            defer {
+                Task { @MainActor [weak self] in
+                    guard let self, self.isCurrent(generation) else { return }
+                    self.isThinking = false
+                }
+            }
             do {
                 let reply = try await client.respondWithUsage(to: request)
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.isCurrent(generation) else { return }
                     self.sessionCost.add(reply.usage)
                     guard !reply.text.isEmpty else { return }
                     if self.detector?.state == .deciding {
@@ -976,7 +1064,8 @@ final class SessionController: ObservableObject {
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    self?.report(error)
+                    guard let self, self.isCurrent(generation) else { return }
+                    self.report(error)
                 }
             }
         }
@@ -992,6 +1081,10 @@ final class SessionController: ObservableObject {
         guard let client = makeService() else { return }
         let text = transcriber.fullText
         coverageChecking = true
+        // Coverage is offered only while a session runs, and its result is
+        // persisted into that session's record — so a late answer must not land
+        // on the next one.
+        let generation = sessionGeneration
         Task { [weak self] in
             do {
                 let result = try await client.checkCoverage(
@@ -999,12 +1092,13 @@ final class SessionController: ObservableObject {
                     criteria: self?.coverageCriteria ?? []
                 )
                 await MainActor.run { [weak self] in
-                    self?.coverageResult = result
-                    self?.coverageChecking = false
+                    guard let self, self.isCurrent(generation) else { return }
+                    self.coverageResult = result
+                    self.coverageChecking = false
                 }
             } catch {
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.isCurrent(generation) else { return }
                     self.report(error)
                     self.coverageChecking = false
                 }
@@ -1013,6 +1107,15 @@ final class SessionController: ObservableObject {
     }
 
     // ── helpers ──
+
+    /// Is `generation` still the running session's? The guard every late model
+    /// reply passes before it may touch session state — add cost, answer the
+    /// machine, speak, or append to the transcript. Both halves matter: the
+    /// token catches a reply that outlived its session, and `isRunning` keeps a
+    /// reply from speaking into the gap after a stop.
+    private func isCurrent(_ generation: Int) -> Bool {
+        isRunning && generation == sessionGeneration
+    }
 
     /// Resolve the listener backend for this call: the account proxy when
     /// signed in, the developer-mode key otherwise. Nil (with a friendly
