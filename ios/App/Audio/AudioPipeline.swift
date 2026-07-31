@@ -94,6 +94,16 @@ final class AudioPipeline: TTSPlaybackSink {
     // format matching the tap buffers (float32, deinterleaved).
     private let recordingLock = NSLock()
     private var recordingFile: AVAudioFile?
+    /// Re-formats tap buffers into the file's processing format after a route
+    /// change moves the input to another sample rate or channel count. Built
+    /// lazily on the first mismatching buffer and rebuilt if the input format
+    /// changes again; it is stateful (the resampler carries filter state), so
+    /// the instance is kept rather than recreated per buffer. Touched only
+    /// under `recordingLock`.
+    private var recordingConverter: AVAudioConverter?
+    /// The input format `recordingConverter` was last built FOR — set even when
+    /// the build failed, so an unbridgeable pair is attempted only once.
+    private var recordingConverterInput: AVAudioFormat?
 
     private func nowMs() -> Double {
         (ProcessInfo.processInfo.systemUptime - clockOrigin) * 1000
@@ -311,6 +321,8 @@ final class AudioPipeline: TTSPlaybackSink {
         )
         recordingLock.lock()
         recordingFile = file
+        recordingConverter = nil
+        recordingConverterInput = nil
         recordingLock.unlock()
     }
 
@@ -318,7 +330,56 @@ final class AudioPipeline: TTSPlaybackSink {
     func stopRecording() {
         recordingLock.lock()
         recordingFile = nil
+        recordingConverter = nil
+        recordingConverterInput = nil
         recordingLock.unlock()
+    }
+
+    /// Re-format one tap buffer into the recording file's processing format.
+    /// The caller must hold `recordingLock`: `AVAudioConverter` is not
+    /// thread-safe and the instance is shared with start/stopRecording.
+    ///
+    /// Returns nil only when no converter exists for the pair (e.g. a channel
+    /// layout AVAudioConverter will not map) or the conversion produced
+    /// nothing — the write is skipped then, exactly as it was before.
+    private func convertedForRecording(
+        _ buffer: AVAudioPCMBuffer,
+        to format: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        // Build once per input format — successfully or not. `…Input` records
+        // the format last ATTEMPTED, so a pair the converter cannot bridge is
+        // not retried on every buffer: this is the audio thread.
+        if recordingConverterInput != buffer.format {
+            recordingConverterInput = buffer.format
+            recordingConverter = AVAudioConverter(from: buffer.format, to: format)
+        }
+        guard let converter = recordingConverter else { return nil }
+
+        // A sample-rate change moves the frame count, so size the output by the
+        // rate ratio, plus headroom for the resampler's tail.
+        let ratio = format.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up) + 1024)
+        guard let converted = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+            return nil
+        }
+
+        // `error: nil` deliberately: the pipeline has no log sink and the write
+        // decision is entirely `status` — an errored conversion is skipped just
+        // like an unbridgeable format, so there is nothing an NSError would add.
+        var supplied = false
+        let status = converter.convert(to: converted, error: nil) { _, inputStatus in
+            // One tap buffer per call: once it has been handed over, report
+            // "nothing more right now" so the converter flushes what it can.
+            if supplied {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error, converted.frameLength > 0 else { return nil }
+        return converted
     }
 
     // ── audio thread ──
@@ -326,14 +387,24 @@ final class AudioPipeline: TTSPlaybackSink {
     private func process(_ buffer: AVAudioPCMBuffer) {
         onBuffer?(buffer)
 
-        // Recording sink: write the tap buffer straight through. Guarded by
-        // the file's processing format — if the input layout ever differs
-        // (e.g. a multichannel interface, or a mid-session route change that
-        // moved us to a mic with another sample rate), we skip rather than
-        // corrupt: the transcript keeps going even where the audio cannot.
+        // Recording sink. The file's processing format is pinned at
+        // startRecording to whatever the input was THEN, but the input can
+        // change under a running session: a route loss (AirPods → built-in
+        // mic) or a media-services reset re-taps at whatever format is current.
+        // Skipping every mismatching buffer — the old behavior — left the
+        // transcript running while the .m4a silently went quiet for the rest of
+        // the session, and the file gave no sign of the gap. Convert instead,
+        // so the recording survives the change in one continuous file. A pair
+        // AVAudioConverter cannot bridge still skips (see
+        // `convertedForRecording`), but that is now the rare residue rather
+        // than every route change.
         recordingLock.lock()
-        if let file = recordingFile, file.processingFormat == buffer.format {
-            try? file.write(from: buffer)
+        if let file = recordingFile {
+            if file.processingFormat == buffer.format {
+                try? file.write(from: buffer)
+            } else if let converted = convertedForRecording(buffer, to: file.processingFormat) {
+                try? file.write(from: converted)
+            }
         }
         recordingLock.unlock()
 
