@@ -9,8 +9,10 @@
 #      in-app (design: in-app audio injection); no host audio device involved
 #   4. extract screenshots from the .xcresult with xcparse into build/artifacts
 #
-# Artifacts are always collected (even on failure) via an EXIT trap. Only a
-# genuine build failure fails the job.
+# Artifacts are always collected (even on failure) via an EXIT trap — but a
+# failing pass still fails the script. A UITest that never reaches the capture
+# checkpoints produces no screenshots, and a green job over an empty artifact
+# directory is worse than a red one.
 set -euo pipefail
 
 # ── config (overridable via env) ──
@@ -74,9 +76,11 @@ xcrun simctl bootstatus "$UDID" -b
 BUNDLE_ID="${CAPTURE_BUNDLE_ID:-sh.shutupandlisten.ios}"
 xcrun simctl privacy "$UDID" grant all "$BUNDLE_ID" >/dev/null 2>&1 || true
 
+FAILED_PASSES=""
 run_pass() {                      # $1 = light|dark
   local mode="$1"
   local rb="$RESULTS/$mode.xcresult"
+  local status=0
   log "capture pass: $mode"
   # The test run can leave the base device shut down; re-boot so every pass
   # (and the appearance toggle + video recording below) has a live device.
@@ -94,6 +98,10 @@ run_pass() {                      # $1 = light|dark
   # -parallel-testing-enabled NO keeps the test on the booted base device
   # instead of a throwaway clone — so recordVideo above actually captures the
   # session, not an idle base simulator.
+  #
+  # The status is REMEMBERED, not swallowed: this pass must not abort the run
+  # (the other appearance still deserves a try, and the video/artifacts still
+  # need collecting), but it must still fail the job at the end.
   xcodebuild test-without-building \
     -project "$PROJECT" \
     -scheme "$SCHEME" \
@@ -102,16 +110,29 @@ run_pass() {                      # $1 = light|dark
     -resultBundlePath "$rb" \
     -only-testing:ShutUpAndListenUITests/CaptureUITests/testCaptureSession \
     -parallel-testing-enabled NO \
-    CODE_SIGNING_ALLOWED=NO || true
+    CODE_SIGNING_ALLOWED=NO || status=$?
 
   if [[ "$mode" == "light" && -n "$VIDEO_PID" ]]; then
     kill -INT "$VIDEO_PID" 2>/dev/null || true
     wait "$VIDEO_PID" 2>/dev/null || true
     VIDEO_PID=""
   fi
+
+  if [[ "$status" -ne 0 ]]; then
+    log "capture pass '$mode' FAILED (exit $status)"
+    FAILED_PASSES="${FAILED_PASSES:+$FAILED_PASSES }$mode"
+  fi
 }
 
 run_pass light
 run_pass dark
+
+# Artifact collection runs from the EXIT trap, so it happens on the way out of
+# either branch below — a failing run still uploads whatever it managed to
+# capture, which is what the workflow's `if: always()` upload expects.
+if [[ -n "$FAILED_PASSES" ]]; then
+  log "FAILED passes: $FAILED_PASSES — artifacts (if any) in $ARTIFACTS"
+  exit 1
+fi
 
 log "done — artifacts in $ARTIFACTS"
