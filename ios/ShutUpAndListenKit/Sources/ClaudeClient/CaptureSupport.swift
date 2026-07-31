@@ -57,15 +57,22 @@ public struct CaptureFixture: Codable, Equatable, Sendable {
     public var listenerReplies: [String]
     public var analystCandidates: [AnalystCandidate]
     public var seedTranscript: [String]
+    /// The canned answer to a coverage check. OPTIONAL — and last, so the
+    /// bundled fixture JSON stays valid without it: a capture run that never
+    /// opens coverage needs no fixture data, and the stub falls back to an
+    /// empty-but-valid result rather than to the analyst's shape.
+    public var coverageResult: CoverageResult?
 
     public init(
         listenerReplies: [String],
         analystCandidates: [AnalystCandidate],
-        seedTranscript: [String]
+        seedTranscript: [String],
+        coverageResult: CoverageResult? = nil
     ) {
         self.listenerReplies = listenerReplies
         self.analystCandidates = analystCandidates
         self.seedTranscript = seedTranscript
+        self.coverageResult = coverageResult
     }
 
     public static func decode(from data: Data) throws -> CaptureFixture {
@@ -73,32 +80,68 @@ public struct CaptureFixture: Codable, Equatable, Sendable {
     }
 }
 
+/// Which caller a captured request came from — and therefore which canned body
+/// decodes cleanly on the other end.
+public enum CaptureRequestKind: String, Equatable, Sendable {
+    /// A plain listener turn: free text, no `output_config`.
+    case listener
+    /// One ambient analyst cycle — expects `AnalystResult` JSON.
+    case analyst
+    /// A coverage check — expects `CoverageResult` JSON.
+    case coverage
+}
+
 /// Builds the canned Messages-API response the stub returns, and classifies
 /// requests. Kept here (not in the URLProtocol) so it is `swift test`-covered.
 public enum CaptureResponder {
-    /// A request is "structured" (analyst/coverage) when its JSON body carries
-    /// an `output_config`. The capture flow only ever fires the analyst, so the
-    /// stub treats every structured request as an analyst request.
-    public static func isStructuredRequest(body: Data?) -> Bool {
+    /// Which caller sent this request body.
+    ///
+    /// No `output_config` ⇒ a listener turn. Both structured callers set one,
+    /// so they are told apart by the SCHEMA they asked the model to fill — the
+    /// only part of the body that names the shape the caller will decode.
+    /// Answering every structured request with analyst JSON (what this used to
+    /// do) sent `AnalystResult` to `checkCoverage`, which then failed to decode.
+    public static func classify(body: Data?) -> CaptureRequestKind {
         guard let body,
-              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
-        else { return false }
-        return json["output_config"] != nil
+              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let outputConfig = json["output_config"] as? [String: Any]
+        else { return .listener }
+
+        let format = outputConfig["format"] as? [String: Any]
+        let schema = format?["schema"] as? [String: Any]
+        let properties = schema?["properties"] as? [String: Any]
+        if properties?["candidates"] != nil { return .analyst }   // Analyst.resultSchema
+        if properties?["topics"] != nil { return .coverage }      // Coverage.resultSchema
+        // A structured schema neither of them owns. Falling back to the analyst
+        // shape keeps the capture run moving; a genuinely new structured path
+        // must add a case here (and its fixture data) or it will fail in its own
+        // decoder — which is where such a miss belongs, and is loud.
+        return .analyst
     }
 
-    /// The response body for an intercepted request. `isAnalyst` → a JSON
-    /// `AnalystResult` as the text block; otherwise the `callIndex`-th listener
-    /// reply (empty string past the end = the model choosing silence).
-    public static func responseData(fixture: CaptureFixture, isAnalyst: Bool, callIndex: Int) -> Data {
+    /// The response body for an intercepted request:
+    /// - `.analyst` → the fixture's candidates as `AnalystResult` JSON;
+    /// - `.coverage` → the fixture's coverage check as `CoverageResult` JSON,
+    ///   or an empty but VALID result when the fixture scripted none;
+    /// - `.listener` → the `callIndex`-th listener reply (empty string past the
+    ///   end = the model choosing silence).
+    public static func responseData(
+        fixture: CaptureFixture,
+        kind: CaptureRequestKind,
+        callIndex: Int
+    ) -> Data {
         let text: String
-        if isAnalyst {
-            let result = AnalystResult(candidates: fixture.analystCandidates)
-            let encoded = (try? JSONEncoder().encode(result)) ?? Data()
-            text = String(data: encoded, encoding: .utf8) ?? ""
-        } else if callIndex >= 0, callIndex < fixture.listenerReplies.count {
-            text = fixture.listenerReplies[callIndex]
-        } else {
-            text = ""
+        switch kind {
+        case .analyst:
+            text = encodedJSON(AnalystResult(candidates: fixture.analystCandidates))
+        case .coverage:
+            text = encodedJSON(fixture.coverageResult ?? CoverageResult(topics: [], nudge: ""))
+        case .listener:
+            if callIndex >= 0, callIndex < fixture.listenerReplies.count {
+                text = fixture.listenerReplies[callIndex]
+            } else {
+                text = ""
+            }
         }
 
         let envelope: [String: Any] = [
@@ -117,5 +160,11 @@ public enum CaptureResponder {
         // The keys above are static and JSON-safe, so serialization cannot fail;
         // fall back to an empty object rather than force-unwrap.
         return (try? JSONSerialization.data(withJSONObject: envelope)) ?? Data("{}".utf8)
+    }
+
+    /// A structured result as the JSON text block the Messages API would carry.
+    private static func encodedJSON(_ value: some Encodable) -> String {
+        guard let encoded = try? JSONEncoder().encode(value) else { return "" }
+        return String(data: encoded, encoding: .utf8) ?? ""
     }
 }

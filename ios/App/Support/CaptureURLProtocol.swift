@@ -33,10 +33,13 @@ final class CaptureURLProtocol: URLProtocol {
     override func startLoading() {
         // The loading system may have converted httpBody into a stream.
         let body = request.httpBody ?? Self.drain(request.httpBodyStream)
-        let isAnalyst = CaptureResponder.isStructuredRequest(body: body)
+        // Analyst and coverage both send structured requests but decode
+        // different shapes, so the stub answers each in its own (see
+        // CaptureResponder.classify). Only listener turns walk the reply list.
+        let kind = CaptureResponder.classify(body: body)
 
         let index: Int = {
-            guard !isAnalyst else { return 0 }
+            guard kind == .listener else { return 0 }
             Self.lock.lock(); defer { Self.lock.unlock() }
             let i = Self.listenerCallIndex
             Self.listenerCallIndex += 1
@@ -44,7 +47,7 @@ final class CaptureURLProtocol: URLProtocol {
         }()
 
         let data = CaptureResponder.responseData(
-            fixture: Self.fixture, isAnalyst: isAnalyst, callIndex: index
+            fixture: Self.fixture, kind: kind, callIndex: index
         )
         let response = HTTPURLResponse(
             url: request.url!,

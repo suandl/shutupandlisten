@@ -23,12 +23,25 @@ public struct CoverageResult: Codable, Equatable, Sendable {
         public let covered: Bool
         /// A short quote or paraphrase of where it was covered; empty if not.
         public let evidence: String
+
+        public init(topic: String, covered: Bool, evidence: String) {
+            self.topic = topic
+            self.covered = covered
+            self.evidence = evidence
+        }
     }
 
     public let topics: [TopicResult]
     /// One brief sentence pointing at the most important gap, phrased as a
     /// nudge to keep talking — or empty when everything is covered.
     public let nudge: String
+
+    /// Public so callers outside this module can BUILD a result, not just
+    /// decode one — the CI capture stub replays a canned coverage check.
+    public init(topics: [TopicResult], nudge: String) {
+        self.topics = topics
+        self.nudge = nudge
+    }
 }
 
 public enum Coverage {

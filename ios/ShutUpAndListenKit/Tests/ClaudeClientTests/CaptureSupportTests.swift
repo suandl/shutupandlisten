@@ -76,23 +76,71 @@ final class CaptureSupportTests: XCTestCase {
         XCTAssertEqual(fixture.seedTranscript, ["one", "two"])
         XCTAssertEqual(fixture.analystCandidates.first?.register, "question")
         XCTAssertEqual(fixture.analystCandidates.first?.text, "Which step could you defer?")
+        // A fixture with no coverage entry — the bundled shape — must decode.
+        XCTAssertNil(fixture.coverageResult)
     }
 
-    // ── CaptureResponder ──
+    func testDecodesFixtureWithCoverageResult() throws {
+        let json = """
+        {
+          "listenerReplies": [],
+          "analystCandidates": [],
+          "seedTranscript": [],
+          "coverageResult": {
+            "topics": [{ "topic": "pricing", "covered": true, "evidence": "per seat, monthly" }],
+            "nudge": "You have not said who the buyer is."
+          }
+        }
+        """
+        let fixture = try CaptureFixture.decode(from: Data(json.utf8))
+        XCTAssertEqual(fixture.coverageResult?.topics.first?.topic, "pricing")
+        XCTAssertEqual(fixture.coverageResult?.topics.first?.covered, true)
+        XCTAssertEqual(fixture.coverageResult?.nudge, "You have not said who the buyer is.")
+    }
 
-    func testDetectsStructuredRequestByOutputConfig() {
-        let analyst = Data(#"{"model":"m","output_config":{"format":{}}}"#.utf8)
-        let listener = Data(#"{"model":"m","messages":[]}"#.utf8)
-        XCTAssertTrue(CaptureResponder.isStructuredRequest(body: analyst))
-        XCTAssertFalse(CaptureResponder.isStructuredRequest(body: listener))
-        XCTAssertFalse(CaptureResponder.isStructuredRequest(body: nil))
+    /// The bundled capture fixture must keep decoding as the type evolves — the
+    /// seam loads THIS file at launch, and a decode failure there is silent
+    /// (`try?` → a cold stub) rather than a test failure anywhere else.
+    func testBundledFixtureFileStillDecodes() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()            // ClaudeClientTests
+            .deletingLastPathComponent()            // Tests
+            .deletingLastPathComponent()            // ShutUpAndListenKit
+            .deletingLastPathComponent()            // ios
+            .appendingPathComponent("App/Resources/capture-fixture.json")
+        let bundled = try Data(contentsOf: url)
+        let fixture = try CaptureFixture.decode(from: bundled)
+        XCTAssertFalse(fixture.listenerReplies.isEmpty)
+        XCTAssertFalse(fixture.analystCandidates.isEmpty)
+        XCTAssertFalse(fixture.seedTranscript.isEmpty)
+    }
+
+    // ── CaptureResponder.classify ──
+
+    func testClassifiesListenerRequestWithNoOutputConfig() {
+        XCTAssertEqual(CaptureResponder.classify(body: Data(#"{"model":"m","messages":[]}"#.utf8)), .listener)
+        XCTAssertEqual(CaptureResponder.classify(body: nil), .listener)
+        XCTAssertEqual(CaptureResponder.classify(body: Data("not json".utf8)), .listener)
+    }
+
+    func testClassifiesAnalystAndCoverageByTheirSchemas() throws {
+        // Built from the SAME schemas the real callers send, so a schema rename
+        // breaks this test rather than the capture run.
+        XCTAssertEqual(
+            CaptureResponder.classify(body: try Self.structuredBody(schema: Analyst.resultSchema)),
+            .analyst
+        )
+        XCTAssertEqual(
+            CaptureResponder.classify(body: try Self.structuredBody(schema: Coverage.resultSchema)),
+            .coverage
+        )
     }
 
     func testListenerResponseCarriesNthReply() throws {
         let fixture = CaptureFixture(
             listenerReplies: ["first", "second"], analystCandidates: [], seedTranscript: []
         )
-        let data = CaptureResponder.responseData(fixture: fixture, isAnalyst: false, callIndex: 1)
+        let data = CaptureResponder.responseData(fixture: fixture, kind: .listener, callIndex: 1)
         XCTAssertEqual(try Self.text(in: data), "second")
     }
 
@@ -100,7 +148,7 @@ final class CaptureSupportTests: XCTestCase {
         let fixture = CaptureFixture(
             listenerReplies: ["only"], analystCandidates: [], seedTranscript: []
         )
-        let data = CaptureResponder.responseData(fixture: fixture, isAnalyst: false, callIndex: 5)
+        let data = CaptureResponder.responseData(fixture: fixture, kind: .listener, callIndex: 5)
         XCTAssertEqual(try Self.text(in: data), "")
     }
 
@@ -110,10 +158,31 @@ final class CaptureSupportTests: XCTestCase {
             analystCandidates: [AnalystCandidate(text: "q?", register: "question", anchor: "a")],
             seedTranscript: []
         )
-        let data = CaptureResponder.responseData(fixture: fixture, isAnalyst: true, callIndex: 0)
+        let data = CaptureResponder.responseData(fixture: fixture, kind: .analyst, callIndex: 0)
         let text = try Self.text(in: data)
         let result = try JSONDecoder().decode(AnalystResult.self, from: Data(text.utf8))
         XCTAssertEqual(result.candidates.first?.text, "q?")
+    }
+
+    func testCoverageResponseDecodesToCoverageResult() throws {
+        let data = CaptureResponder.responseData(
+            fixture: Self.coverageFixture, kind: .coverage, callIndex: 0
+        )
+        let text = try Self.text(in: data)
+        let result = try JSONDecoder().decode(CoverageResult.self, from: Data(text.utf8))
+        XCTAssertEqual(result.topics.first?.topic, "pricing")
+        XCTAssertEqual(result.nudge, "You have not said who the buyer is.")
+    }
+
+    func testCoverageResponseWithoutFixtureIsAnEmptyValidResult() throws {
+        // A capture run that never scripted coverage must still hand back
+        // something `CoverageResult` decodes — not analyst JSON, not garbage.
+        let fixture = CaptureFixture(listenerReplies: [], analystCandidates: [], seedTranscript: [])
+        let data = CaptureResponder.responseData(fixture: fixture, kind: .coverage, callIndex: 0)
+        let result = try JSONDecoder().decode(
+            CoverageResult.self, from: Data(try Self.text(in: data).utf8)
+        )
+        XCTAssertEqual(result, CoverageResult(topics: [], nudge: ""))
     }
 
     func testListenerEnvelopeDecodesInClaudeClient() async throws {
@@ -121,7 +190,7 @@ final class CaptureSupportTests: XCTestCase {
         // JSONSerialization key checks) so a future rename of
         // MessagesResponse.CodingKeys fails this test.
         let fixture = CaptureFixture(listenerReplies: ["ok"], analystCandidates: [], seedTranscript: [])
-        let data = CaptureResponder.responseData(fixture: fixture, isAnalyst: false, callIndex: 0)
+        let data = CaptureResponder.responseData(fixture: fixture, kind: .listener, callIndex: 0)
         MockURLProtocol.stub(status: 200, body: try XCTUnwrap(String(data: data, encoding: .utf8)))
 
         let client = ClaudeClient(config: ClaudeConfig(apiKey: "sk-test"), session: MockURLProtocol.makeSession())
@@ -143,19 +212,74 @@ final class CaptureSupportTests: XCTestCase {
             analystCandidates: [AnalystCandidate(text: "q?", register: "question", anchor: "a")],
             seedTranscript: []
         )
-        let data = CaptureResponder.responseData(fixture: fixture, isAnalyst: true, callIndex: 0)
+        let data = CaptureResponder.responseData(fixture: fixture, kind: .analyst, callIndex: 0)
         MockURLProtocol.stub(status: 200, body: try XCTUnwrap(String(data: data, encoding: .utf8)))
 
         let client = ClaudeClient(config: ClaudeConfig(apiKey: "sk-test"), session: MockURLProtocol.makeSession())
         let reply = try await client.analyze(Analyst.buildRequest(transcript: "a transcript"))
 
         XCTAssertEqual(reply.result.candidates.first?.text, "q?")
+        // What `analyze` actually put on the wire must classify as analyst.
+        XCTAssertEqual(
+            CaptureResponder.classify(body: MockURLProtocol.lastRequest?.body), .analyst
+        )
     }
+
+    func testCoverageEnvelopeDecodesInClaudeClient() async throws {
+        // The round trip the stub used to break: `checkCoverage` sends a
+        // structured request, the seam answered it with analyst JSON, and
+        // `CoverageResult` failed to decode. Drive the REAL client end to end.
+        let data = CaptureResponder.responseData(
+            fixture: Self.coverageFixture, kind: .coverage, callIndex: 0
+        )
+        MockURLProtocol.stub(status: 200, body: try XCTUnwrap(String(data: data, encoding: .utf8)))
+
+        let client = ClaudeClient(config: ClaudeConfig(apiKey: "sk-test"), session: MockURLProtocol.makeSession())
+        let result = try await client.checkCoverage(
+            transcript: "we charge per seat, monthly",
+            criteria: [CoverageCriterion(topic: "pricing")]
+        )
+
+        XCTAssertEqual(result.topics.first?.topic, "pricing")
+        XCTAssertEqual(result.topics.first?.covered, true)
+        XCTAssertEqual(result.nudge, "You have not said who the buyer is.")
+        // And the request `checkCoverage` actually sent must classify as
+        // coverage — the half that decides which canned body it gets.
+        XCTAssertEqual(
+            CaptureResponder.classify(body: MockURLProtocol.lastRequest?.body), .coverage
+        )
+    }
+
+    // ── helpers ──
+
+    private static let coverageFixture = CaptureFixture(
+        listenerReplies: [],
+        analystCandidates: [],
+        seedTranscript: [],
+        coverageResult: CoverageResult(
+            topics: [
+                CoverageResult.TopicResult(
+                    topic: "pricing", covered: true, evidence: "per seat, monthly"
+                ),
+            ],
+            nudge: "You have not said who the buyer is."
+        )
+    )
 
     /// Pull the first content block's text out of a Messages-API envelope.
     private static func text(in data: Data) throws -> String {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let content = try XCTUnwrap(json["content"] as? [[String: Any]])
         return try XCTUnwrap(content.first?["text"] as? String)
+    }
+
+    /// A Messages-API body carrying `schema` under `output_config`, in the
+    /// shape `ClaudeClient.complete` serializes for a structured request.
+    private static func structuredBody(schema: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: [
+            "model": "m",
+            "messages": [],
+            "output_config": ["format": ["type": "json_schema", "schema": schema]],
+        ])
     }
 }
