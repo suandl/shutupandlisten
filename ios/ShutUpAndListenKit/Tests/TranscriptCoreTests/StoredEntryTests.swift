@@ -106,6 +106,38 @@ final class StoredEntryTests: XCTestCase {
                        "nil tier is omitted, exactly as the app's encoder does")
     }
 
+    func testStoredEntriesOrderChronologicallyWhenSplitIndexesInterleave() async {
+        // The interleave the index sort gets wrong: a volatile spans two
+        // sentences; a listener reply is appended mid-volatile (later audio
+        // range, but the NEXT append index); the finalize-split then hands the
+        // second sentence a fresh index AFTER the listener's. Pure index order
+        // reads s1, listener, s2 — persisted/export order must be the spoken
+        // order: s1, s2, listener.
+        let store = TranscriptStore()
+        let volatileID = SegmentID()
+        let secondID = SegmentID()
+        await store.append(id: volatileID, text: "first sentence. second sentence", range: 0.0...5.0)
+        let listenerID = await store.appendListener(
+            text: "mm", tier: .acknowledge, estimatedRange: 5.0...6.0
+        )
+        await store.closeListener(id: listenerID, actualEnd: 6.5)
+        await store.finalize(id: volatileID, into: [
+            FinalizedText(id: volatileID, text: "First sentence.", range: 0.0...2.5),
+            FinalizedText(id: secondID, text: "Second sentence.", range: 2.5...5.0),
+        ])
+
+        // Persisted rows come back index-sorted (SwiftData relationships are
+        // unordered; `index` is the append order) — exactly the interleaved shape.
+        let byIndex = await store.snapshot().sorted { $0.index < $1.index }
+        XCTAssertEqual(byIndex.map(\.text), ["First sentence.", "mm", "Second sentence."],
+                       "append order really does interleave — the fixture is honest")
+
+        let entries = storedEntries(from: byIndex)
+        XCTAssertEqual(entries.map(\.text), ["First sentence.", "Second sentence.", "mm"],
+                       "storage/export order is chronological: (audioStart, index)")
+        XCTAssertEqual(entries.map(\.speaker), ["thinker", "thinker", "listener"])
+    }
+
     func testHasTimings() {
         let zeroed = [
             segment(speaker: .thinker, text: "a", turn: 1, index: 0),

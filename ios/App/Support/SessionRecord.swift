@@ -229,10 +229,14 @@ extension SessionSchemaV2.SessionRecord {
         SessionState(rawValue: state) ?? .complete
     }
 
-    /// The segment rows in log order (`index` is the order — the relationship
-    /// itself is unordered).
+    /// The segment rows in CHRONOLOGICAL order — (audioStart, index), matching
+    /// TranscriptCore's storedEntries ordering. Append order (`index`) alone
+    /// can interleave wrongly: a finalize-split gives the pieces after the
+    /// first fresh indexes, so a listener segment appended mid-volatile would
+    /// sort between the split thinker sentences. Migrated rows carry all-zero
+    /// ranges and fall back to pure index order through the tiebreak.
     var orderedSegments: [SegmentRecord] {
-        segments.sorted { $0.index < $1.index }
+        segments.sorted { ($0.audioStart, $0.index) < ($1.audioStart, $1.index) }
     }
 
     /// The legacy V1 blob, decoded. Empty for V2-written records.

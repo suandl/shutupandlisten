@@ -85,6 +85,10 @@ final class SessionController: ObservableObject {
     // Coverage mode
     @Published private(set) var coverageResult: CoverageResult?
     @Published private(set) var coverageChecking = false
+    /// Monotonic count of completed coverage checks. The UI presents the
+    /// sheet when this changes — a repeat check returning the IDENTICAL
+    /// result would never fire an onChange of `coverageResult` itself.
+    @Published private(set) var coverageCheckCount = 0
 
     /// The id of the SessionRecord saved by the last `stopSession`, for the
     /// "Saved to library" confirmation. Nil when nothing was worth saving.
@@ -98,7 +102,16 @@ final class SessionController: ObservableObject {
 
     // ── live-tunable knobs (mirrors web/src/knobs.ts; defaults bias to "keep listening") ──
     @Published var knobs = TurnKnobs.defaults {
-        didSet { detector?.setKnobs { $0 = knobs } }
+        didSet {
+            // Preserve the machine's LIVE responseDurationMs: takeFloor sizes
+            // it to the clip being spoken, and a slider edit mid-response must
+            // not clobber the response window with the struct's default.
+            detector?.setKnobs {
+                let liveResponseMs = $0.responseDurationMs
+                $0 = knobs
+                $0.responseDurationMs = liveResponseMs
+            }
+        }
     }
     /// Speak the rules-only backchannel ("mm", "yeah") on short finished asides.
     @AppStorage("speakAcknowledgments") var speakAcknowledgments = true
@@ -131,6 +144,12 @@ final class SessionController: ObservableObject {
     private var clockOrigin: TimeInterval = 0
     /// The stop path is async (the engine drain); block re-entry until done.
     private var isStopping = false
+    /// The start path is async too (permission, assets, engine prepare/start)
+    /// and `isRunning` flips only at its END — this latch is set synchronously
+    /// BEFORE the first await so a double-invoke cannot stand up a second
+    /// capture stack (leaked observers, un-invalidated tickTimer, stranded
+    /// recording record). Cleared on every exit path.
+    private var isStarting = false
 
     // ── bridge tasks + MainActor caches (see header) ──
     private var engineBridgeTask: Task<Void, Never>?
@@ -195,12 +214,27 @@ final class SessionController: ObservableObject {
     // ── session lifecycle ──
 
     func toggleSession() {
-        if isRunning { stopSession() } else { Task { await startSession() } }
+        if isRunning {
+            stopSession()
+        } else if !isStarting, !isStopping {
+            Task { await startSession() }
+        }
     }
 
     func startSession() async {
-        guard !isRunning, !isStopping else { return }
+        guard !isRunning, !isStarting, !isStopping else { return }
+        // Latch synchronously, BEFORE the first await (see isStarting). The
+        // defer clears it on every exit path — success included: from
+        // `isRunning = true` on, re-entry is blocked by the isRunning guard.
+        isStarting = true
+        defer { isStarting = false }
         lastError = nil
+
+        // Launch recovery closes every `recording`-state record it finds —
+        // wait for it, or it could adopt this session's just-created record as
+        // a crashed one. The gate is already open on every start after the
+        // first await completes once.
+        await RecoveryGate.shared.waitUntilDone()
 
         // Mic permission only: SpeechAnalyzer's on-device recognition has no
         // speech-authorization gate (plan Key Decisions — the legacy
@@ -282,14 +316,66 @@ final class SessionController: ObservableObject {
         wireCapture(capture)
         wireSpeechOutput()
 
+        // R3.1: the SessionRecord exists BEFORE capture starts — state
+        // `recording`, placeholder title, the CAF already referenced — so the
+        // audio file is owned by a record from its very first sample and can
+        // never be orphaned. The PersistenceWriter subscribes with
+        // replayingSnapshot: false (nothing to replay — the log is empty; the
+        // record predates any segment) and saves on every finalized segment
+        // and turn start, no debounce. A crash from here on costs at most the
+        // current volatile segment; a failed start below deletes record and
+        // file together (abortStart).
+        let fileName = RecordingStorage.cafFileName(stem: UUID().uuidString)
+        recordingFileName = fileName
+        var record: SessionRecord?
+        if let modelContext {
+            let newRecord = SessionRecord(
+                startedAt: sessionStartDate ?? Date(),
+                title: SessionRecord.placeholderTitle,
+                state: .recording,
+                criteriaText: coverageCriteriaText,
+                audioFileName: fileName
+            )
+            modelContext.insert(newRecord)
+            try? modelContext.save() // save first: the ID must be permanent
+            record = newRecord
+            currentRecordID = newRecord.id
+            let writer = PersistenceWriter(
+                modelContainer: modelContext.container,
+                recordID: newRecord.persistentModelID
+            )
+            self.writer = writer
+            writerTask = Task {
+                let updates = await store.updates(replayingSnapshot: false)
+                await writer.run(updates: updates)
+            }
+        }
+
+        // Capture opens the CAF (AAC-in-CAF, crash-safe, remuxed to .m4a at
+        // graceful stop) BEFORE installing the tap: the recording, the
+        // fed-samples clock, and the analyzer all begin at the same first
+        // buffer, so every stored timing stays aligned with the file. The
+        // recording itself is best-effort — the session runs without one.
         let buffers: AsyncStream<AVAudioPCMBuffer>
         do {
-            buffers = try capture.start(canonicalFormat: canonicalFormat, clockOrigin: clockOrigin)
+            buffers = try capture.start(
+                canonicalFormat: canonicalFormat,
+                clockOrigin: clockOrigin,
+                recordingTo: RecordingStorage.url(for: fileName)
+            )
         } catch {
             lastError = "Could not start the microphone: \(error.localizedDescription)"
-            self.capture = nil
-            agentFeed = nil
+            abortStart(record: record)
             return
+        }
+        if !capture.isRecording {
+            // No recording opened: drop the dangling audio reference (and any
+            // half-created file) now, so nothing downstream points at audio
+            // that will never exist.
+            RecordingStorage.deleteBoth(stem: RecordingStorage.stem(of: fileName))
+            recordingFileName = nil
+            record?.audioFileName = nil
+            try? modelContext?.save()
         }
 
         startEngineBridge(engine: engine, store: store)
@@ -300,53 +386,8 @@ final class SessionController: ObservableObject {
         } catch {
             lastError = "Could not start transcription: \(error.localizedDescription)"
             capture.stop()
-            self.capture = nil
-            engineBridgeTask?.cancel()
-            engineBridgeTask = nil
-            storeSubscriptionTask?.cancel()
-            storeSubscriptionTask = nil
-            agentFeed = nil
+            abortStart(record: record)
             return
-        }
-
-        // Record the session audio: AAC-in-CAF during capture (crash-safe;
-        // remuxed to .m4a at graceful stop). Best-effort — the session runs
-        // regardless.
-        let fileName = RecordingStorage.cafFileName(stem: UUID().uuidString)
-        do {
-            try capture.startRecording(to: RecordingStorage.url(for: fileName))
-            recordingFileName = fileName
-        } catch {
-            recordingFileName = nil
-        }
-
-        // R3.1: the SessionRecord exists from session START — state
-        // `recording`, placeholder title, the CAF already referenced so the
-        // audio can never be orphaned. The PersistenceWriter subscribes with
-        // replayingSnapshot: false (nothing to replay — the log is empty; the
-        // record was created before any segment can finalize) and saves on
-        // every finalized segment and turn start, no debounce. A crash from
-        // here on costs at most the current volatile segment.
-        if let modelContext {
-            let record = SessionRecord(
-                startedAt: sessionStartDate ?? Date(),
-                title: SessionRecord.placeholderTitle,
-                state: .recording,
-                criteriaText: coverageCriteriaText,
-                audioFileName: recordingFileName
-            )
-            modelContext.insert(record)
-            try? modelContext.save() // save first: the ID must be permanent
-            currentRecordID = record.id
-            let writer = PersistenceWriter(
-                modelContainer: modelContext.container,
-                recordID: record.persistentModelID
-            )
-            self.writer = writer
-            writerTask = Task {
-                let updates = await store.updates(replayingSnapshot: false)
-                await writer.run(updates: updates)
-            }
         }
 
         // R4.3: the opt-in remote arm — ONLY when the user turned the toggle
@@ -379,33 +420,77 @@ final class SessionController: ObservableObject {
         machineState = .listening
     }
 
+    /// Unwind a failed start: tear down whatever was already stood up (bridge
+    /// tasks, writer, capture) and delete the just-created record together
+    /// with its recording file — a session that never ran leaves nothing
+    /// behind.
+    private func abortStart(record: SessionRecord?) {
+        engineBridgeTask?.cancel()
+        engineBridgeTask = nil
+        storeSubscriptionTask?.cancel()
+        storeSubscriptionTask = nil
+        writerTask?.cancel()
+        writerTask = nil
+        writer = nil
+        currentRecordID = nil
+        if let record {
+            modelContext?.delete(record)
+            try? modelContext?.save()
+        }
+        if let recordingFileName {
+            RecordingStorage.deleteBoth(stem: RecordingStorage.stem(of: recordingFileName))
+        }
+        recordingFileName = nil
+        capture = nil
+        engine = nil
+        store = nil
+        detector = nil
+        agentFeed = nil
+    }
+
     func stopSession() {
         guard isRunning, !isStopping else { return }
         isStopping = true
         tickTimer?.invalidate()
         tickTimer = nil
         speech.stop()
+        // The synthesizer reports the cut clip via didCancel, asynchronously —
+        // close the open listener segment HERE, synchronously, at the cut
+        // point: a stop mid-speech must never persist unspoken words as
+        // spoken. The close is enqueued on the serial write chain (drained by
+        // the stop task below) and idempotent — didCancel's late onFinished
+        // close finds the open ID already nilled and no-ops.
+        closeOpenListener(bargedIn: true)
         capture?.stopRecording()
+        // Kill the decision loop SYNCHRONOUSLY, before the drain's first
+        // await can let a VAD callback, an evidence re-fire, or a landing
+        // model reply drive it: answer the outstanding evaluation (if any)
+        // with the cheap `silence` — exactly once, spec §4a; a late model
+        // reply finds the detector gone and its decision/takeFloor no-op —
+        // then abandon the turn and drop the machine. This feeds the detector
+        // directly: `feed(_:)` is guarded on isRunning for everyone else.
+        detector?.input(.decision(t: nowMs(), outcome: .silence))
+        detector?.dropTurn()
+        detector = nil
+        // End the analyzer's buffer stream now, so stopAndFinalize's feed
+        // task drains the queued tail and finishes naturally instead of being
+        // cancelled mid-stream.
+        capture?.finishBuffers()
         isRunning = false
         patienceProgress = nil
+        machineState = .listening
 
         // The plan's stop sequence: engine drain FIRST (finish input →
         // finalize-through-end-of-input → drain results), so the trailing
         // finals land in the store before anything reads it — a graceful stop
-        // loses nothing. Then capture teardown, the machine's cheap `silence`
-        // answer, the writer's close-out (with the CAF → .m4a remux), detector
-        // teardown.
+        // loses nothing. Then capture teardown and the writer's close-out
+        // (with the CAF → .m4a remux).
         Task { [weak self] in
             guard let self else { return }
             await self.engine?.stopAndFinalize()
             await self.engineBridgeTask?.value // every engine write committed
             await self.lastStoreWrite?.value // every host write committed
             self.capture?.stop()
-            // Abandon the conversation: the next session opens a fresh turn.
-            // An outstanding evaluation is answered cheaply with `silence`.
-            self.detector?.input(.decision(t: self.nowMs(), outcome: .silence))
-            self.detector?.dropTurn()
-            self.machineState = .listening
             await self.closeOutSession()
             // The forwarder's tail flush runs detached: it reconciles against
             // the post-drain snapshot (the feed keeps the store alive) and its
@@ -419,7 +504,7 @@ final class SessionController: ObservableObject {
             self.storeSubscriptionTask?.cancel()
             self.storeSubscriptionTask = nil
             self.engineBridgeTask = nil
-            self.detector = nil
+            self.store = nil // after closeOut's snapshot; the forwarder holds the feed
             self.capture = nil
             self.engine = nil
             self.captureState = .idle
@@ -521,6 +606,10 @@ final class SessionController: ObservableObject {
                     self.cachedUtteranceText = utterance
                 }
                 self.refreshTranscriptEntries()
+                // No evidence re-fires once the stop path has begun — the
+                // drain keeps this subscription alive for the caches, but the
+                // machine is already answered and gone.
+                guard self.isRunning else { continue }
                 let state = self.detector?.state
                 if state == .pending || state == .deciding {
                     self.feedEouEvidence(at: self.nowMs())
@@ -557,7 +646,11 @@ final class SessionController: ObservableObject {
     // ── the decision loop ──
 
     private func feed(_ event: InputEvent) {
-        guard let detector else { return }
+        // Post-stop events (a VAD callback racing teardown, didCancel's tick,
+        // a late model reply's decision) must not drive the machine: the stop
+        // path already answered the outstanding evaluation, synchronously,
+        // feeding the detector directly before dropping it.
+        guard isRunning, let detector else { return }
         let out = detector.input(event)
         machineState = detector.state
         for e in out { handle(e) }
@@ -631,10 +724,22 @@ final class SessionController: ObservableObject {
         let start = capture?.audioNow ?? 0
         let estimatedEnd = start + SpeechOutput.estimateDurationMs(for: text) / 1000
         enqueueStoreWrite { [weak self] store in
+            guard let self else { return }
+            // askNow's out-of-band branch can append while an earlier reply
+            // (an ack, say) is still playing — the synthesizer QUEUES the new
+            // utterance. Blindly overwriting the open ID would leave the
+            // earlier segment open forever and let its didFinish close the
+            // WRONG one. Close the open segment first: not barged-in (nothing
+            // was cut — the queued clip simply plays after it), at the
+            // current position.
+            if let open = self.openListenerSegmentID {
+                self.openListenerSegmentID = nil
+                await store.closeListener(id: open, actualEnd: start, bargedIn: false)
+            }
             let id = await store.appendListener(
                 text: text, tier: tier, estimatedRange: start ... estimatedEnd
             )
-            self?.openListenerSegmentID = id
+            self.openListenerSegmentID = id
         }
     }
 
@@ -772,8 +877,11 @@ final class SessionController: ObservableObject {
             lastError = "Nothing has been said yet."
             return
         }
-        decisionsByTurn[turn] = .question
+        // The gate's history is only written once a question can actually be
+        // asked — recording it before the service guard would charge the
+        // earned-question spacing for a question that never happened.
         guard let client = makeService() else { return }
+        decisionsByTurn[turn] = .question
         let request = buildListenerRequest(
             systemPrompt: ListenerPrompt.systemPrompt,
             tier: .question,
@@ -786,7 +894,9 @@ final class SessionController: ObservableObject {
             do {
                 let reply = try await client.respond(to: request)
                 await MainActor.run { [weak self] in
-                    guard let self, !reply.isEmpty else { return }
+                    // isRunning: a reply landing after Stop is discarded — the
+                    // companion must never speak into a closed session.
+                    guard let self, self.isRunning, !reply.isEmpty else { return }
                     if self.detector?.state == .deciding {
                         self.takeFloor(with: reply, tier: .question)
                     } else {
@@ -839,6 +949,7 @@ final class SessionController: ObservableObject {
                 await MainActor.run { [weak self] in
                     self?.coverageResult = result
                     self?.coverageChecking = false
+                    self?.coverageCheckCount += 1 // presents the sheet, even on an identical result
                 }
             } catch {
                 await MainActor.run { [weak self] in
@@ -870,11 +981,12 @@ final class SessionController: ObservableObject {
         // keeps referencing the CAF until closeOut swaps the name, so a crash
         // DURING the remux still recovers via the CAF at next launch.
         var audioFileName: String?
+        var remuxed = false
         if let cafName {
             let m4aName = RecordingStorage.m4aFileName(stem: RecordingStorage.stem(of: cafName))
             let source = RecordingStorage.url(for: cafName)
             let destination = RecordingStorage.url(for: m4aName)
-            let remuxed = await Task.detached {
+            remuxed = await Task.detached {
                 do {
                     try CaptureController.remux(caf: source, to: destination)
                     return true
@@ -882,7 +994,11 @@ final class SessionController: ObservableObject {
                     return false
                 }
             }.value
-            audioFileName = remuxed ? m4aName : nil
+            // A failed remux keeps the CAF as the record's audio — AVAudioPlayer
+            // plays AAC-in-CAF just fine, and SessionDetailView keys off
+            // audioFileName alone. Losing the .m4a nicety must never cost the
+            // session audio itself.
+            audioFileName = remuxed ? m4aName : cafName
         }
 
         guard let writer, let store else {
@@ -910,9 +1026,10 @@ final class SessionController: ObservableObject {
             criteria: coverageCriteriaText,
             finalSegments: finals
         )
-        if let cafName, kept {
-            // The .m4a (or nothing, if the remux failed) is the record's audio
-            // now; the CAF has served its crash-safety purpose.
+        if let cafName, remuxed, kept {
+            // The .m4a is the record's audio now; the CAF has served its
+            // crash-safety purpose. When the remux failed the CAF IS the
+            // record's audio and stays.
             RecordingStorage.delete(fileName: cafName)
         }
         lastSavedRecordID = kept ? currentRecordID : nil

@@ -100,6 +100,12 @@ final class SpeechAnalyzerTranscriptionEngine: TranscriptionEngine {
         // Configuration pinned per the plan: volatile results on, audio time
         // ranges attached. No contextual-strings equivalent exists in the
         // iOS 26 API — no custom-vocabulary biasing is assumed.
+        // DEVIATION (documented per the plan's API-drift rule): the plan's
+        // sketch tracked the moving volatile/finalized boundary via
+        // `volatileRangeChangedHandler`. No handler is installed here — the
+        // results stream already carries the same boundary (each result's
+        // `isFinal` closes the open volatile in `handle(_:)`), so a separate
+        // callback would be a second, redundant source of one fact.
         // SDK-CHECK: SpeechTranscriber module initializer — parameter names/
         // order (locale:transcriptionOptions:reportingOptions:attributeOptions:)
         // and whether a preset initializer should seed these options instead.
@@ -135,11 +141,22 @@ final class SpeechAnalyzerTranscriptionEngine: TranscriptionEngine {
 
         let (inputSequence, inputBuilder) = AsyncStream.makeStream(of: AnalyzerInput.self)
         inputContinuation = inputBuilder
-        // SDK-CHECK: analyzer.start(inputSequence:) — begins autonomous
-        // analysis of the sequence and returns once started (it must not
-        // block until end-of-input; if the real SDK's method does, this call
-        // moves into its own Task).
-        try await analyzer.start(inputSequence: inputSequence)
+        do {
+            // SDK-CHECK: analyzer.start(inputSequence:) — begins autonomous
+            // analysis of the sequence and returns once started (it must not
+            // block until end-of-input; if the real SDK's method does, this call
+            // moves into its own Task).
+            try await analyzer.start(inputSequence: inputSequence)
+        } catch {
+            // Unwind the drain task started above — a failed start must not
+            // leak a task parked on `transcriber.results` forever.
+            resultsTask?.cancel()
+            resultsTask = nil
+            inputBuilder.finish()
+            inputContinuation = nil
+            eventContinuation.finish()
+            throw error
+        }
 
         feedTask = Task {
             for await buffer in buffers {
@@ -158,15 +175,34 @@ final class SpeechAnalyzerTranscriptionEngine: TranscriptionEngine {
     /// (4) only then return — the host closes the record after this. A
     /// graceful stop therefore loses nothing.
     func stopAndFinalize() async {
-        feedTask?.cancel()
+        // The host has already ended the capture buffer stream
+        // (CaptureController.finishBuffers), so the feed task drains every
+        // QUEUED buffer and finishes the input stream itself — cancelling it
+        // here would drop the tail of the session's audio on the floor. A
+        // timeout guard (2 s, then cancel) keeps a wedged stream from being
+        // able to hang stop.
+        if let feedTask {
+            let watchdog = Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                feedTask.cancel()
+            }
+            await feedTask.value
+            watchdog.cancel()
+        }
         feedTask = nil
-        inputContinuation?.finish() // (1)
+        inputContinuation?.finish() // (1) — idempotent backstop for the timeout path
         inputContinuation = nil
         do {
             // SDK-CHECK: finalizeAndFinishThroughEndOfInput() — finalizes all
             // pending volatile results and ends the analysis session.
             try await analyzer?.finalizeAndFinishThroughEndOfInput() // (2)
         } catch {
+            // The finalize failed, so `transcriber.results` may never end —
+            // cancel the drain (and end the events stream) BEFORE awaiting it,
+            // or this await could hang forever and brick every future session
+            // (the host's isStopping latch would never clear).
+            resultsTask?.cancel()
+            eventContinuation.finish()
             let message = error.localizedDescription
             DispatchQueue.main.async { [weak self] in
                 self?.onError?("Finishing transcription failed: \(message)")

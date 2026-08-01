@@ -38,12 +38,19 @@ struct SessionDetailView: View {
                         .onAppear { playback.load(url: audioURL) }
                 }
 
+                // DEVIATION from the plan (kept deliberately for v1): the plan
+                // renders listener replies as timeline MARKERS over the
+                // (AEC-silenced) audio; they render as bubbles here, matching
+                // the live screen. Because their audio span is silence in the
+                // recording, listener bubbles are excluded from tap-to-seek
+                // and from the follow-along highlight — seeking into silence
+                // would read as broken playback.
                 ForEach(Array(segments.enumerated()), id: \.offset) { position, segment in
                     if !segment.text.isEmpty {
                         StoredBubble(segment: segment, isCurrent: position == current)
                             .contentShape(RoundedRectangle(cornerRadius: 14))
                             .onTapGesture {
-                                guard seekable else { return }
+                                guard seekable, segment.speaker == .thinker else { return }
                                 playback.seek(to: segment.audioStart)
                             }
                     }
@@ -66,13 +73,16 @@ struct SessionDetailView: View {
         .onDisappear { playback.stop() }
     }
 
-    /// The segment the playhead is inside: the LAST one whose `audioStart` is
-    /// at or before `currentTime`. Nil before playback has moved, so nothing
-    /// is highlighted on a freshly opened session.
+    /// The segment the playhead is inside: the LAST thinker segment whose
+    /// `audioStart` is at or before `currentTime` (listener bubbles sit over
+    /// silent audio and never highlight — see the deviation note above). Nil
+    /// before playback has moved, so nothing is highlighted on a freshly
+    /// opened session.
     private func currentSegmentPosition(in segments: [TranscriptSegment]) -> Int? {
         guard playback.currentTime > 0 else { return nil }
         var position: Int?
-        for (i, segment) in segments.enumerated() where segment.audioStart <= playback.currentTime {
+        for (i, segment) in segments.enumerated()
+        where segment.speaker == .thinker && segment.audioStart <= playback.currentTime {
             position = i
         }
         return position

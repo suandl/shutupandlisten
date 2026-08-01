@@ -62,6 +62,7 @@ final class CaptureController {
     enum CaptureError: LocalizedError {
         case converterUnavailable
         case notStarted
+        case unsupportedCanonicalFormat
 
         var errorDescription: String? {
             switch self {
@@ -69,6 +70,8 @@ final class CaptureController {
                 return "The microphone's audio format could not be converted for transcription."
             case .notStarted:
                 return "The capture session is not running."
+            case .unsupportedCanonicalFormat:
+                return "The transcription engine requested an audio format this device cannot analyze for speech."
             }
         }
     }
@@ -93,7 +96,10 @@ final class CaptureController {
     private var clockOrigin: TimeInterval = 0
     private var running = false
 
-    /// The analyzer's buffer stream (fan-out consumer (a)).
+    /// The analyzer's buffer stream (fan-out consumer (a)). Read on the audio
+    /// thread, finished/nilled on the main thread (`finishBuffers`/`stop`) —
+    /// hence the lock, same discipline as converter/recordingFile.
+    private let bufferLock = NSLock()
     private var bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
 
     /// The one persistent converter: tap format → canonical format. Rebuilt on
@@ -131,6 +137,11 @@ final class CaptureController {
     // ── recording sink (canonical stream → AAC-in-CAF) ──
     private let recordingLock = NSLock()
     private var recordingFile: AVAudioFile?
+    /// Buffers skipped by the write guard below (canonical layout ≠ file's
+    /// processing format — should be impossible, the format is fixed at
+    /// start). Counted so the failure surfaces ONCE via onError instead of
+    /// per-buffer spam or a silently shorter file. Guarded by recordingLock.
+    private var recordingFormatMismatches = 0
 
     // ── observers + resume retry ──
     private var observers: [NSObjectProtocol] = []
@@ -145,12 +156,26 @@ final class CaptureController {
 
     /// Start capture. `canonicalFormat` is the analyzer's best available
     /// format, queried by the engine layer at session start and fixed for the
-    /// session; this controller owns the converter into it. Returns the
-    /// canonical buffer stream for the transcription engine (single consumer).
+    /// session; this controller owns the converter into it. When
+    /// `recordingURL` is set, the CAF recording file is opened BEFORE the tap
+    /// installs, so the first counted/fed buffer is also the first written one
+    /// — stored timings and the file agree from sample zero. The recording is
+    /// best-effort (`isRecording` tells the host whether it opened); capture
+    /// itself failing throws. Returns the canonical buffer stream for the
+    /// transcription engine (single consumer).
     func start(
-        canonicalFormat: AVAudioFormat, clockOrigin: TimeInterval
+        canonicalFormat: AVAudioFormat,
+        clockOrigin: TimeInterval,
+        recordingTo recordingURL: URL? = nil
     ) throws -> AsyncStream<AVAudioPCMBuffer> {
         precondition(!running, "capture already running")
+        // The VAD reads float32 or int16 samples; anything else would run the
+        // session DEAF (no speech events, ever) — refuse up front instead.
+        guard canonicalFormat.commonFormat == .pcmFormatFloat32
+            || canonicalFormat.commonFormat == .pcmFormatInt16
+        else {
+            throw CaptureError.unsupportedCanonicalFormat
+        }
         self.canonicalFormat = canonicalFormat
         self.clockOrigin = clockOrigin
 
@@ -160,16 +185,32 @@ final class CaptureController {
         anchorWallMs = 0
         proveResumeOnNextBuffer = false
         clockLock.unlock()
+        // VAD state resets live HERE (not in stop): this runs before the tap
+        // exists, so no audio-thread write can race them.
         inSpeech = false
         speechBufferRun = 0
         noiseFloorDb = -50
+        lastVoiceMs = 0
         resumeBackoff = 1
+        recordingLock.lock()
+        recordingFormatMismatches = 0
+        recordingLock.unlock()
 
-        // The analyzer stream exists BEFORE the first tap callback, so the
-        // fed-samples clock, the analyzer, and (once opened) the recording all
-        // start from the same first buffer.
+        // Recording first (best-effort — the session runs without one), then
+        // the tap: the analyzer stream, the clock, and the file all start from
+        // the same first buffer.
+        if let recordingURL {
+            do {
+                try openRecordingFile(at: recordingURL)
+            } catch {
+                onError?("The session audio could not be recorded: \(error.localizedDescription)")
+            }
+        }
+
         let (stream, continuation) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
+        bufferLock.lock()
         bufferContinuation = continuation
+        bufferLock.unlock()
 
         do {
             try configureSession()
@@ -180,8 +221,8 @@ final class CaptureController {
             engine.prepare()
             try engine.start()
         } catch {
-            continuation.finish()
-            bufferContinuation = nil
+            finishBuffers()
+            stopRecording()
             engine.inputNode.removeTap(onBus: 0)
             throw error
         }
@@ -189,6 +230,18 @@ final class CaptureController {
         running = true
         setState(.running)
         return stream
+    }
+
+    /// End the analyzer's buffer stream WITHOUT stopping capture. The stop
+    /// path calls this before `engine.stopAndFinalize()` so the engine's feed
+    /// task drains every queued buffer and finishes naturally — no cancelled
+    /// mid-stream buffers (the tail of the session) dropped on the floor.
+    /// Idempotent; `stop()` calls it as a safety net.
+    func finishBuffers() {
+        bufferLock.lock()
+        bufferContinuation?.finish()
+        bufferContinuation = nil
+        bufferLock.unlock()
     }
 
     func stop() {
@@ -201,13 +254,10 @@ final class CaptureController {
         stopRecording() // safety net; the host normally stops recording first
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        bufferContinuation?.finish()
-        bufferContinuation = nil
+        finishBuffers()
         converterLock.lock()
         converter = nil
         converterLock.unlock()
-        inSpeech = false
-        speechBufferRun = 0
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         setState(.idle)
     }
@@ -265,10 +315,18 @@ final class CaptureController {
 
     // ── recording sink ──
 
-    /// Start writing the canonical stream to AAC-in-CAF at `url`. Call after
-    /// `start()`. The session runs fine without a recording — callers may
-    /// treat a throw as non-fatal.
-    func startRecording(to url: URL) throws {
+    /// Whether the recording sink is writing (the CAF opened at `start`).
+    var isRecording: Bool {
+        recordingLock.lock()
+        defer { recordingLock.unlock() }
+        return recordingFile != nil
+    }
+
+    /// Open the AAC-in-CAF recording sink at `url`. Called by `start()` BEFORE
+    /// the tap installs (the first fed buffer must be the first written one);
+    /// the session runs fine without a recording — `start` treats a throw as
+    /// non-fatal.
+    private func openRecordingFile(at url: URL) throws {
         guard let canonicalFormat else { throw CaptureError.notStarted }
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -347,16 +405,36 @@ final class CaptureController {
             DispatchQueue.main.async { [weak self] in self?.setState(.running) }
         }
 
-        // (a) the analyzer's stream.
-        bufferContinuation?.yield(canonical)
+        // (a) the analyzer's stream (continuation read under the lock — the
+        // main thread finishes/nils it in finishBuffers/stop).
+        bufferLock.lock()
+        let continuation = bufferContinuation
+        bufferLock.unlock()
+        continuation?.yield(canonical)
 
         // (b) the recording sink, format-guarded: if the canonical layout ever
-        // differs from the file's processing format, skip rather than corrupt.
+        // differs from the file's processing format, skip rather than corrupt —
+        // but COUNT the skip and tell the user once (a silently shorter
+        // recording is a lie about what was captured).
         recordingLock.lock()
-        if let file = recordingFile, file.processingFormat == canonical.format {
-            try? file.write(from: canonical)
+        var reportMismatch = false
+        if let file = recordingFile {
+            if file.processingFormat == canonical.format {
+                try? file.write(from: canonical)
+            } else {
+                recordingFormatMismatches += 1
+                reportMismatch = recordingFormatMismatches == 1
+            }
         }
         recordingLock.unlock()
+        if reportMismatch {
+            DispatchQueue.main.async { [weak self] in
+                self?.onError?(
+                    "The session audio recording is incomplete: the microphone "
+                        + "stream stopped matching the recording file's format."
+                )
+            }
+        }
 
         // (c) the VAD.
         runVAD(on: canonical, wallMs: wallMs, audioTime: audioTime)
@@ -393,14 +471,26 @@ final class CaptureController {
     }
 
     /// The adaptive-RMS VAD, verbatim from the old pipeline, now on canonical
-    /// buffers. Events are stamped with both clocks (see header).
+    /// buffers. Events are stamped with both clocks (see header). Reads
+    /// float32 or int16 samples — the two layouts `start()` admits; the
+    /// canonical format is the analyzer's choice, not ours, and a VAD that
+    /// only spoke float32 would go silently deaf on an int16 session.
     private func runVAD(on buffer: AVAudioPCMBuffer, wallMs: Double, audioTime: TimeInterval) {
-        guard let channel = buffer.floatChannelData?[0] else { return }
         let n = Int(buffer.frameLength)
         guard n > 0 else { return }
 
         var sum: Float = 0
-        for i in 0..<n { sum += channel[i] * channel[i] }
+        if let channel = buffer.floatChannelData?[0] {
+            for i in 0..<n { sum += channel[i] * channel[i] }
+        } else if let channel = buffer.int16ChannelData?[0] {
+            let scale = 1 / Float(Int16.max)
+            for i in 0..<n {
+                let sample = Float(channel[i]) * scale
+                sum += sample * sample
+            }
+        } else {
+            return // unreachable: start() refused any other common format
+        }
         let rms = (sum / Float(n)).squareRoot()
         let db = 20 * log10(max(rms, 1e-9))
 

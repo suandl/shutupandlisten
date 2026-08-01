@@ -256,8 +256,11 @@ struct SessionView: View {
             .buttonStyle(.bordered)
             .disabled(!controller.isRunning || controller.coverageCriteria.isEmpty)
             .accessibilityLabel("Check coverage")
-            .onChange(of: controller.coverageResult) { _, result in
-                if result != nil { showCoverage = true }
+            // Keyed off the completed-check COUNT, not the result value: a
+            // repeat check returning the identical result would never change
+            // `coverageResult`, and the sheet has to reopen anyway.
+            .onChange(of: controller.coverageCheckCount) { _, _ in
+                if controller.coverageResult != nil { showCoverage = true }
             }
 
             Button(action: controller.toggleSession) {

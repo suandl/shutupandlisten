@@ -55,7 +55,16 @@ actor TranscriptForwarder {
                 try? await Task.sleep(nanoseconds: UInt64(cadenceSeconds * 1_000_000_000))
                 guard !Task.isCancelled, !stopped else { return }
                 if let batch = batcher.tick() {
-                    await post(batch)
+                    let delivered = await post(batch)
+                    if !delivered, Task.isCancelled {
+                        // stop() cancelled us mid-POST: URLSession tore the
+                        // request down, but these segments are already marked
+                        // ingested, so the stop-path reconcile would skip
+                        // them. Give the batch back to the batcher so
+                        // stop()'s flushRemaining still sends the words.
+                        requeue(batch)
+                        return
+                    }
                 }
             }
         }
@@ -89,9 +98,20 @@ actor TranscriptForwarder {
         batcher.feed(.segmentFinalized(segment))
     }
 
+    /// Put a torn-down batch's segments back in the batcher (they stay in
+    /// `ingestedIndexes` — the reconcile must still skip them; the batcher is
+    /// now the one holding them for the tail flush).
+    private func requeue(_ batch: ForwarderBatcher.Batch) {
+        for segment in batch.segments {
+            batcher.feed(.segmentFinalized(segment))
+        }
+    }
+
     /// One plain JSON POST — the "configurable consumer" is whatever the user
     /// pointed the URL at (the server/ endpoint is out of scope, plan Phase 5).
-    private func post(_ batch: ForwarderBatcher.Batch) async {
+    /// Returns whether the batch was handed to the endpoint (any HTTP status
+    /// counts — a rejection is the receiver's choice, not a lost request).
+    private func post(_ batch: ForwarderBatcher.Batch) async -> Bool {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -102,8 +122,10 @@ actor TranscriptForwarder {
             if let http = response as? HTTPURLResponse, !(200 ... 299).contains(http.statusCode) {
                 print("TranscriptForwarder: batch \(batch.index) rejected — HTTP \(http.statusCode)")
             }
+            return true
         } catch {
             print("TranscriptForwarder: batch \(batch.index) dropped — \(error.localizedDescription)")
+            return false
         }
     }
 }

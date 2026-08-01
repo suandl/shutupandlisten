@@ -37,6 +37,10 @@ struct ShutUpAndListenApp: App {
         let container = self.container
         Task.detached(priority: .utility) {
             PersistenceWriter.recoverIncompleteSessions(container: container)
+            // Release session starts only AFTER recovery: it closes every
+            // `recording`-state record, so a session that raced it would have
+            // its just-created record eaten as a "crashed" one.
+            await RecoveryGate.shared.markDone()
         }
     }
 

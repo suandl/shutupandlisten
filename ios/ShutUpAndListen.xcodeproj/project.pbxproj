@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		5A0000000000000000000013 /* TurnEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 5A0000000000000000000011 /* TurnEngine */; };
 		5A0000000000000000000014 /* ClaudeClient in Frameworks */ = {isa = PBXBuildFile; productRef = 5A0000000000000000000012 /* ClaudeClient */; };
+		5A0000000000000000000016 /* TranscriptCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5A0000000000000000000015 /* TranscriptCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 			files = (
 				5A0000000000000000000013 /* TurnEngine in Frameworks */,
 				5A0000000000000000000014 /* ClaudeClient in Frameworks */,
+				5A0000000000000000000016 /* TranscriptCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -74,6 +76,7 @@
 			packageProductDependencies = (
 				5A0000000000000000000011 /* TurnEngine */,
 				5A0000000000000000000012 /* ClaudeClient */,
+				5A0000000000000000000015 /* TranscriptCore */,
 			);
 			productName = ShutUpAndListen;
 			productReference = 5A0000000000000000000005 /* ShutUpAndListen.app */;
@@ -342,6 +345,10 @@
 		5A0000000000000000000012 /* ClaudeClient */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ClaudeClient;
+		};
+		5A0000000000000000000015 /* TranscriptCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TranscriptCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

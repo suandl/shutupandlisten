@@ -244,3 +244,31 @@ actor PersistenceWriter: ModelActor {
         try? modelContext.save()
     }
 }
+
+/// The launch-recovery ordering latch: `recoverIncompleteSessions` closes
+/// every `recording`-state record it finds, so it MUST run before any new
+/// session creates one — or it would adopt (and close as `recovered`) the
+/// record of the session that just started. The app marks the gate done when
+/// recovery finishes; `SessionController.startSession` awaits it before
+/// creating a record. Same small-async-flag shape as AssetEnsure: one actor,
+/// no polling.
+actor RecoveryGate {
+    static let shared = RecoveryGate()
+
+    private var isDone = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Recovery finished (successfully or not — the latch is about ordering,
+    /// not outcome). Idempotent; releases every waiter.
+    func markDone() {
+        isDone = true
+        for waiter in waiters { waiter.resume() }
+        waiters.removeAll()
+    }
+
+    /// Suspend until recovery has run. Returns immediately once marked done.
+    func waitUntilDone() async {
+        guard !isDone else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}

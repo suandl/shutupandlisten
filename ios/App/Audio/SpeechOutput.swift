@@ -55,4 +55,14 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         DispatchQueue.main.async { self.onFinished?() }
     }
+
+    /// `stop()` ends the clip via cancellation, not completion — the
+    /// synthesizer reports that as `didCancel`, never `didFinish`. Treat it
+    /// as finished all the same, so the host's floor bookkeeping (listener
+    /// segment close, response-window tick) can never be skipped by a cut
+    /// clip. The host's close path is idempotent, so the barge-in handler
+    /// having already closed the segment is fine.
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async { self.onFinished?() }
+    }
 }

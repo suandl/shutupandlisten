@@ -41,12 +41,19 @@ public struct StoredEntry: Codable, Equatable, Sendable {
     }
 }
 
-/// Flatten a segment log for storage/export, in log order. Empty lines are
-/// dropped — same as the old stop-path save — but blank segments are the only
-/// filter: volatile segments flatten too, so a stop-path snapshot taken before
-/// the engine drained still keeps the words.
+/// Flatten a segment log for storage/export, in CHRONOLOGICAL order —
+/// (audioStart, index), not raw append order. The two can diverge: a
+/// finalize-split allocates fresh indexes for the pieces after the first, so
+/// a listener segment appended mid-volatile sits BETWEEN the split finals by
+/// index while its audio plainly follows them. Sorting by audio time with the
+/// index as tiebreak reads the log in spoken order; migrated records
+/// (all-zero ranges) fall back to pure index order through the tiebreak.
+/// Empty lines are dropped — same as the old stop-path save — but blank
+/// segments are the only filter: volatile segments flatten too, so a
+/// stop-path snapshot taken before the engine drained still keeps the words.
 public func storedEntries(from segments: [TranscriptSegment]) -> [StoredEntry] {
     segments
+        .sorted { ($0.audioStart, $0.index) < ($1.audioStart, $1.index) }
         .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
         .map(StoredEntry.init)
 }
