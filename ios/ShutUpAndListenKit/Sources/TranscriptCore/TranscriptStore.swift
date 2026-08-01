@@ -218,8 +218,22 @@ public actor TranscriptStore {
                     index = nextIndex
                     nextIndex += 1
                 }
+                // Split pieces beyond the first are store-minted. So is a
+                // first piece whose engine ID already names another live
+                // segment or an earlier piece of this same batch (duplicate
+                // ID — engine bug, mirroring `append`): the log never holds
+                // two segments with one identity, or every later lookup for
+                // the live one would resolve to the imposter.
+                let pieceID: SegmentID
+                if k == 0,
+                   position(of: final.id) == nil,
+                   !replacement.contains(where: { $0.id == final.id }) {
+                    pieceID = final.id
+                } else {
+                    pieceID = SegmentID()
+                }
                 replacement.append(TranscriptSegment(
-                    id: k == 0 ? final.id : SegmentID(), // split pieces beyond the first are store-minted
+                    id: pieceID,
                     speaker: closing.speaker,
                     text: piece.text,
                     state: .final,
@@ -315,10 +329,18 @@ public actor TranscriptStore {
         let boundary = boundaries.first(where: { $0.turn == turn })?.time
         var parts: [String] = []
         for seg in segments where seg.speaker == .thinker {
-            if seg.turn == turn {
+            // An open volatile's STORED tag can be stale — tags re-derive on
+            // the next revision, not when a boundary lands, and the detector
+            // stamps boundaries with latency (often before the volatile's
+            // start). Derive membership live here, as `startTurn` promises
+            // ("nothing downstream sees a stale carve"): the gate must never
+            // miss current-turn speech behind a fresh boundary. Finalized
+            // tags are settled at finalization and stay authoritative.
+            let tag = seg.state == .volatile ? turnTag(forStart: seg.audioStart) : seg.turn
+            if tag == turn {
                 if !seg.text.isEmpty { parts.append(seg.text) }
             } else if seg.state == .volatile,
-                      seg.turn < turn,
+                      tag < turn,
                       let boundary,
                       seg.audioStart < boundary, seg.audioEnd > boundary {
                 let portion = postBoundaryPortion(of: seg, at: boundary)
