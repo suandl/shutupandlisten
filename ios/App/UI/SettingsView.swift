@@ -1,25 +1,35 @@
 // Settings: account (Sign in with Apple / sign out), the proxy server address
-// (tucked under Advanced), listening behaviour, the coverage checklist, and
-// developer mode (the original bring-your-own-key path).
+// (tucked under Advanced), listening behaviour, the coverage checklist, the
+// opt-in transcript feed (plan R4.3 — off by default), and developer mode
+// (the original bring-your-own-key path).
 
 import AuthenticationServices
 import SwiftUI
+import TranscriptCore
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var accountStore: AccountStore
+    @EnvironmentObject private var controller: SessionController
 
     @State private var apiKey: String = KeychainStore.apiKey ?? ""
     @AppStorage("speakAcknowledgments") private var speakAcknowledgments = true
     @AppStorage("coverageCriteria") private var coverageCriteriaText = ""
     @AppStorage("proxyBaseURL") private var proxyBaseURL = "https://api.shutupandlisten.sh"
     @AppStorage("hasOnboarded") private var hasOnboarded = false
+    // The transcript feed (same keys SessionController reads at session start).
+    @AppStorage("transcriptFeedEnabled") private var transcriptFeedEnabled = false
+    @AppStorage("transcriptFeedURL") private var transcriptFeedURL = ""
+    @AppStorage("transcriptFeedCadenceSeconds") private var transcriptFeedCadenceSeconds = 5
 
     @State private var signingIn = false
     @State private var signInError: String?
     @State private var showAdvanced = false
     @State private var showDeveloper = false
+    #if DEBUG
+    @State private var showLiveFeed = false
+    #endif
 
     var body: some View {
         NavigationStack {
@@ -28,6 +38,7 @@ struct SettingsView: View {
                 serverSection
                 listeningSection
                 coverageSection
+                transcriptFeedSection
                 developerSection
             }
             .navigationTitle("Settings")
@@ -85,7 +96,8 @@ struct SettingsView: View {
             Text(
                 accountStore.isSignedIn
                     ? "The listener's rare questions go through the shutupandlisten "
-                    + "server. Your audio and running transcript never leave the phone."
+                    + "server. Your audio and running transcript stay on this phone "
+                    + "unless you turn on the transcript feed below."
                     : "Sign in so the listener's rare questions can reach the model — "
                     + "no API key to manage. The app works without it in developer mode."
             )
@@ -146,6 +158,41 @@ struct SettingsView: View {
         }
     }
 
+    // ── transcript feed (R4.3: the opt-in remote arm of the agent seam) ──
+
+    private var transcriptFeedSection: some View {
+        Section {
+            Toggle("Share live transcript", isOn: $transcriptFeedEnabled)
+            if transcriptFeedEnabled {
+                TextField("https://example.com/transcript", text: $transcriptFeedURL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Stepper(
+                    "Send every \(transcriptFeedCadenceSeconds) s",
+                    value: $transcriptFeedCadenceSeconds,
+                    in: 2 ... 30
+                )
+            }
+            #if DEBUG
+            if controller.isRunning, let feed = controller.agentFeed {
+                DisclosureGroup("Live feed", isExpanded: $showLiveFeed) {
+                    LiveFeedDebugView(feed: feed)
+                }
+            }
+            #endif
+        } header: {
+            Text("Transcript feed")
+        } footer: {
+            Text(
+                "Off by default — nothing leaves the device when off. When on, "
+                + "finalized transcript text (never the in-progress words) is "
+                + "sent in small batches to the HTTPS address above, from the "
+                + "next session on. Recognition itself always stays on-device."
+            )
+        }
+    }
+
     // ── developer mode ──
 
     private var developerSection: some View {
@@ -192,3 +239,61 @@ struct SettingsView: View {
         }
     }
 }
+
+#if DEBUG
+/// Phase 5's verification aid: a plain AgentFeed subscriber that lists the
+/// last few transcript events with wall-clock stamps — the on-screen proof
+/// that an in-process consumer sees deltas within ~1 s of speech. DEBUG-only;
+/// it exists to prove the seam, not to ship.
+private struct LiveFeedDebugView: View {
+    let feed: AgentFeed
+
+    private struct Row: Identifiable {
+        let id: Int
+        let stamp: Date
+        let text: String
+    }
+
+    @State private var rows: [Row] = []
+    @State private var nextID = 0
+
+    var body: some View {
+        Group {
+            if rows.isEmpty {
+                Text("Waiting for events…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(rows) { row in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(row.stamp, format: .dateTime.hour().minute().second())
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        Text(row.text)
+                            .font(.caption)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+        .task {
+            // A fresh subscription per appearance: snapshot-then-deltas, like
+            // any other late subscriber. The task dies with the view.
+            for await event in await feed.subscribe() {
+                nextID += 1
+                rows.append(Row(id: nextID, stamp: Date(), text: describe(event)))
+                if rows.count > 6 { rows.removeFirst(rows.count - 6) }
+            }
+        }
+    }
+
+    private func describe(_ event: TranscriptEvent) -> String {
+        switch event {
+        case .segmentAdded(let s): return "+ \(s.speaker.rawValue): \(s.text)"
+        case .segmentRevised(let s): return "~ \(s.speaker.rawValue): \(s.text)"
+        case .segmentFinalized(let s): return "✓ \(s.speaker.rawValue): \(s.text)"
+        case .turnStarted(let turn, let t): return "turn \(turn) @ \(String(format: "%.1f", t)) s"
+        }
+    }
+}
+#endif

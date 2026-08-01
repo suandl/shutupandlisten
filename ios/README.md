@@ -93,9 +93,13 @@ The app is a product, not a developer harness — no API key required:
   reinforces it live the first time the machine visibly waits.
 - **Account mode** — Sign in with Apple exchanges an identity token with the
   proxy (`server/`, contract in `server/API.md`) for a session token stored in
-  the Keychain. The proxy holds the Anthropic key; the app never sees it, and
-  the server never sees audio or the running transcript — only the rare
-  substantive-tier requests the gate escalates, and explicit coverage checks.
+  the Keychain. The proxy holds the Anthropic key; the app never sees it. The
+  privacy contract: recognition and the running transcript stay on-device by
+  default — the account proxy sees only the rare substantive-tier requests the
+  gate escalates and explicit coverage checks. An off-by-default Settings
+  toggle can additionally stream *finalized* transcript batches to an endpoint
+  the user chooses (see "Transcript feed" below); with it off, no transcript
+  text leaves the phone.
   `ListenerService` is the seam: `ProxyClient` (account) and `ClaudeClient`
   (developer mode, the original BYOK path, now tucked into a Settings
   disclosure) are interchangeable behind it.
@@ -115,6 +119,16 @@ The app is a product, not a developer harness — no API key required:
   outputs, so results parse reliably) and returns one nudge toward the most
   important gap. When a checklist is set, an earned thread-pull may also steer
   toward an untouched topic — but never before the current thought is out.
+- **Transcript feed** — the agent seam. In process, any feature can attach to
+  the running session's transcript through `AgentFeed` (`App/Support/`): each
+  subscriber gets its own snapshot-then-deltas stream over the
+  `TranscriptCore` store's multicast log, live within ~1 s of speech —
+  coverage mode is its first consumer. Out of process, an off-by-default
+  Settings toggle activates `TranscriptForwarder`: **finalized** segments —
+  never volatile, in-progress text — are batched on a configurable cadence
+  (2–30 s, default 5) and POSTed as JSON to an HTTPS endpoint you configure.
+  Delivery is best-effort (batches carry a monotonic index so the receiver
+  can detect drops); recognition itself always stays on-device.
 
 ## Try it without a device
 

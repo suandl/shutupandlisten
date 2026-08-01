@@ -27,8 +27,10 @@ The prompt is meant to be pasted into:
 - `web/` — the browser build of the full pipeline (VAD → smart-turn →
   STT → listener LLM → TTS) and the live tuning harness.
 - `ios/` — the native iOS app: the same spec and response hierarchy,
-  with on-device STT/TTS and Claude as the listener. See
-  [`ios/README.md`](ios/README.md).
+  with on-device STT/TTS, a transcript spine any in-process agent can
+  subscribe to (plus an opt-in feed that batches finalized transcript
+  text to an endpoint you choose — off by default), and Claude as the
+  listener. See [`ios/README.md`](ios/README.md).
 - `server/` — the account-backed proxy for the customer build of the
   iOS app: Sign in with Apple, metered listener/coverage endpoints,
   the Anthropic key held server-side. Contract in

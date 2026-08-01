@@ -12,6 +12,10 @@
 //   TranscriptStore      the ONE source of truth for transcript state — the
 //                        UI, the evidence feed, persistence, and agents are
 //                        all subscribers of the same multicast log (R4.1)
+//   AgentFeed            the public in-process subscription seam over the
+//                        store (R4.2), published per session; coverage mode
+//                        consumes it, and the opt-in TranscriptForwarder
+//                        rides its finalized-only stream (R4.3)
 //   LinguisticEOU        utterance text → P(complete) evidence
 //   TurnDetector         pure reducer: when the patience window closes, it asks
 //                        (`evaluate`) — it never decides to speak on its own
@@ -86,6 +90,12 @@ final class SessionController: ObservableObject {
     /// "Saved to library" confirmation. Nil when nothing was worth saving.
     @Published private(set) var lastSavedRecordID: UUID?
 
+    /// The agent seam (R4.2): the running session's public subscription point
+    /// over the transcript spine, for any feature that wants to attach —
+    /// coverage, the opt-in forwarder, a debug console. Session-scoped: set
+    /// at start, nil between sessions.
+    @Published private(set) var agentFeed: AgentFeed?
+
     // ── live-tunable knobs (mirrors web/src/knobs.ts; defaults bias to "keep listening") ──
     @Published var knobs = TurnKnobs.defaults {
         didSet { detector?.setKnobs { $0 = knobs } }
@@ -94,6 +104,11 @@ final class SessionController: ObservableObject {
     @AppStorage("speakAcknowledgments") var speakAcknowledgments = true
     /// Criteria for coverage mode, one topic per line.
     @AppStorage("coverageCriteria") var coverageCriteriaText = ""
+    // The opt-in transcript feed (R4.3; same keys as SettingsView). Read at
+    // session start — flipping the toggle applies from the next session.
+    @AppStorage("transcriptFeedEnabled") var transcriptFeedEnabled = false
+    @AppStorage("transcriptFeedURL") var transcriptFeedURL = ""
+    @AppStorage("transcriptFeedCadenceSeconds") var transcriptFeedCadenceSeconds = 5
 
     var coverageCriteria: [CoverageCriterion] {
         coverageCriteriaText
@@ -132,6 +147,9 @@ final class SessionController: ObservableObject {
     /// Host-driven store writes chained onto one serial task, so e.g. a
     /// listener segment's append can never execute after its close.
     private var lastStoreWrite: Task<Void, Never>?
+    /// The opt-in remote arm (R4.3) — exists only while a session runs WITH
+    /// the Settings toggle on; nil means zero transcript egress.
+    private var forwarder: TranscriptForwarder?
 
     /// The current utterance as the gate must see it — refreshed by the store
     /// subscription, reset synchronously at turn-start, and read with NO await
@@ -248,10 +266,15 @@ final class SessionController: ObservableObject {
         writer = nil
         currentRecordID = nil
         lastStoreWrite = nil
+        forwarder = nil
 
         let store = TranscriptStore()
         self.store = store
         self.engine = engine
+        // The agent seam goes up WITH the store: any feature can attach from
+        // the first word (R4.2).
+        let feed = AgentFeed(store: store)
+        agentFeed = feed
         detector = TurnDetector(knobs: knobs)
 
         let capture = CaptureController()
@@ -265,6 +288,7 @@ final class SessionController: ObservableObject {
         } catch {
             lastError = "Could not start the microphone: \(error.localizedDescription)"
             self.capture = nil
+            agentFeed = nil
             return
         }
 
@@ -281,6 +305,7 @@ final class SessionController: ObservableObject {
             engineBridgeTask = nil
             storeSubscriptionTask?.cancel()
             storeSubscriptionTask = nil
+            agentFeed = nil
             return
         }
 
@@ -324,6 +349,24 @@ final class SessionController: ObservableObject {
             }
         }
 
+        // R4.3: the opt-in remote arm — ONLY when the user turned the toggle
+        // on, and only toward an HTTPS endpoint. A missing/invalid URL
+        // disables the forwarder, never the session. With the toggle off
+        // (the default) no forwarder exists and zero transcript text leaves
+        // the device.
+        if transcriptFeedEnabled,
+           let url = URL(string: transcriptFeedURL.trimmingCharacters(in: .whitespaces)),
+           url.scheme?.lowercased() == "https" {
+            let forwarder = TranscriptForwarder(
+                feed: feed,
+                sessionID: currentRecordID ?? UUID(),
+                endpoint: url,
+                cadenceSeconds: TimeInterval(transcriptFeedCadenceSeconds)
+            )
+            self.forwarder = forwarder
+            Task { await forwarder.start() }
+        }
+
         // Housekeeping, off the start path: drop model reservations for
         // locales we no longer transcribe (R2.6).
         Task.detached { await AssetEnsure.releaseStaleReservations(keeping: locale) }
@@ -364,6 +407,15 @@ final class SessionController: ObservableObject {
             self.detector?.dropTurn()
             self.machineState = .listening
             await self.closeOutSession()
+            // The forwarder's tail flush runs detached: it reconciles against
+            // the post-drain snapshot (the feed keeps the store alive) and its
+            // final POST must not be able to hold the stop path — delivery is
+            // best-effort, stopping is not.
+            if let forwarder = self.forwarder {
+                self.forwarder = nil
+                Task.detached { await forwarder.stop() }
+            }
+            self.agentFeed = nil // the seam is session-scoped (R4.2)
             self.storeSubscriptionTask?.cancel()
             self.storeSubscriptionTask = nil
             self.engineBridgeTask = nil
@@ -756,15 +808,29 @@ final class SessionController: ObservableObject {
 
     // ── coverage mode ──
 
+    /// Coverage is the agent seam's FIRST consumer (plan Phase 5): its
+    /// transcript comes from the feed's snapshot — the same public API any
+    /// other feature attaches through — not from a controller-internal cache.
     func checkCoverage() {
         guard !coverageCriteria.isEmpty else {
             lastError = "Add checklist topics in Settings first."
             return
         }
+        guard let feed = agentFeed else {
+            // The seam is session-scoped; the coverage button is only enabled
+            // while a session runs, so this is a belt-and-braces guard.
+            lastError = "Start a session first."
+            return
+        }
         guard let client = makeService() else { return }
-        let text = cachedFullText
         coverageChecking = true
         Task { [weak self] in
+            // Everything the thinker has said so far, finalized + volatile —
+            // the same "recording so far" the old cache held.
+            let text = await feed.currentSnapshot()
+                .filter { $0.speaker == .thinker && !$0.text.isEmpty }
+                .map(\.text)
+                .joined(separator: " ")
             do {
                 let result = try await client.checkCoverage(
                     transcript: text,
