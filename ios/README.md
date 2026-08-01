@@ -14,12 +14,15 @@ nothing.
 
 ```
 ios/
-  ShutUpAndListen.xcodeproj   Xcode 16 project (file-system-synchronized)
-  App/                        SwiftUI app target (iOS 17+)
+  ShutUpAndListen.xcodeproj   Xcode 26 project (file-system-synchronized)
+  App/                        SwiftUI app target (iOS 26+)
   ShutUpAndListenKit/         Swift package: the pure core + Claude adapter
     Sources/TurnEngine/       spec ports — testable headlessly, no audio, no UI
+    Sources/TranscriptCore/   the transcript spine: append-only store actor,
+                              multicast events, turn tagging, storage mapping
     Sources/ClaudeClient/     raw-HTTP Messages API adapter
     Tests/TurnEngineTests/    golden-vector parity tests + gate tests
+    Tests/TranscriptCoreTests/ store revision/tagging/multicast fixtures
 ```
 
 ## How it maps to the repo's spec
@@ -44,21 +47,32 @@ substantive tiers (a short reflection, or one anchored question) reach Claude.
 
 ### iOS adapters (and their substitutions)
 
-- **VAD** — `App/Audio/AudioPipeline.swift`: adaptive RMS energy detection with
-  a ~380 ms hangover (mirroring the web VAD's redemption default), plus voice
-  processing (AEC) on the input node so the companion's own speech never reads
-  as thinker speech — which is what keeps barge-in honest. A Silero port can
-  replace it behind the same two callbacks.
+- **VAD** — `App/Audio/CaptureController.swift`: adaptive RMS energy detection
+  with a ~380 ms hangover (mirroring the web VAD's redemption default), plus
+  voice processing (AEC) on the input node so the companion's own speech never
+  reads as thinker speech — which is what keeps barge-in honest. A Silero port
+  can replace it behind the same two callbacks. The controller also owns
+  capture reliability: session interruptions, route changes, engine
+  configuration changes, and media-services resets all pause/rebuild/resume
+  the engine, with a truthful paused/resuming state in the UI; the canonical
+  fed-samples clock keeps transcript timings file-relative across gaps.
 - **EOU** — there is no smart-turn v3 port on iOS yet, so
   `TurnEngine/LinguisticEOU.swift` stands in: a transcript-only P(complete)
   heuristic (trailing "and…"/comma ⇒ incomplete; terminal punctuation or a
   wrap-up phrase ⇒ complete). It feeds the same **asymmetric veto** (spec §2):
   a wrong reading can only make the companion *more* patient, never cut you
   off. Toggle it off in the knobs for the patience-only baseline arm.
-- **STT** — `SFSpeechRecognizer`, preferring on-device recognition (the
-  repo's off-host economics). New partial words while a pause is being timed
-  are fed to the machine as fresh EOU **evidence**, so re-evaluation stays
-  evidence-driven, never clock-driven (spec §6).
+- **STT** — the iOS 26 Speech framework: `SpeechAnalyzer` + its
+  `SpeechTranscriber` module (`App/Audio/AnalyzerEngine.swift`, behind the
+  `TranscriptionEngine` protocol), on-device always, with the locale model
+  ensured via `AssetInventory` at onboarding and re-verified at every session
+  start. Volatile results stream and visibly refine until finalized — the
+  Siri-style revising behavior — one analyzer session spans the whole
+  recording (no duty-cycle restarts), and finalized text carries punctuation
+  and audio time ranges. Engine events flow into the `TranscriptCore` store
+  (stable segment identity, canonical-timeline ranges); new words while a
+  pause is being timed are fed to the machine as fresh EOU **evidence**, so
+  re-evaluation stays evidence-driven, never clock-driven (spec §6).
 - **TTS** — `AVSpeechSynthesizer`. The host sizes the machine's response
   window from a duration estimate just before answering `speak`; a barge-in
   cuts the clip instantly (usefulness bar B2).
@@ -115,8 +129,10 @@ ANTHROPIC_API_KEY=… swift run sul-demo --live   # real Claude replies
 ```
 
 It replays a scripted thinking-out-loud session (the reading-app idea from
-`prompts/claude.md`) through the exact production path — detector → gate →
-listener — and prints the timeline. (The demo pins the 2000 ms floor its
+`prompts/claude.md`) through the production decision loop — detector → gate →
+listener, the same code the app runs — and prints the timeline. (The app
+additionally routes transcript state through the `TranscriptCore` store; the
+demo feeds the detector directly and does not exercise that app-layer spine.) (The demo pins the 2000 ms floor its
 script was authored against; the shipped default is 200 ms — see Knobs.)
 The run walks every branch: a sub-floor
 breath pause waited out, an "and…" pause the veto extends, a patience window
@@ -137,9 +153,9 @@ is free), a rules-only backchannel, and one anchored thread-pull:
 
 ## Building
 
-Open `ios/ShutUpAndListen.xcodeproj` in Xcode 16+, set your signing team, and
-run on an iOS 17+ device (the mic + speech pipeline is best exercised on
-hardware). The Sign in with Apple capability is wired via
+Open `ios/ShutUpAndListen.xcodeproj` in Xcode 26+ (the `SpeechAnalyzer` engine
+needs the iOS 26 SDK), set your signing team, and run on an iOS 26+ device
+(the mic + speech pipeline is best exercised on hardware). The Sign in with Apple capability is wired via
 `App/ShutUpAndListen.entitlements`; point the app at your proxy deployment in
 Settings → Server (or skip sign-in and use developer mode with a personal
 Claude API key under Settings → Developer mode).

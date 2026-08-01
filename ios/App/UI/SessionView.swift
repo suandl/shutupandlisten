@@ -26,6 +26,10 @@ struct SessionView: View {
     var body: some View {
         VStack(spacing: 0) {
             stateStrip
+            if controller.isRunning,
+               controller.captureState == .paused || controller.captureState == .resuming {
+                captureStateBanner
+            }
             if showPatienceTip {
                 patienceTip
             }
@@ -136,6 +140,25 @@ struct SessionView: View {
         case .deciding: return .purple
         case .responding: return .pink
         }
+    }
+
+    // ── truthful capture state (R1.2: paused is shown, not papered over) ──
+
+    private var captureStateBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: controller.captureState == .paused
+                ? "pause.circle" : "arrow.clockwise.circle")
+                .foregroundStyle(.orange)
+            Text(controller.captureState == .paused
+                ? "Listening is paused — another app has the microphone. "
+                    + "It resumes on its own when the audio frees up."
+                : "Resuming the microphone…")
+                .font(.footnote)
+            Spacer()
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.1))
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     // ── first-session coaching ──

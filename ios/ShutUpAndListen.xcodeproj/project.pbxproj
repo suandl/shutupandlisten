@@ -253,7 +253,6 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "shutupandlisten listens while you think out loud so it can wait for a thought to land before saying anything.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Your dictation is transcribed (on-device when available) so the companion can pull on a specific thread of what you actually said.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UIBackgroundModes = audio;
@@ -285,7 +284,6 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "shutupandlisten listens while you think out loud so it can wait for a thought to land before saying anything.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Your dictation is transcribed (on-device when available) so the companion can pull on a specific thread of what you actually said.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UIBackgroundModes = audio;

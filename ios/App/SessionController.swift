@@ -1,16 +1,40 @@
 // The host — wires audio → TurnDetector → response gate → Claude → TTS.
 //
 // This is the iOS counterpart of web/src/main.ts: the impure shell around the
-// pure engine. The division of labour (spec + CONCEPTS "reduced role"):
+// pure engine. The division of labour after the transcript-core rewrite
+// (docs/plans/2026-08-01-001-feat-ios-transcript-core-rewrite-plan.md, "Host"
+// section):
 //
-//   AudioPipeline        mic → speech-start/speech-end events
-//   LinguisticEOU        transcript → P(complete) evidence (the smart-turn stand-in)
+//   CaptureController    mic → canonical buffers + speech-start/end events
+//                        (both clocks: wall ms for the detector, canonical
+//                        audio seconds for the store)
+//   AnalyzerEngine       canonical buffers → EngineEvents (stable segment IDs)
+//   TranscriptStore      the ONE source of truth for transcript state — the
+//                        UI, the evidence feed, persistence, and agents are
+//                        all subscribers of the same multicast log (R4.1)
+//   LinguisticEOU        utterance text → P(complete) evidence
 //   TurnDetector         pure reducer: when the patience window closes, it asks
 //                        (`evaluate`) — it never decides to speak on its own
 //   decideTier (gate)    rules answer silence/acknowledge with NO model call;
 //                        only reflection/question reach Claude
-//   ClaudeClient         the substantive tiers (prompts/claude.md system prompt)
 //   SpeechOutput         speaks the reply; barge-in cuts it instantly
+//
+// Two bridge tasks connect the seams. The ENGINE BRIDGE consumes
+// engine.events (single consumer) and writes store.append/revise/finalize.
+// The STORE SUBSCRIPTION consumes store.updates() and refreshes the
+// MainActor caches: the published transcript, and — load-bearing —
+// `cachedUtteranceText`, the current utterance as the gate must see it.
+// `speech-end` handling and evidence re-fires read that cache SYNCHRONOUSLY:
+// there is never an `await` between a VAD event and feeding its evidence to
+// the detector, preserving the strict main-actor event ordering the machine
+// relies on. Evidence is stamped at delivery (`nowMs`) and dropped unless the
+// machine is in `pending`/`deciding`, exactly as before the rewrite.
+//
+// Utterance identity is segment identity + canonical audio time (R2.4):
+// `turn-start` becomes `store.startTurn(turn, atAudioTime:)` via the capture
+// clock's wall→audio mapping — the old character-offset anchor is gone.
+// Host-driven store writes (turn starts, listener segments) are chained onto
+// one serial task so append-before-close ordering can never invert.
 //
 // Every `evaluate` is answered (spec §4a invariant): rules tiers answer
 // synchronously; model tiers leave the machine parked in `deciding` (which
@@ -24,11 +48,15 @@ import ClaudeClient
 import Foundation
 import SwiftData
 import SwiftUI
+import TranscriptCore
 import TurnEngine
 
+/// The UI's view of one transcript line. `id` is the store segment's
+/// engine-issued SegmentID — stable across volatile revisions, so SwiftUI
+/// treats a refining segment as the SAME row, not a new one.
 struct TranscriptEntry: Identifiable, Equatable {
     enum Speaker: Equatable { case thinker, listener }
-    let id = UUID()
+    let id: SegmentID
     let speaker: Speaker
     var text: String
     var tier: Tier?
@@ -45,6 +73,9 @@ final class SessionController: ObservableObject {
     @Published private(set) var transcript: [TranscriptEntry] = []
     @Published private(set) var inputLevelDb: Float = -70
     @Published private(set) var isThinking = false // a model call is in flight
+    /// Truthful capture state from CaptureController (R1.2): the UI shows
+    /// paused/resuming instead of pretending to listen through a phone call.
+    @Published private(set) var captureState: CaptureController.State = .idle
     @Published var lastError: String?
 
     // Coverage mode
@@ -74,11 +105,35 @@ final class SessionController: ObservableObject {
 
     // ── internals ──
     private var detector: TurnDetector?
-    private let pipeline = AudioPipeline()
-    private let transcriber = SpeechTranscriber()
+    private var store: TranscriptStore?
+    private var capture: CaptureController?
+    /// Held concretely for `prepare()` (canonical-format query + preheat);
+    /// everything downstream of `start` speaks only the TranscriptionEngine
+    /// protocol — the seam a WhisperKit arm would plug into (plan Phase W).
+    private var engine: SpeechAnalyzerTranscriptionEngine?
     private let speech = SpeechOutput()
     private var tickTimer: Timer?
     private var clockOrigin: TimeInterval = 0
+    /// The stop path is async (the engine drain); block re-entry until done.
+    private var isStopping = false
+
+    // ── bridge tasks + MainActor caches (see header) ──
+    private var engineBridgeTask: Task<Void, Never>?
+    private var storeSubscriptionTask: Task<Void, Never>?
+    /// Host-driven store writes chained onto one serial task, so e.g. a
+    /// listener segment's append can never execute after its close.
+    private var lastStoreWrite: Task<Void, Never>?
+
+    /// The current utterance as the gate must see it — refreshed by the store
+    /// subscription, reset synchronously at turn-start, and read with NO await
+    /// on the VAD/evidence path.
+    private var cachedUtteranceText = ""
+    /// Everything the thinker has said (the coverage check / askNow fallback).
+    private var cachedFullText = ""
+    /// Latest store snapshot, for synchronous reads (history, transcript).
+    private var segmentsSnapshot: [TranscriptSegment] = []
+    /// The listener segment currently holding the floor, awaiting its close.
+    private var openListenerSegmentID: SegmentID?
 
     /// Latest EOU probability for the current pause (gate rule 2 evidence).
     private var lastEouProb: Double = .nan
@@ -95,7 +150,8 @@ final class SessionController: ObservableObject {
     private var accountStore: AccountStore?
     /// Wall-clock start of the running session, for the saved record.
     private var sessionStartDate: Date?
-    /// File name of the in-progress recording under RecordingStorage.
+    /// File name of the in-progress CAF recording under RecordingStorage
+    /// (remuxed to .m4a at graceful stop).
     private var recordingFileName: String?
 
     /// Hand in the SwiftData container and the account layer. Idempotent —
@@ -116,15 +172,49 @@ final class SessionController: ObservableObject {
     }
 
     func startSession() async {
-        guard !isRunning else { return }
+        guard !isRunning, !isStopping else { return }
         lastError = nil
 
+        // Mic permission only: SpeechAnalyzer's on-device recognition has no
+        // speech-authorization gate (plan Key Decisions — the legacy
+        // SFSpeechRecognizer.requestAuthorization path is gone).
         guard await AVAudioApplication.requestRecordPermission() else {
             lastError = "Microphone access is required to listen."
             return
         }
-        guard await SpeechTranscriber.requestAuthorization() else {
-            lastError = "Speech recognition access is required to transcribe."
+
+        // R2.6: re-verify the on-device model at EVERY session start — assets
+        // can be evicted under storage pressure. Missing → try to fetch;
+        // failing that, block with a clear message rather than start deaf.
+        let locale = Locale.current
+        switch await AssetEnsure.status(for: locale) {
+        case .installed:
+            break
+        case .unsupported:
+            lastError = AssetEnsure.AssetError.unsupportedLocale(locale).localizedDescription
+            return
+        case .needsDownload:
+            do {
+                try await AssetEnsure.ensure(for: locale)
+            } catch {
+                lastError = "The on-device speech model isn't installed. "
+                    + "Connect to the internet and try again."
+                return
+            }
+        }
+
+        // Engine first: prepare() resolves THE canonical format for the whole
+        // session (SpeechAnalyzer's best available for this transcriber) and
+        // preheats so first words don't lag.
+        let engine = SpeechAnalyzerTranscriptionEngine(locale: locale)
+        engine.onError = { [weak self] message in
+            MainActor.assumeIsolated { self?.lastError = message }
+        }
+        let canonicalFormat: AVAudioFormat
+        do {
+            canonicalFormat = try await engine.prepare()
+        } catch {
+            lastError = "Could not start transcription: \(error.localizedDescription)"
             return
         }
 
@@ -138,67 +228,63 @@ final class SessionController: ObservableObject {
         pendingReply = nil
         transcript = []
         coverageResult = nil
+        cachedUtteranceText = ""
+        cachedFullText = ""
+        segmentsSnapshot = []
+        openListenerSegmentID = nil
+        engineBridgeTask?.cancel()
+        storeSubscriptionTask?.cancel()
+        lastStoreWrite = nil
 
+        let store = TranscriptStore()
+        self.store = store
+        self.engine = engine
         detector = TurnDetector(knobs: knobs)
 
-        // AudioPipeline / SpeechTranscriber / SpeechOutput all deliver their
-        // callbacks on the main queue, so hopping back onto the main actor via
-        // assumeIsolated is safe and keeps event ordering strict.
-        pipeline.onSpeechStart = { [weak self] t in
-            MainActor.assumeIsolated { self?.feed(.speechStart(t: t)) }
-        }
-        pipeline.onSpeechEnd = { [weak self] t in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.lastSpeechEndMs = t
-                self.feed(.speechEnd(t: t))
-                self.feedEouEvidence(at: t)
-            }
-        }
-        pipeline.onBuffer = { [weak self] buffer in self?.transcriber.append(buffer) }
-        pipeline.onLevel = { [weak self] db in
-            MainActor.assumeIsolated { self?.inputLevelDb = db }
-        }
+        let capture = CaptureController()
+        self.capture = capture
+        wireCapture(capture)
+        wireSpeechOutput()
 
-        transcriber.onTranscriptUpdate = { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.refreshThinkerEntry()
-                // New words are EVIDENCE: while a pause is being timed or an
-                // evaluation is awaiting an answer, a fresher transcript can
-                // flip the EOU reading — the machine re-evaluates
-                // evidence-driven (§6), never on a clock.
-                let s = self.detector?.state
-                if s == .pending || s == .deciding {
-                    self.feedEouEvidence(at: self.nowMs())
-                }
-            }
-        }
-
-        speech.onFinished = { [weak self] in
-            // Let the machine's response window close on real audio end.
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.feed(.tick(t: self.nowMs()))
-            }
-        }
-
+        let buffers: AsyncStream<AVAudioPCMBuffer>
         do {
-            try pipeline.start(clockOrigin: clockOrigin)
+            buffers = try capture.start(canonicalFormat: canonicalFormat, clockOrigin: clockOrigin)
         } catch {
             lastError = "Could not start the microphone: \(error.localizedDescription)"
+            self.capture = nil
             return
         }
-        transcriber.start()
 
-        // Record the session audio (best-effort — the session runs regardless).
-        let fileName = UUID().uuidString + ".m4a"
+        startEngineBridge(engine: engine, store: store)
+        startStoreSubscription(store: store)
+
         do {
-            try pipeline.startRecording(to: RecordingStorage.url(for: fileName))
+            try await engine.start(buffers: buffers)
+        } catch {
+            lastError = "Could not start transcription: \(error.localizedDescription)"
+            capture.stop()
+            self.capture = nil
+            engineBridgeTask?.cancel()
+            engineBridgeTask = nil
+            storeSubscriptionTask?.cancel()
+            storeSubscriptionTask = nil
+            return
+        }
+
+        // Record the session audio: AAC-in-CAF during capture (crash-safe;
+        // remuxed to .m4a at graceful stop). Best-effort — the session runs
+        // regardless.
+        let fileName = UUID().uuidString + ".caf"
+        do {
+            try capture.startRecording(to: RecordingStorage.url(for: fileName))
             recordingFileName = fileName
         } catch {
             recordingFileName = nil
         }
+
+        // Housekeeping, off the start path: drop model reservations for
+        // locales we no longer transcribe (R2.6).
+        Task.detached { await AssetEnsure.releaseStaleReservations(keeping: locale) }
 
         tickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.onTick() }
@@ -209,62 +295,168 @@ final class SessionController: ObservableObject {
     }
 
     func stopSession() {
-        guard isRunning else { return }
+        guard isRunning, !isStopping else { return }
+        isStopping = true
         tickTimer?.invalidate()
         tickTimer = nil
         speech.stop()
-        pipeline.stopRecording()
-        transcriber.stop()
-        pipeline.stop()
-        // Abandon the conversation: the next session opens a fresh turn. An
-        // outstanding evaluation is answered cheaply with `silence`.
-        detector?.input(.decision(t: nowMs(), outcome: .silence))
-        detector?.dropTurn()
-        detector = nil
+        capture?.stopRecording()
         isRunning = false
-        machineState = .listening
         patienceProgress = nil
-        persistSession()
+
+        // The plan's stop sequence: engine drain FIRST (finish input →
+        // finalize-through-end-of-input → drain results), so the trailing
+        // finals land in the store before anything reads it — a graceful stop
+        // loses nothing. Then capture teardown, the machine's cheap `silence`
+        // answer, persistence (with the CAF → .m4a remux), detector teardown.
+        Task { [weak self] in
+            guard let self else { return }
+            await self.engine?.stopAndFinalize()
+            await self.engineBridgeTask?.value // every engine write committed
+            await self.lastStoreWrite?.value // every host write committed
+            self.capture?.stop()
+            // Abandon the conversation: the next session opens a fresh turn.
+            // An outstanding evaluation is answered cheaply with `silence`.
+            self.detector?.input(.decision(t: self.nowMs(), outcome: .silence))
+            self.detector?.dropTurn()
+            self.machineState = .listening
+            await self.persistSession()
+            self.storeSubscriptionTask?.cancel()
+            self.storeSubscriptionTask = nil
+            self.engineBridgeTask = nil
+            self.detector = nil
+            self.capture = nil
+            self.engine = nil
+            self.captureState = .idle
+            self.isStopping = false
+        }
     }
 
-    /// Save the finished session to the library — only when something was
-    /// actually said; an empty session's orphan audio file is deleted.
-    private func persistSession() {
-        let started = sessionStartDate ?? Date()
-        sessionStartDate = nil
-        let fileName = recordingFileName
-        recordingFileName = nil
+    // ── wiring ──
 
-        let stored = transcript
-            .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
-            .map {
-                StoredEntry(
-                    speaker: $0.speaker == .thinker ? "thinker" : "listener",
-                    text: $0.text,
-                    tier: $0.tier?.rawValue,
-                    turn: $0.turn
-                )
-            }
-        guard !stored.isEmpty,
-              let modelContext,
-              let transcriptJSON = try? JSONEncoder().encode(stored)
-        else {
-            if let fileName { RecordingStorage.delete(fileName: fileName) }
-            return
+    private func wireCapture(_ capture: CaptureController) {
+        // All CaptureController callbacks arrive on the main queue, so hopping
+        // onto the main actor via assumeIsolated is safe and keeps event
+        // ordering strict.
+        capture.onSpeechStart = { [weak self] wallMs, _ in
+            MainActor.assumeIsolated { self?.feed(.speechStart(t: wallMs)) }
         }
+        capture.onSpeechEnd = { [weak self] wallMs, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.lastSpeechEndMs = wallMs
+                self.feed(.speechEnd(t: wallMs))
+                // Synchronous cache read — NO await between the VAD event and
+                // its evidence (see header).
+                self.feedEouEvidence(at: wallMs)
+            }
+        }
+        capture.onLevel = { [weak self] db in
+            MainActor.assumeIsolated { self?.inputLevelDb = db }
+        }
+        capture.onState = { [weak self] state in
+            MainActor.assumeIsolated { self?.captureState = state }
+        }
+        capture.onError = { [weak self] message in
+            MainActor.assumeIsolated { self?.lastError = message }
+        }
+    }
 
-        let record = SessionRecord(
-            startedAt: started,
-            duration: Date().timeIntervalSince(started),
-            title: SessionRecord.deriveTitle(from: stored),
-            transcriptJSON: transcriptJSON,
-            criteriaText: coverageCriteriaText,
-            coverageJSON: coverageResult.flatMap { try? JSONEncoder().encode($0) },
-            audioFileName: fileName
-        )
-        modelContext.insert(record)
-        try? modelContext.save()
-        lastSavedRecordID = record.id
+    private func wireSpeechOutput() {
+        speech.onFinished = { [weak self] in
+            // Let the machine's response window close on real audio end, and
+            // close the listener segment at the ACTUAL end (R4/replay: never
+            // present unspoken words as spoken).
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.closeOpenListener(bargedIn: false)
+                self.feed(.tick(t: self.nowMs()))
+            }
+        }
+    }
+
+    /// The engine-events bridge: the single consumer of engine.events,
+    /// translating them into store writes. The engine's contract: at most one
+    /// open volatile at a time, and a finalized batch reuses the open
+    /// volatile's ID for its first final.
+    private func startEngineBridge(engine: SpeechAnalyzerTranscriptionEngine, store: TranscriptStore) {
+        engineBridgeTask = Task {
+            var openID: SegmentID?
+            for await event in engine.events {
+                switch event {
+                case .volatile(let id, let text, let range):
+                    if openID == id {
+                        await store.revise(id: id, text: text, range: range)
+                    } else {
+                        openID = id
+                        await store.append(id: id, text: text, range: range)
+                    }
+                case .finalized(let finals):
+                    if let first = finals.first {
+                        await store.finalize(id: first.id, into: finals)
+                    } else if let id = openID {
+                        // Finalized to nothing: drop the open volatile.
+                        await store.finalize(id: id, into: [])
+                    }
+                    openID = nil
+                }
+            }
+        }
+    }
+
+    /// The store subscription: refreshes the MainActor caches (published
+    /// transcript, utterance text, full text, snapshot) on every store event,
+    /// and re-fires EOU evidence while a pause is being timed — new words are
+    /// EVIDENCE (§6): the machine re-evaluates evidence-driven, never on a
+    /// clock.
+    private func startStoreSubscription(store: TranscriptStore) {
+        storeSubscriptionTask = Task { [weak self] in
+            let updates = await store.updates()
+            for await _ in updates {
+                guard let self, !Task.isCancelled else { return }
+                let turn = self.detector?.currentTurn ?? 0
+                let segments = await store.snapshot()
+                let utterance = await store.utteranceText(turn: turn)
+                let full = await store.fullText
+                self.segmentsSnapshot = segments
+                self.cachedFullText = full
+                // A turn-start may have reset the cache while we awaited the
+                // actor; never clobber the new turn with the old turn's text.
+                if (self.detector?.currentTurn ?? 0) == turn {
+                    self.cachedUtteranceText = utterance
+                }
+                self.refreshTranscriptEntries()
+                let state = self.detector?.state
+                if state == .pending || state == .deciding {
+                    self.feedEouEvidence(at: self.nowMs())
+                }
+            }
+        }
+    }
+
+    private func refreshTranscriptEntries() {
+        transcript = segmentsSnapshot.compactMap { segment in
+            guard !segment.text.isEmpty else { return nil }
+            return TranscriptEntry(
+                id: segment.id,
+                speaker: segment.speaker == .thinker ? .thinker : .listener,
+                text: segment.text,
+                tier: segment.tier,
+                turn: segment.turn
+            )
+        }
+    }
+
+    /// Chain a host-driven store write onto the serial writer task. Ops run on
+    /// the main actor in enqueue order — appendListener always lands before
+    /// the closeListener enqueued after it.
+    private func enqueueStoreWrite(_ op: @escaping @MainActor (TranscriptStore) async -> Void) {
+        guard let store else { return }
+        let previous = lastStoreWrite
+        lastStoreWrite = Task {
+            await previous?.value
+            await op(store)
+        }
     }
 
     // ── the decision loop ──
@@ -294,40 +486,72 @@ final class SessionController: ObservableObject {
 
     private func feedEouEvidence(at t: Double) {
         guard knobs.useSmartTurn else { return }
-        let prob = LinguisticEOU.completionProbability(for: transcriber.currentUtteranceText)
+        let prob = LinguisticEOU.completionProbability(for: cachedUtteranceText)
         lastEouProb = prob
         feed(.eou(t: t, verdict: nil, completionProb: prob))
     }
 
     private func handle(_ event: OutputEvent) {
         switch event {
-        case .turnStart(_, let turn):
-            transcriber.markUtteranceStart()
-            transcript.append(TranscriptEntry(speaker: .thinker, text: "", tier: nil, turn: turn))
+        case .turnStart(let t, let turn):
+            // Utterance identity is segment identity + canonical audio time
+            // (R2.4): stamp the boundary via the capture clock's wall→audio
+            // mapping; the store derives every segment's turn tag from it.
+            // The cache resets synchronously — the new thought starts empty.
+            cachedUtteranceText = ""
+            if let capture {
+                let audioTime = capture.audioTime(atWallMs: t)
+                enqueueStoreWrite { await $0.startTurn(turn, atAudioTime: audioTime) }
+            }
 
         case .evaluate(_, let turn, _, let reason, _):
             evaluate(turn: turn, reason: reason)
 
-        case .turnEnd(_, let turn, _, _):
-            _ = turn // transcript entry is already up to date via partials
+        case .turnEnd:
+            break // the store's segments already carry the words
 
         case .responseStart:
             if let reply = pendingReply, !reply.text.isEmpty {
                 pendingReply = nil
                 speech.speak(reply.text)
-                transcript.append(TranscriptEntry(
-                    speaker: .listener, text: reply.text, tier: reply.tier,
-                    turn: detector?.currentTurn ?? 0
-                ))
+                appendListenerSegment(text: reply.text, tier: reply.tier)
             }
 
         case .responseEnd(let t, _, _):
             lastFloorReleaseMs = t
 
         case .bargeIn(let t, _):
-            // The yield is instant: cut the clip at t, not at its natural end.
+            // The yield is instant: cut the clip at t, not at its natural end —
+            // and the listener segment closes at the CUT point, marked barged-in.
             speech.stop()
             lastFloorReleaseMs = t
+            closeOpenListener(bargedIn: true)
+        }
+    }
+
+    /// Append the reply the companion is about to speak as an open listener
+    /// segment: start = audioNow at speak, end = a TTS estimate, revised to
+    /// the actual on finish/barge-in by closeOpenListener.
+    private func appendListenerSegment(text: String, tier: Tier) {
+        let start = capture?.audioNow ?? 0
+        let estimatedEnd = start + SpeechOutput.estimateDurationMs(for: text) / 1000
+        enqueueStoreWrite { [weak self] store in
+            let id = await store.appendListener(
+                text: text, tier: tier, estimatedRange: start ... estimatedEnd
+            )
+            self?.openListenerSegmentID = id
+        }
+    }
+
+    /// Close the open listener segment at the actual end (natural finish, or
+    /// the cut point on barge-in). Reads the open ID at EXECUTION time on the
+    /// serial writer, so it always sees the append that preceded it.
+    private func closeOpenListener(bargedIn: Bool) {
+        let end = capture?.audioNow ?? 0
+        enqueueStoreWrite { [weak self] store in
+            guard let self, let id = self.openListenerSegmentID else { return }
+            self.openListenerSegmentID = nil
+            await store.closeListener(id: id, actualEnd: end, bargedIn: bargedIn)
         }
     }
 
@@ -335,7 +559,7 @@ final class SessionController: ObservableObject {
     /// leave the machine in `deciding` until the reply lands.
     private func evaluate(turn: Int, reason: PatienceReason) {
         let now = nowMs()
-        let text = transcriber.currentUtteranceText
+        let text = cachedUtteranceText
         // With the EOU heuristic off we fall back to the two-valued bridge the
         // web build used before the classifier's score was threaded through.
         let prob = knobs.useSmartTurn && lastEouProb.isFinite
@@ -448,9 +672,7 @@ final class SessionController: ObservableObject {
     func askNow() {
         guard isRunning else { return }
         let turn = detector?.currentTurn ?? 0
-        let text = transcriber.currentUtteranceText.isEmpty
-            ? transcriber.fullText
-            : transcriber.currentUtteranceText
+        let text = cachedUtteranceText.isEmpty ? cachedFullText : cachedUtteranceText
         guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
             lastError = "Nothing has been said yet."
             return
@@ -477,10 +699,7 @@ final class SessionController: ObservableObject {
                         // parked on an evaluation. Speak directly; the turn
                         // continues (with AEC the mic will not hear our TTS).
                         self.speech.speak(reply)
-                        self.transcript.append(TranscriptEntry(
-                            speaker: .listener, text: reply, tier: .question,
-                            turn: self.detector?.currentTurn ?? 0
-                        ))
+                        self.appendListenerSegment(text: reply, tier: .question)
                     }
                 }
             } catch {
@@ -500,7 +719,7 @@ final class SessionController: ObservableObject {
             return
         }
         guard let client = makeService() else { return }
-        let text = transcriber.fullText
+        let text = cachedFullText
         coverageChecking = true
         Task { [weak self] in
             do {
@@ -520,6 +739,67 @@ final class SessionController: ObservableObject {
                 }
             }
         }
+    }
+
+    // ── persistence (stop path; Phase 4 moves this into PersistenceWriter) ──
+
+    /// Save the finished session to the library — only when something was
+    /// actually said; an empty session's orphan audio file is deleted. Runs
+    /// AFTER the engine drain, so the snapshot holds every finalized segment.
+    private func persistSession() async {
+        let started = sessionStartDate ?? Date()
+        sessionStartDate = nil
+        let cafName = recordingFileName
+        recordingFileName = nil
+
+        var segments: [TranscriptSegment] = []
+        if let store { segments = await store.snapshot() }
+        // TranscriptCore's mapping helper flattens the log; the app's local
+        // StoredEntry (SessionRecord.swift, untouched this phase) is the
+        // byte-compatible storage shape — a one-line adapter bridges them.
+        let stored = TranscriptCore.storedEntries(from: segments).map {
+            StoredEntry(speaker: $0.speaker, text: $0.text, tier: $0.tier, turn: $0.turn)
+        }
+
+        guard !stored.isEmpty,
+              let modelContext,
+              let transcriptJSON = try? JSONEncoder().encode(stored)
+        else {
+            if let cafName { RecordingStorage.delete(fileName: cafName) }
+            return
+        }
+
+        // Graceful stop: remux the crash-safe CAF into the .m4a the library
+        // plays (off the main actor — it is a decode/encode loop).
+        var audioFileName: String?
+        if let cafName {
+            let m4aName = (cafName as NSString).deletingPathExtension + ".m4a"
+            let source = RecordingStorage.url(for: cafName)
+            let destination = RecordingStorage.url(for: m4aName)
+            let remuxed = await Task.detached {
+                do {
+                    try CaptureController.remux(caf: source, to: destination)
+                    return true
+                } catch {
+                    return false
+                }
+            }.value
+            RecordingStorage.delete(fileName: cafName)
+            audioFileName = remuxed ? m4aName : nil
+        }
+
+        let record = SessionRecord(
+            startedAt: started,
+            duration: Date().timeIntervalSince(started),
+            title: SessionRecord.deriveTitle(from: stored),
+            transcriptJSON: transcriptJSON,
+            criteriaText: coverageCriteriaText,
+            coverageJSON: coverageResult.flatMap { try? JSONEncoder().encode($0) },
+            audioFileName: audioFileName
+        )
+        modelContext.insert(record)
+        try? modelContext.save()
+        lastSavedRecordID = record.id
     }
 
     // ── helpers ──
@@ -558,22 +838,25 @@ final class SessionController: ObservableObject {
         return error.localizedDescription
     }
 
+    /// Prior turns for the listener prompt, from the cached store snapshot.
+    /// Consecutive segments by the same speaker in the same turn are joined,
+    /// preserving the one-entry-per-voice-per-turn shape the prompt was tuned
+    /// on.
     private func conversationHistory(before turn: Int) -> [ConversationTurn] {
-        transcript
-            .filter { $0.turn < turn && !$0.text.isEmpty }
-            .map {
-                ConversationTurn(
-                    speaker: $0.speaker == .thinker ? .thinker : .listener,
-                    text: $0.text
-                )
+        var grouped: [(speaker: TranscriptCore.Speaker, turn: Int, text: String)] = []
+        for segment in segmentsSnapshot where segment.turn < turn && !segment.text.isEmpty {
+            if var last = grouped.last, last.speaker == segment.speaker, last.turn == segment.turn {
+                last.text += " " + segment.text
+                grouped[grouped.count - 1] = last
+            } else {
+                grouped.append((segment.speaker, segment.turn, segment.text))
             }
-    }
-
-    private func refreshThinkerEntry() {
-        guard let turn = detector?.currentTurn, turn > 0 else { return }
-        let text = transcriber.currentUtteranceText
-        if let idx = transcript.lastIndex(where: { $0.speaker == .thinker && $0.turn == turn }) {
-            transcript[idx].text = text
+        }
+        return grouped.map {
+            ConversationTurn(
+                speaker: $0.speaker == .thinker ? .thinker : .listener,
+                text: $0.text
+            )
         }
     }
 }

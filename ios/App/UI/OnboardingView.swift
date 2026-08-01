@@ -1,6 +1,8 @@
-// First launch: three pages — what it is, the silence contract (with a small
-// self-running patience-bar demo), and the optional account. Copy stays in the
-// product's voice: quiet, specific, unhyped.
+// First launch: four pages — what it is, the silence contract (with a small
+// self-running patience-bar demo), the on-device speech model (downloaded here
+// with visible progress, so the first session never stalls on it — plan R2.6),
+// and the optional account. Copy stays in the product's voice: quiet,
+// specific, unhyped.
 
 import AuthenticationServices
 import SwiftUI
@@ -12,12 +14,22 @@ struct OnboardingView: View {
     @State private var page = 0
     @State private var signingIn = false
     @State private var signInError: String?
+    @State private var assetPhase: AssetPhase = .checking
+
+    private enum AssetPhase: Equatable {
+        case checking
+        case downloading(Double)
+        case ready
+        case unsupported
+        case failed(String)
+    }
 
     var body: some View {
         TabView(selection: $page) {
             whatItIs.tag(0)
             silenceContract.tag(1)
-            account.tag(2)
+            dictationModel.tag(2)
+            account.tag(3)
         }
         .tabViewStyle(.page)
         .indexViewStyle(.page(backgroundDisplayMode: .always))
@@ -76,7 +88,106 @@ struct OnboardingView: View {
         .padding(.horizontal, 32)
     }
 
-    // ── page 3: account ──
+    // ── page 3: the on-device speech model ──
+
+    private var dictationModel: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Image(systemName: "waveform.badge.mic")
+                .font(.system(size: 44))
+                .foregroundStyle(.tint)
+            Text("Dictation stays on your phone")
+                .font(.title2.bold())
+            Text(
+                """
+                Your words are transcribed entirely on this device — nothing \
+                you say leaves it. The speech model for your language \
+                downloads once, then works offline.
+                """
+            )
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+
+            assetStatus
+
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, 32)
+        .task { await ensureAssets() }
+    }
+
+    @ViewBuilder
+    private var assetStatus: some View {
+        switch assetPhase {
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Checking for the model…")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        case .downloading(let fraction):
+            VStack(spacing: 8) {
+                ProgressView(value: fraction)
+                    .frame(maxWidth: 220)
+                Text("Downloading the speech model…")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        case .ready:
+            Label("Ready — transcription works offline.", systemImage: "checkmark.circle.fill")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.green)
+        case .unsupported:
+            Text(
+                "On-device transcription isn't available for your language "
+                    + "yet, so sessions can't be transcribed on this device."
+            )
+            .font(.footnote)
+            .foregroundStyle(.red)
+            .multilineTextAlignment(.center)
+        case .failed(let message):
+            VStack(spacing: 8) {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                Button("Try again") {
+                    Task { await ensureAssets() }
+                }
+                .font(.footnote.weight(.medium))
+            }
+        }
+    }
+
+    private func ensureAssets() async {
+        let locale = Locale.current
+        switch await AssetEnsure.status(for: locale) {
+        case .installed:
+            assetPhase = .ready
+        case .unsupported:
+            assetPhase = .unsupported
+            return
+        case .needsDownload:
+            assetPhase = .downloading(0)
+            do {
+                try await AssetEnsure.ensure(for: locale) { fraction in
+                    Task { @MainActor in assetPhase = .downloading(fraction) }
+                }
+                assetPhase = .ready
+            } catch {
+                assetPhase = .failed(
+                    "The download didn't finish — check your connection. "
+                        + "You can also retry from the first session."
+                )
+                return
+            }
+        }
+        await AssetEnsure.releaseStaleReservations(keeping: locale)
+    }
+
+    // ── page 4: account ──
 
     private var account: some View {
         VStack(spacing: 20) {
@@ -118,8 +229,8 @@ struct OnboardingView: View {
 
             Text(
                 """
-                Dictation is transcribed on-device when available. Only the \
-                rare question round-trips.
+                Dictation is transcribed on-device, always. Only the rare \
+                question round-trips.
                 """
             )
             .font(.footnote)
