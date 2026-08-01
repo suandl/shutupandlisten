@@ -105,11 +105,13 @@ Technical (set by this plan; each is load-bearing for a review finding):
   results, closed by finalization (which may split it into sentence-level
   final segments); a new volatile segment opens for subsequent audio.
 - **One persistent format converter feeds everything.** A single stateful
-  `AVAudioConverter` converts the tap format to a fixed canonical PCM format
-  (mono float32 @ 48 kHz); the recording file, the analyzer input, and the
-  VAD all consume the canonical stream. A route/configuration change rebuilds
-  the converter only — the file format and analyzer format never change
-  mid-session.
+  `AVAudioConverter` converts the tap format to the canonical PCM format —
+  which **is** the analyzer's `SpeechAnalyzer.bestAvailableAudioFormat(
+  compatibleWith: [transcriber])`, queried once at session start and fixed
+  for the whole session. The recording file, the analyzer input, and the VAD
+  all consume this one canonical stream (no second resampler). A
+  route/configuration change rebuilds the converter only — the canonical
+  format never changes mid-session.
 - **Session audio records to CAF (AAC-in-CAF) during capture**, because
   MPEG-4 finalizes its `moov` atom on close — a crash mid-session leaves an
   unplayable `.m4a`. CAF is append-safe and readable after abrupt
@@ -281,6 +283,11 @@ Other API: `append`/`revise`/`finalize` (engine + host writes only),
 `appendListener(text:tier:estimatedRange:)` → `closeListener(id:actualEnd:
 bargedIn:)`, `fullText`, `snapshot()`.
 
+`TranscriptCore` also owns the storage DTO (`StoredEntry` moves here from the
+app target) and the segment↔entry mapping, so persistence/export logic is
+headless-testable; `hasTimings` is computed (any segment with a non-zero
+range), not a stored flag.
+
 Pure Swift, no audio or UI imports — testable headlessly on macOS/Linux
 alongside `TurnEngine`.
 
@@ -292,10 +299,14 @@ protocol TranscriptionEngine {
     func stopAndFinalize() async   // drains; returns only when all results landed
     var events: AsyncStream<EngineEvent> { get }  // single consumer: the host bridge
 }
-enum EngineEvent {
+struct TimedRun: Sendable {        // word/run timing within a finalized text
+    let charOffset: Int; let charLength: Int   // UTF-16 offsets, not String.Index
+    let audioStart: TimeInterval; let audioEnd: TimeInterval
+}
+enum EngineEvent: Sendable {
     case volatile(SegmentID, text: String, range: ClosedRange<TimeInterval>)
-    case finalized([(SegmentID, text: String, range: ClosedRange<TimeInterval>,
-                     runs: [(Range<String.Index>, ClosedRange<TimeInterval>)])])
+    case finalized([(id: SegmentID, text: String,
+                     range: ClosedRange<TimeInterval>, runs: [TimedRun])])
 }
 ```
 
@@ -307,8 +318,9 @@ The SpeechAnalyzer conformance:
 - **Configuration pinned:** `SpeechTranscriber(locale:…)` with
   `reportingOptions: [.volatileResults]`, `attributeOptions:
   [.audioTimeRange]` (start from the transcriber preset that matches, deviate
-  consciously). Format from the static
-  `SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])`.
+  consciously). Input format = the canonical format (Key Decisions), i.e. the
+  static `SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith:
+  [transcriber])` queried at session start.
   Note: no `contextualStrings` equivalent exists in the iOS 26 API — no
   custom-vocabulary biasing is assumed anywhere in this plan.
 - **Volatile identity:** one open volatile segment; successive volatile
@@ -473,8 +485,10 @@ ios/
 **Files:** `project.pbxproj`, `ShutUpAndListenKit/Package.swift`.
 - Raise the app deployment target to iOS 26; bump the package
   `swift-tools-version` to the Xcode 26 toolchain and set package platforms
-  accordingly. **CI note:** the Linux test path must move to the matching
-  Swift toolchain in the same change, or the package tests break silently.
+  accordingly — keeping the macOS floor no higher than the headless targets
+  require, so `swift test` on dev Macs/Linux keeps working. **CI note:** no
+  workflow currently runs `swift test` (only `promptfoo.yml`); wherever it
+  runs (local Linux/macOS), the toolchain must match the new tools version.
 - Add `INFOPLIST_KEY_UIBackgroundModes = audio`.
 - No deletions — the legacy transcriber keeps the app runnable until Phase 2
   replaces it.
@@ -521,6 +535,13 @@ updated in Phase 2 to name the store as the app-only layer).
   `store.snapshot()` through the mapping helpers).
 - Onboarding: asset-ensure step with download progress; session start
   re-verifies.
+- **Phase 2 interim (before CaptureController lands in Phase 3):** the old
+  `AudioPipeline` tap keeps running; a temporary converter *inside*
+  `AnalyzerEngine` adapts its buffers to the analyzer format, and
+  `startTurn`'s audio time is approximated by wall-clock seconds since
+  session start — safe because interruption handling (the only source of
+  clock divergence) does not exist until Phase 3, which replaces both
+  bridges with the canonical converter and fed-samples clock.
 **Verification (operator feel-test, hardware):**
 - Words appear while speaking and visibly refine; warmed start-to-first-
   partial subjectively immediate.
