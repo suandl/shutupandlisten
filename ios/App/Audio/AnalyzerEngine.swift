@@ -225,9 +225,13 @@ final class SpeechAnalyzerTranscriptionEngine: TranscriptionEngine {
                 handle(result)
             }
         } catch {
-            let message = error.localizedDescription
-            DispatchQueue.main.async { [weak self] in
-                self?.onError?("Transcription failed: \(message)")
+            // A cancelled drain (the finalize-failure path already surfaced
+            // its own error) should not stack a spurious second message.
+            if !Task.isCancelled {
+                let message = error.localizedDescription
+                DispatchQueue.main.async { [weak self] in
+                    self?.onError?("Transcription failed: \(message)")
+                }
             }
         }
         eventContinuation.finish()

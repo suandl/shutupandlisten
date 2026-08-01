@@ -77,10 +77,16 @@ actor TranscriptForwarder {
     func stop() async {
         guard !stopped else { return }
         stopped = true
+        let tick = tickTask
         consumeTask?.cancel()
         tickTask?.cancel()
         consumeTask = nil
         tickTask = nil
+        // Await the tick loop before reconciling: a cancel that landed mid-POST
+        // requeues its batch only when the loop resumes, and flushRemaining
+        // below is the last flush those words can catch. Awaiting releases the
+        // actor, so the loop's requeue can run — no deadlock.
+        await tick?.value
         for segment in await feed.currentSnapshot() where segment.state == .final {
             ingest(segment)
         }

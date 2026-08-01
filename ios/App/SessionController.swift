@@ -833,7 +833,9 @@ final class SessionController: ObservableObject {
             do {
                 let reply = try await client.respond(to: request)
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    // isRunning: a reply that outlived its session must not
+                    // answer a NEW session's evaluation via takeFloor.
+                    guard let self, self.isRunning else { return }
                     if reply.isEmpty {
                         // The model chose silence — the prompt says that is the
                         // correct response for most turns. Declining is free.
