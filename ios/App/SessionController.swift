@@ -120,6 +120,15 @@ final class SessionController: ObservableObject {
     // ── bridge tasks + MainActor caches (see header) ──
     private var engineBridgeTask: Task<Void, Never>?
     private var storeSubscriptionTask: Task<Void, Never>?
+    /// The incremental persistence arm (plan R3.1): its own ModelContext off
+    /// the shared container, subscribed to the store, saving per final. The
+    /// record itself is created on the MAIN context at session start; the
+    /// writer holds only its persistentModelID.
+    private var writer: PersistenceWriter?
+    private var writerTask: Task<Void, Never>?
+    /// The id of the record the running session writes into (for
+    /// `lastSavedRecordID` once closeOut confirms the record was kept).
+    private var currentRecordID: UUID?
     /// Host-driven store writes chained onto one serial task, so e.g. a
     /// listener segment's append can never execute after its close.
     private var lastStoreWrite: Task<Void, Never>?
@@ -234,6 +243,10 @@ final class SessionController: ObservableObject {
         openListenerSegmentID = nil
         engineBridgeTask?.cancel()
         storeSubscriptionTask?.cancel()
+        writerTask?.cancel()
+        writerTask = nil
+        writer = nil
+        currentRecordID = nil
         lastStoreWrite = nil
 
         let store = TranscriptStore()
@@ -274,12 +287,41 @@ final class SessionController: ObservableObject {
         // Record the session audio: AAC-in-CAF during capture (crash-safe;
         // remuxed to .m4a at graceful stop). Best-effort — the session runs
         // regardless.
-        let fileName = UUID().uuidString + ".caf"
+        let fileName = RecordingStorage.cafFileName(stem: UUID().uuidString)
         do {
             try capture.startRecording(to: RecordingStorage.url(for: fileName))
             recordingFileName = fileName
         } catch {
             recordingFileName = nil
+        }
+
+        // R3.1: the SessionRecord exists from session START — state
+        // `recording`, placeholder title, the CAF already referenced so the
+        // audio can never be orphaned. The PersistenceWriter subscribes with
+        // replayingSnapshot: false (nothing to replay — the log is empty; the
+        // record was created before any segment can finalize) and saves on
+        // every finalized segment and turn start, no debounce. A crash from
+        // here on costs at most the current volatile segment.
+        if let modelContext {
+            let record = SessionRecord(
+                startedAt: sessionStartDate ?? Date(),
+                title: SessionRecord.placeholderTitle,
+                state: .recording,
+                criteriaText: coverageCriteriaText,
+                audioFileName: recordingFileName
+            )
+            modelContext.insert(record)
+            try? modelContext.save() // save first: the ID must be permanent
+            currentRecordID = record.id
+            let writer = PersistenceWriter(
+                modelContainer: modelContext.container,
+                recordID: record.persistentModelID
+            )
+            self.writer = writer
+            writerTask = Task {
+                let updates = await store.updates(replayingSnapshot: false)
+                await writer.run(updates: updates)
+            }
         }
 
         // Housekeeping, off the start path: drop model reservations for
@@ -308,7 +350,8 @@ final class SessionController: ObservableObject {
         // finalize-through-end-of-input → drain results), so the trailing
         // finals land in the store before anything reads it — a graceful stop
         // loses nothing. Then capture teardown, the machine's cheap `silence`
-        // answer, persistence (with the CAF → .m4a remux), detector teardown.
+        // answer, the writer's close-out (with the CAF → .m4a remux), detector
+        // teardown.
         Task { [weak self] in
             guard let self else { return }
             await self.engine?.stopAndFinalize()
@@ -320,7 +363,7 @@ final class SessionController: ObservableObject {
             self.detector?.input(.decision(t: self.nowMs(), outcome: .silence))
             self.detector?.dropTurn()
             self.machineState = .listening
-            await self.persistSession()
+            await self.closeOutSession()
             self.storeSubscriptionTask?.cancel()
             self.storeSubscriptionTask = nil
             self.engineBridgeTask = nil
@@ -741,39 +784,28 @@ final class SessionController: ObservableObject {
         }
     }
 
-    // ── persistence (stop path; Phase 4 moves this into PersistenceWriter) ──
+    // ── close-out (stop path; the record grew incrementally via PersistenceWriter) ──
 
-    /// Save the finished session to the library — only when something was
-    /// actually said; an empty session's orphan audio file is deleted. Runs
-    /// AFTER the engine drain, so the snapshot holds every finalized segment.
-    private func persistSession() async {
+    /// Close the session record: compute the duration, remux the crash-safe
+    /// CAF into the .m4a the library plays, and hand the PersistenceWriter its
+    /// close-out — which reconciles against the post-drain store snapshot,
+    /// applies the zero-speech rule (no finalized thinker segment → record +
+    /// audio deleted), and stamps the record `complete`. Runs AFTER the engine
+    /// drain, so the snapshot holds every finalized segment.
+    private func closeOutSession() async {
         let started = sessionStartDate ?? Date()
         sessionStartDate = nil
         let cafName = recordingFileName
         recordingFileName = nil
-
-        var segments: [TranscriptSegment] = []
-        if let store { segments = await store.snapshot() }
-        // TranscriptCore's mapping helper flattens the log; the app's local
-        // StoredEntry (SessionRecord.swift, untouched this phase) is the
-        // byte-compatible storage shape — a one-line adapter bridges them.
-        let stored = TranscriptCore.storedEntries(from: segments).map {
-            StoredEntry(speaker: $0.speaker, text: $0.text, tier: $0.tier, turn: $0.turn)
-        }
-
-        guard !stored.isEmpty,
-              let modelContext,
-              let transcriptJSON = try? JSONEncoder().encode(stored)
-        else {
-            if let cafName { RecordingStorage.delete(fileName: cafName) }
-            return
-        }
+        let duration = Date().timeIntervalSince(started)
 
         // Graceful stop: remux the crash-safe CAF into the .m4a the library
-        // plays (off the main actor — it is a decode/encode loop).
+        // plays (off the main actor — it is a decode/encode loop). The record
+        // keeps referencing the CAF until closeOut swaps the name, so a crash
+        // DURING the remux still recovers via the CAF at next launch.
         var audioFileName: String?
         if let cafName {
-            let m4aName = (cafName as NSString).deletingPathExtension + ".m4a"
+            let m4aName = RecordingStorage.m4aFileName(stem: RecordingStorage.stem(of: cafName))
             let source = RecordingStorage.url(for: cafName)
             let destination = RecordingStorage.url(for: m4aName)
             let remuxed = await Task.detached {
@@ -784,22 +816,44 @@ final class SessionController: ObservableObject {
                     return false
                 }
             }.value
-            RecordingStorage.delete(fileName: cafName)
             audioFileName = remuxed ? m4aName : nil
         }
 
-        let record = SessionRecord(
-            startedAt: started,
-            duration: Date().timeIntervalSince(started),
-            title: SessionRecord.deriveTitle(from: stored),
-            transcriptJSON: transcriptJSON,
-            criteriaText: coverageCriteriaText,
-            coverageJSON: coverageResult.flatMap { try? JSONEncoder().encode($0) },
-            audioFileName: audioFileName
+        guard let writer, let store else {
+            // No persistence was configured (previews, or record creation
+            // failed): nothing to close; drop the orphan audio.
+            if let cafName {
+                RecordingStorage.deleteBoth(stem: RecordingStorage.stem(of: cafName))
+            }
+            writerTask?.cancel()
+            writerTask = nil
+            self.writer = nil
+            currentRecordID = nil
+            return
+        }
+
+        // Ground truth for close-out: the post-drain log. The writer's pull
+        // loop may still be catching up on queued events — closeOut reconciles
+        // this snapshot against what it already wrote, so nothing rides on the
+        // race.
+        let finals = await store.snapshot()
+        let kept = await writer.closeOut(
+            duration: duration,
+            audioFileName: audioFileName,
+            coverage: coverageResult,
+            criteria: coverageCriteriaText,
+            finalSegments: finals
         )
-        modelContext.insert(record)
-        try? modelContext.save()
-        lastSavedRecordID = record.id
+        if let cafName, kept {
+            // The .m4a (or nothing, if the remux failed) is the record's audio
+            // now; the CAF has served its crash-safety purpose.
+            RecordingStorage.delete(fileName: cafName)
+        }
+        lastSavedRecordID = kept ? currentRecordID : nil
+        currentRecordID = nil
+        writerTask?.cancel()
+        writerTask = nil
+        self.writer = nil
     }
 
     // ── helpers ──

@@ -1,9 +1,17 @@
 // A saved session: the transcript (same bubble language as the live screen),
 // the coverage snapshot when a check ran, the audio when it was recorded, and
 // a Markdown export via ShareLink.
+//
+// TRUE REPLAY (plan R3.3): when the record's segments carry real canonical-
+// timeline ranges (`record.hasTimings`), tapping a bubble seeks playback to
+// its `audioStart`, and the bubble containing the playhead — the LAST segment
+// whose `audioStart` is at or before `currentTime` — is highlighted as audio
+// plays. Records without timings (pre-migration, rehydrated with zeroed
+// ranges) degrade to exactly the old static view: no seek, no highlight.
 
 import AVFoundation
 import SwiftUI
+import TranscriptCore
 import TurnEngine
 
 struct SessionDetailView: View {
@@ -18,7 +26,10 @@ struct SessionDetailView: View {
 
     var body: some View {
         ScrollView {
-            let entries = record.entries
+            let segments = record.transcriptSegments
+            // Replay affordances need audio AND real timings (R3.3).
+            let seekable = audioURL != nil && record.hasTimings
+            let current = seekable ? currentSegmentPosition(in: segments) : nil
             LazyVStack(alignment: .leading, spacing: 10) {
                 header
 
@@ -27,9 +38,14 @@ struct SessionDetailView: View {
                         .onAppear { playback.load(url: audioURL) }
                 }
 
-                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                    if !entry.text.isEmpty {
-                        StoredBubble(entry: entry)
+                ForEach(Array(segments.enumerated()), id: \.offset) { position, segment in
+                    if !segment.text.isEmpty {
+                        StoredBubble(segment: segment, isCurrent: position == current)
+                            .contentShape(RoundedRectangle(cornerRadius: 14))
+                            .onTapGesture {
+                                guard seekable else { return }
+                                playback.seek(to: segment.audioStart)
+                            }
                     }
                 }
 
@@ -48,6 +64,18 @@ struct SessionDetailView: View {
             }
         }
         .onDisappear { playback.stop() }
+    }
+
+    /// The segment the playhead is inside: the LAST one whose `audioStart` is
+    /// at or before `currentTime`. Nil before playback has moved, so nothing
+    /// is highlighted on a freshly opened session.
+    private func currentSegmentPosition(in segments: [TranscriptSegment]) -> Int? {
+        guard playback.currentTime > 0 else { return nil }
+        var position: Int?
+        for (i, segment) in segments.enumerated() where segment.audioStart <= playback.currentTime {
+            position = i
+        }
+        return position
     }
 
     // ── header ──
@@ -135,31 +163,40 @@ private enum RecordRowDuration {
 // ── transcript bubble (visually matches SessionView's TranscriptBubble) ──
 
 private struct StoredBubble: View {
-    let entry: StoredEntry
+    let segment: TranscriptSegment
+    let isCurrent: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text(entry.text)
-                .font(entry.speaker == "thinker" ? .body : .body.italic())
+            Text(segment.text)
+                .font(segment.speaker == .thinker ? .body : .body.italic())
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            entry.speaker == "thinker"
+            segment.speaker == .thinker
                 ? AnyShapeStyle(Color(.secondarySystemBackground))
                 : AnyShapeStyle(Color.accentColor.opacity(0.12)),
             in: RoundedRectangle(cornerRadius: 14)
         )
+        .overlay {
+            // The follow-along highlight (R3.3) — drawn, not re-tinted, so the
+            // thinker/listener bubble colors stay recognizable underneath.
+            if isCurrent {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1.5)
+            }
+        }
     }
 
     private var label: String {
-        guard entry.speaker == "listener" else { return "You" }
-        switch entry.tier {
-        case "question": return "Listener · thread-pull"
-        case "reflection": return "Listener · reflection"
+        guard segment.speaker == .listener else { return "You" }
+        switch segment.tier {
+        case .question: return "Listener · thread-pull"
+        case .reflection: return "Listener · reflection"
         default: return "Listener"
         }
     }

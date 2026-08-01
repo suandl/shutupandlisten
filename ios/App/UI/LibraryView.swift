@@ -1,5 +1,10 @@
 // The home screen: past sessions, newest first, with search — and the one
 // prominent action, starting a new session (which pushes the live SessionView).
+//
+// The query filters out `recording`-state records (plan R3.2): the live
+// session's record exists from session START, and must never appear as a
+// library row mid-capture. Sessions closed by launch recovery instead of a
+// graceful stop wear a subtle "Recovered" badge.
 
 import SwiftData
 import SwiftUI
@@ -8,7 +13,11 @@ struct LibraryView: View {
     @EnvironmentObject private var controller: SessionController
     @EnvironmentObject private var accountStore: AccountStore
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SessionRecord.startedAt, order: .reverse)
+    @Query(
+        filter: #Predicate<SessionRecord> { $0.state != "recording" },
+        sort: \SessionRecord.startedAt,
+        order: .reverse
+    )
     private var records: [SessionRecord]
 
     @State private var searchText = ""
@@ -79,7 +88,9 @@ struct LibraryView: View {
         for index in offsets {
             let record = filtered[index]
             if let fileName = record.audioFileName {
-                RecordingStorage.delete(fileName: fileName)
+                // Both incarnations (.caf/.m4a share the stem), so a stray
+                // crash-safe original can never linger past its record.
+                RecordingStorage.deleteBoth(stem: RecordingStorage.stem(of: fileName))
             }
             modelContext.delete(record)
         }
@@ -143,6 +154,16 @@ private struct RecordRow: View {
                         .font(.caption2)
                         .foregroundStyle(.tint)
                         .accessibilityLabel("Includes a thread-pull")
+                }
+                if record.sessionState == .recovered {
+                    // Closed by launch recovery, not a graceful stop (R3.2).
+                    Text("Recovered")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.orange.opacity(0.12), in: Capsule())
+                        .accessibilityLabel("Recovered after an interrupted session")
                 }
             }
             HStack(spacing: 6) {
