@@ -121,6 +121,22 @@ but incomplete one both fail by name.
 Legend for provenance: **B** = exists at merge base `a3437ce`, **M** = present in
 `ad11247`, **R** = present in `27c20ed`.
 
+**The both-sides set is exactly fourteen files, and every one of them is
+dispositioned** — thirteen in §§1a–1f, and `project.pbxproj` in §2 and Stages 4 and
+11. Derive the set rather than trusting the list; if it returns a name this plan
+never names, the plan is incomplete and the execution bead must stop and say so:
+
+```bash
+LC_ALL=C comm -12 \
+  <(git diff --name-only a3437ce..ad11247 | sort) \
+  <(git diff --name-only a3437ce..27c20ed | sort)
+```
+
+Eleven of the fourteen are the audio/session/schema/UI/pbxproj files the epic
+anticipated (§1a, §1c, §1e, §2). The other three — `ShutUpAndListenApp.swift`,
+`RecordingStorage.swift`, `ios/README.md` — are **not** in the epic's framing and
+carry load-bearing behavior from both sides; they are §1f.
+
 ### 1a. The head-on collisions (git will conflict — good)
 
 | File | B/M/R | Disposition |
@@ -249,6 +265,110 @@ addition on top.** The rewrite's UI deltas are small and feature-scoped.
 revisions). Both are `Hashable`/`Identifiable`, so `ForEach` sites in `SessionView`
 need no change — this is a type swap, not a UI rework.
 
+### 1f. The three both-sides files outside the epic's framing
+
+Both sides changed each of these, and taking either side wholesale silently drops
+something the other side needs. None of them is a UI merge, so none belongs in §1e.
+
+| File | main | rewrite | Disposition |
+|---|---|---|---|
+| `App/ShutUpAndListenApp.swift` | +54/−1 | +38/−1 | **Merge deliberately** — rewrite's container + recovery, main's seam + root + scene phase (below). |
+| `App/Support/RecordingStorage.swift` | +12 | +23/−2 | **Union both additions** (below). |
+| `ios/README.md` | +139/−38 | +49/−19 | **Main's is the base; re-apply the rewrite's engine-facing edits** (below). |
+
+#### `ShutUpAndListenApp.swift` — the migration's delivery vehicle *and* the seam's arming point
+
+Take the **rewrite's** file as the skeleton, because two things in it cannot be
+expressed any other way:
+
+- The explicit `ModelContainer` built from `Schema(versionedSchema: SessionSchemaV2.self)`
+  with `migrationPlan: SessionMigrationPlan.self`. Main uses the
+  `.modelContainer(for: SessionRecord.self)` convenience modifier, **which cannot
+  carry a migration plan.** Keep main's line and §5's custom stage never runs:
+  SwiftData attempts a lightweight migration into V2 on its own, so
+  `materializeLegacySegments` is never called, no `SegmentRecord` rows exist, and
+  every migrated record limps along on the lazy read-path fallback instead.
+  Nothing errors. This is the single highest-consequence line in the file.
+- Launch recovery: `PersistenceWriter.recoverIncompleteSessions(container:)` on a
+  detached task, then `await RecoveryGate.shared.markDone()`. The gate is awaited
+  by `SessionController.startSession` (`27c20ed:SessionController.swift:237`), so
+  dropping `markDone()` does not fail loudly — it **hangs every session start
+  forever**.
+
+Then re-apply from main, by hand — the rewrite's file has none of it:
+
+- [ ] `#if DEBUG CaptureSeam.installIfNeeded() #endif` in `init()`. This is where
+      the capture harness is armed; the `#if DEBUG` guard is one of the two
+      mechanisms in §2's security row, and the rewrite's `init()` has no trace of
+      it. A3/B5 check the *Release* half; nothing checks that the Debug half still
+      exists, so it must be on this checklist.
+- [ ] The `RootView` navigation shell in full: root `NavigationStack`, the
+      post-stop landing (`onChange(of: controller.lastSavedRecordID)` → fetch →
+      `path.append(record)`), and the `onChange(of: controller.isRunning)` reset
+      that surfaces the live screen when a Shortcut starts a session.
+- [ ] **Root at `SessionView`, not `LibraryView`.** The rewrite roots the
+      `WindowGroup` at `LibraryView`; main's talk-first root is the PR#37 redesign
+      (§2) and wins. Taking the rewrite's line here reverts the product's opening
+      screen — a change no compiler and no test in this plan would catch.
+- [ ] `@Environment(\.scenePhase)` + `.onChange(of: scenePhase) { controller.scenePhaseChanged($1) }`.
+      The controller owns the checkpoint-on-background and idle-timer policy; the
+      rewrite dropped the reporting half.
+
+#### `RecordingStorage.swift` — union, and the sweep stays `.m4a`-only on purpose
+
+Neither side's additions can be dropped:
+
+- **From main:** `allRecordingFileNames()` — the sole input to
+  `SessionRecovery.adoptOrphanedRecordings` (`ad11247:SessionRecovery.swift:32`),
+  which §1b keeps. The rewrite deleted it, having no orphan sweep.
+- **From the rewrite:** `cafFileName(stem:)`, `m4aFileName(stem:)`, `stem(of:)`,
+  `deleteBoth(stem:)` — the CAF/M4A naming convention. Fifteen call sites across
+  `SessionController`, `PersistenceWriter`, `LibraryView` and `WriterTests` depend
+  on them, including §1e's stem-paired deletion.
+
+`allRecordingFileNames()` filters `.m4a` and **stays that way.** Under
+record-at-start every live capture has a record from its first sample, so a
+crash-orphaned `.caf` is never record-less — `PersistenceWriter.recoverIncompleteSessions`
+owns it, by record state. Widening the sweep to `.caf` would make the two recovery
+paths race for the same file. The only true orphans left are `.m4a` files from
+pre-port builds, which is exactly what the sweep is narrowed to. Say this in the
+function's doc comment, or the next reader "fixes" it.
+
+#### Recovery ordering — the two sweeps are not commutative
+
+`adoptOrphanedRecordings` documents its own precondition: *"Called once per launch,
+before any new session can start recording — so every .m4a on disk without a record
+is genuinely an orphan, never an active file."* Under the port there is a second
+launch sweep, and the precondition now cuts the other way:
+
+`recoverIncompleteSessions` **remuxes a crashed CAF to `.m4a` and then adopts it
+into its record.** Between the remux and the save there is a window where a
+finished-looking `.m4a` exists whose record does not yet point at it. An orphan
+sweep running in that window adopts a duplicate "Recovered recording" for audio
+that already has a home.
+
+**Required:** the orphan sweep runs **after** `RecoveryGate` completes — the same
+latch `startSession` already waits on. In practice that means moving the call out of
+`configure(modelContext:accountStore:)`'s synchronous body and behind
+`await RecoveryGate.shared.waitUntilDone()`. Stage 5 owns the edit (the call site is
+in the re-derived file); §7's `orphan sweep runs after launch recovery` pins it.
+
+`reconcilePendingTranscripts` is a different matter: **delete it outright**, along
+with its call site. It exists only to drive `FileTranscriber` (deleted, §1b) and to
+settle `transcriptIsReconciled` (dropped at V2, §5.2). §1b's "narrowed" means the
+orphan sweep survives and this function does not.
+
+#### `ios/README.md`
+
+Main's is the base — it documents the PR#37 redesign, session modes and the capture
+harness, and is the larger rewrite of the two. Re-apply the rewrite's engine-facing
+edits on top: the `TranscriptCore` package in the layout tree, SpeechAnalyzer in
+place of `SFSpeechRecognizer`, the CAF-during-capture/remux-at-close storage note,
+and the iOS-26 requirement. Then fix what the port falsifies: the `AudioPipeline`
+reference at `README:53` (§1b's grep list) and any text describing the second
+offline transcription pass. Docs-only, but it is the first thing the next agent
+reads.
+
 ---
 
 ## 2. What of PR#37 must be preserved, and how it survives
@@ -257,7 +377,7 @@ Verified against the real diffs, not the epic's list.
 
 | Item | Where it lives | Survives how |
 |---|---|---|
-| **Release-exclusion of the capture seam** (`765c21b`) — SECURITY | `CaptureSeam.swift`, `CaptureURLProtocol.swift`, `CaptureAudioInjector.swift` (whole files `#if DEBUG`); `EXCLUDED_SOURCE_FILE_NAMES` on the app target's **Release** config; every call site in `SessionController` + `ShutUpAndListenApp` guarded | **Two mechanisms, two different risks.** The `#if DEBUG` file guards survive untouched (the rewrite does not touch those files). The `EXCLUDED_SOURCE_FILE_NAMES` block lives in `project.pbxproj` — **which the rewrite also edits, in the same config blocks** (deployment target, `UIBackgroundModes`). A sloppy pbxproj merge silently re-arms the seam in Release. The call-site guards in `SessionController` are **deleted by the re-derivation** and must be re-added by hand. |
+| **Release-exclusion of the capture seam** (`765c21b`) — SECURITY | `CaptureSeam.swift`, `CaptureURLProtocol.swift`, `CaptureAudioInjector.swift` (whole files `#if DEBUG`); `EXCLUDED_SOURCE_FILE_NAMES` on the app target's **Release** config; every call site in `SessionController` + `ShutUpAndListenApp` guarded | **Two mechanisms, two different risks.** The `#if DEBUG` file guards survive untouched (the rewrite does not touch those files). The `EXCLUDED_SOURCE_FILE_NAMES` block lives in `project.pbxproj` — **which the rewrite also edits, in the same config blocks** (deployment target, `UIBackgroundModes`). A sloppy pbxproj merge silently re-arms the seam in Release. The call-site guards in `SessionController` are **deleted by the re-derivation** and must be re-added by hand — as must `CaptureSeam.installIfNeeded()` itself, which arms the seam from `ShutUpAndListenApp.init()` and is absent from the rewrite's version of that file (§1f). |
 | **Keychain overwrite stays gone** (`765c21b`) | `CaptureSeam.installIfNeeded()` — no `KeychainStore.apiKey` write | Survives untouched. Assert by grep that no `KeychainStore.apiKey =` appears under the capture seam. |
 | **Seed-flag consistency** (`fd8d4b5`) | `Kit/Sources/ClaudeClient/CaptureSupport.swift` + its tests | **Safe by construction** — entirely in `ClaudeClient`, which the rewrite does not touch. |
 | **TTS through the AEC engine** | `SpeechOutput.swift` (`TTSPlaybackSink`) + the player node in `AudioPipeline` | File survives (§1c); **the sink does not** — `AudioPipeline` is deleted and `CaptureController` has no TTS. Must be re-homed (§3). Without this the mic hears the app's own voice. |
@@ -265,6 +385,8 @@ Verified against the real diffs, not the epic's list.
 | **Analyst late-reply fencing** (`31dba3c`) | `SessionController.swift` **only** (+122/−19) | **Entirely in the re-derived file** — must be hand-carried. See §4.3; the rewrite actively regressed this without knowing. |
 | **Analyst pool logic in TurnEngine** | `CandidatePool`, `AnalystCadence`, `AnalystPrompt` + tests | Pure, transport-agnostic, untouched by the rewrite. Survives — but its *anchoring contract* breaks silently (§4.2). |
 | **UI redesign, session modes, coverage presets, patience ring** | `UI/*`, `TurnEngine/SessionMode.swift`, `CoveragePresets.swift` | Survive; UI needs the five hand-merges of §1e. |
+| **Talk-first root, post-stop landing, scene-phase policy** | `ShutUpAndListenApp.swift` (`RootView`, `scenePhaseChanged`) | **At risk, silently.** The rewrite roots the `WindowGroup` at `LibraryView` and drops the scene-phase forwarding; both compile fine either way. Re-applied by §1f. |
+| **Orphan-recording adoption** | `SessionRecovery.adoptOrphanedRecordings` + `RecordingStorage.allRecordingFileNames()` | Kept (§1b), but its input helper is deleted on the rewrite side and its call site is deleted by the re-derivation — §1f restores both, behind `RecoveryGate`. |
 | **Capture-injection test harness** | `CaptureAudioInjector.swift`, `capture-fixture.json`, `demo-conversation.wav`, `CaptureUITests.swift`, `capture-demo.sh` | Code survives; **the wiring does not** — it feeds `AudioPipeline.injectForCapture`. Re-home onto `CaptureController` (below). Execution blocked by §0.1. |
 | **`capture-demo.sh` fails on UITest failure** (`6f24d22`) | `ios/scripts/capture-demo.sh` | File survives untouched. **Runner blocked by §0.1.** |
 | **iOS-17 UITest target** (`1187aa5`) | `project.pbxproj` | **Directly contradicted by the port** (§0.1). |
@@ -499,14 +621,96 @@ or into different words exactly when the gate evaluated." PR#37 introduced a *se
 character-offset anchor, in the analyst, months after that critique was written and
 in ignorance of it.
 
-**Recommendation — anchor on finalized text.** Add
-`TranscriptStore.finalizedText` (and/or `finalizedTextLength`) filtering
-`state == .final`, and feed *that* to `analyst.tick` for both the analyzed content
-and the expiry position. Then:
+**Recommendation — anchor on finalized text.** Stated as three concrete edits, not
+as a direction, because "feed it finalized text" has a wrong reading that compiles
+and silently disables expiry (below).
+
+**Edit 1 — `TranscriptCore`, Stage 3.** Add the projection next to `fullText`,
+mirroring it exactly so the two are comparable (same speaker filter, same
+empty-drop, same `" "` join — the separator is part of the length basis):
+
+```swift
+/// The THINKER's settled text only — the analyst's drift basis. Mirrors
+/// `fullText` except for `state == .final`: volatile segments are excluded, so
+/// the length is monotonically non-decreasing (finalization is one-way) and a
+/// shortening revision cannot move it backwards.
+public var finalizedText: String {
+    segments
+        .filter { $0.speaker == .thinker && $0.state == .final && !$0.text.isEmpty }
+        .map(\.text)
+        .joined(separator: " ")
+}
+```
+
+**Edit 2 — `SessionController`, Stage 5: cache it where `fullText` is already
+cached.** `startStoreSubscription` (`27c20ed:SessionController.swift:592`) already
+awaits `store.fullText` on every event and parks it on the main actor. Add one more
+await and one more stored property beside it:
+
+```swift
+let full      = await store.fullText
+let finalized = await store.finalizedText     // new
+self.cachedFullText      = full
+self.cachedFinalizedText = finalized          // new
+```
+
+This is deliberately **not** a second subscription. The reason is a hard constraint,
+not a preference: `analyst.candidate(for:transcriptLength:)` is called synchronously
+inside the gate's decision path (`ad11247:SessionController.swift:905`–`906`) and **cannot
+await**. The basis has to be a main-actor value that is already in hand at decision
+time, which is exactly what the existing subscription produces.
+
+**Edit 3 — `SessionController`, Stage 5: move both analyst call sites to that
+basis, and only those two.**
+
+| Site | main today | Port |
+|---|---|---|
+| `ad11247:761` | `analyst.tick(nowMs: now, transcript: transcriber.fullText)` | `analyst.tick(nowMs: now, transcript: cachedFinalizedText)` |
+| `ad11247:905`–`906` | `analyst.candidate(for: decision.tier, transcriptLength: transcriber.fullText.count)` | `…, transcriptLength: cachedFinalizedText.count` |
+
+The formation anchor needs no edit and **must not get one**:
+`recompute(nowMs:transcript:)` stamps `let anchor = transcript.count`
+(`ad11247:ConversationAnalyst.swift:100`) from the very string `tick` was handed, so
+it follows Edit 3 automatically. That is precisely why the two rows above have to
+move **together**.
+
+> **The wrong reading, and why it is silent.** `CandidatePool.expire` drops a
+> candidate when `currentPosition - anchorPosition > maxDrift`. Move `tick` to
+> `finalizedText` but leave line 906 on `fullText.count` and every anchor is stamped
+> short while the gate's expiry position is stamped long — drift is systematically
+> **over**-stated and fresh candidates are dropped at the moment they would be
+> spoken. Do the reverse and drift goes negative and nothing ever expires — the
+> original bug, now permanent. Both compile, both are silent, and one basis per
+> `CandidatePool` is the whole invariant.
+
+**Leave `fullText` alone at its other two uses.** `askNow()`
+(`ad11247:1012`) and `checkCoverage()` (`ad11247:1082`) want the live text
+*including* the in-flight utterance and are not drift-anchored to anything. A
+global replace of `transcriber.fullText` breaks both. Only the two analyst sites
+move.
+
+**Where `AgentFeed` fits.** `AgentFeed` is the right seam for a consumer that
+should not reach into the host — its `finalizedSegments(replayingSnapshot:)`
+(`27c20ed:AgentFeed.swift`) already yields exactly the finalized-only stream, and a
+future out-of-host analyst should ride it. It is *not* the right mechanism for this
+anchor, for a reason worth writing down: an accumulator fed by events is monotonic
+only if every segment is finalized exactly once, and `finalizeAll` republishes a
+`.segmentFinalized` per **replacement** segment when a volatile splits
+(`27c20ed:TranscriptStore.swift:250`), so a naive `+=` double-counts. The projection
+above is recomputed from the append-only log and is monotonic by construction.
+**Use the feed for consumers; use the cached projection for the basis.** If a later
+change does move the analyst behind `AgentFeed`, it must carry the accumulated
+finalized *length* on the feed itself rather than re-deriving it per subscriber.
+
+Consequences of the recommendation:
 
 - `CandidatePool` is **unchanged** — same `Int` character drift, same `maxDrift`,
   same tests still valid.
-- Monotonicity holds by construction (finalization is one-way).
+- Monotonicity holds by construction; pinned by
+  `TranscriptStoreTests/testFinalizedTextIsMonotonic` (§7, headless at Stage 7).
+- The two-site agreement is pinned by
+  `AnalystFeedTests/testAnalystTickAndCandidateShareFinalizedBasis` (§7, at B3) —
+  the host-level test that fails on exactly the wrong reading boxed above.
 - Volatile words never reach the model, consistent with the forwarder's
   finalized-only privacy rule.
 - Cost: the analyst sees up to one in-flight segment less. At a ~25 s cadence this
@@ -712,14 +916,19 @@ reopens it with `migrationPlan: SessionMigrationPlan.self`, and asserts ordered 
 5. **Add a base-shape (pre-PR#37) fixture** so both inbound stores are covered —
    and assert the *negative*: no timings in, zeroed ranges out,
    `hasTimings == false`. That is what keeps the fix from becoming "invent timings".
-6. Keep the existing three tests as-is.
+6. Keep the existing three tests as-is —
+   `testMigrationMaterializesOrderedSegmentRows`,
+   `testMigratedRecordDerivedViewsComeFromSegments`,
+   `testLazyMaterializerDecodesLegacyBlobOnRead`.
 7. **Wire the target** (§0.2) — none of this runs otherwise.
 
-Items 1–5 are the five method names B1 passes to `-only-testing`:
+Items 1–5 are the five new method names B1 passes to `-only-testing`:
 `testV1FixtureIsPR37Shape`, `testCostUSDSurvivesV1ToV2`,
 `testMigrationCarriesPR37Timings`, `testMaterializedRowsAgreeWithLazyFallback`,
-`testBaseShapeYieldsZeroedRangesAndNoTimings`. Rename one and B1 fails by name —
-which is the intended coupling, not an accident to route around.
+`testBaseShapeYieldsZeroedRangesAndNoTimings`. **B1 names item 6's three as well** —
+all eight, individually — so "keep them" is enforced rather than hoped for. Rename
+one and B1 fails by name, which is the intended coupling, not an accident to route
+around.
 
 ---
 
@@ -766,11 +975,21 @@ before the hard parts.
 `TranscriptStitcher` + their two test files. Work the §1b grep list to zero
 dangling references. Do this early: it makes the real size of Stage 5 visible.
 
-**Stage 3 — `TranscriptCore` timing fix** (§5.3 **part 1**). `StoredEntry` gains
-`startMs`/`endMs`; `segments(from:)` and `StoredEntry.init(_:)` carry them.
-Package-local and headless-provable, so it is proven at Stage 7 before any Mac is
-involved — and it is a prerequisite for the app-side migration in Stage 8, which
-reads the timings this stage makes available.
+**Stage 3 — `TranscriptCore`: the timing fix and the finalized-text projection.**
+
+- §5.3 **part 1** — `StoredEntry` gains `startMs`/`endMs`; `segments(from:)` and
+  `StoredEntry.init(_:)` carry them. Prerequisite for the app-side migration in
+  Stage 8, which reads the timings this stage makes available.
+- §4.2 **Edit 1** — `TranscriptStore.finalizedText`, the analyst's drift basis.
+  It belongs here, and before Stage 5 consumes it.
+
+Both are package-local and headless-provable, so both are proven at Stage 7 before
+any Mac is involved. Their §7 rows name four package selectors —
+`StoredEntryTests/testStoredEntryDecodesPR37Timings`,
+`StoredEntryTests/testSegmentsFromEntriesCarryTimings`,
+`StoredEntryTests/testStoredEntryRoundTripsTimings` and
+`TranscriptStoreTests/testFinalizedTextIsMonotonic` — and they are what Stage 7,
+A2 and B2 actually run.
 
 **Stage 4 — `project.pbxproj`, part 1: the build graph.** By hand. Merge the
 rewrite's deployment target + `UIBackgroundModes` + `TranscriptCore` product into
@@ -794,11 +1013,20 @@ below reopens this file:
 - [ ] `parkTurnMachine()` restored, and driven from `onState` → `.paused` (§3.2)
 - [ ] `closeOpenListener(bargedIn: true)` + `lastFloorReleaseMs` on that same
       pause path, before the park (§3.2b)
-- [ ] analyst content + expiry anchored on `finalizedText`, cadence left on the
-      clock (§4.2, §4.5)
+- [ ] `cachedFinalizedText` added beside `cachedFullText` in
+      `startStoreSubscription` (§4.2 Edit 2)
+- [ ] **both** analyst sites moved to that basis — `tick` (761) and
+      `candidate(for:transcriptLength:)` (906) — and `askNow`/`checkCoverage` left
+      on `fullText`; cadence left on the clock (§4.2 Edit 3, §4.5)
 - [ ] `SessionRecovery`'s adopted row given `state: .recovered` explicitly, and
       every other surviving `SessionRecord(...)` insert audited for a named state
       (§1b)
+- [ ] `SessionRecovery.adoptOrphanedRecordings` call site restored — the
+      re-derivation deletes it with `configure(...)` — and moved behind
+      `await RecoveryGate.shared.waitUntilDone()` (§1f)
+- [ ] `SessionRecovery.reconcilePendingTranscripts` and its call site **deleted**
+      (§1f): it drives the deleted `FileTranscriber` and the dropped
+      `transcriptIsReconciled`
 
 **Stage 6 — `CaptureController` + `SpeechOutput`.** The other audio-owning files,
 so genuinely separate work, not a second pass at Stage 5:
@@ -813,25 +1041,61 @@ so genuinely separate work, not a second pass at Stage 5:
 
 **Stage 7 — HEADLESS GATE (agent-runnable, Linux).** `swift test` on
 `ShutUpAndListenKit` — requires Swift 6.1. Proves TranscriptCore (~1400 lines incl.
-the adversarial suite and Stage 3's new timing cases) and that PR#37's
-TurnEngine/ClaudeClient additions still compile under the Swift-5 language-mode
-pin. Not runnable in the current worktree (no toolchain) — if the refinery cannot
-supply Swift 6.1, this folds into Gate A2. **Re-run after Stage 8** if that stage
-touches the package.
+the adversarial suite) and that PR#37's TurnEngine/ClaudeClient additions still
+compile under the Swift-5 language-mode pin. Not runnable in the current worktree
+(no toolchain) — if the refinery cannot supply Swift 6.1, this folds into Gate A2.
+**Re-run after Stage 8** if that stage touches the package.
+
+The whole-suite run is the gate. Stage 3's own cases are additionally named, so a
+run that is green because they were never written can be caught directly:
+
+```bash
+swift test --package-path ios/ShutUpAndListenKit --filter \
+  'TranscriptCoreTests\.(StoredEntryTests/(testStoredEntryDecodesPR37Timings|testSegmentsFromEntriesCarryTimings|testStoredEntryRoundTripsTimings)|TranscriptStoreTests/testFinalizedTextIsMonotonic)'
+```
+
+`--filter` takes a regex over `Target.Class/method` and **exits nonzero when it
+matches nothing**, so a missing case fails here the same way a missing
+`-only-testing` identifier fails B1/B3. These four are §7's Stage-3 package rows,
+and they run again unchanged at A2 and B2 (§7's fifth package row,
+`CandidatePoolTests/testCandidatesExpireWhileVolatileChurns`, is Stage 5's and
+belongs to the same three gates).
 
 ---
 
-### Stage 8 — Schema + migration, app side
+### Stage 8 — Schema, migration, and the app-side storage/entry seam
 
-§5.2 (V1 declared at the PR#37 shape, `costUSD` into V2, `transcriptIsReconciled`
-out), §5.3 **part 2** (the row materializer `materializeLegacySegments(in:)` carries
-the timings; the doc comments asserting zeros corrected), and the `MigrationTests`
-changes of §5.5. Stage 3 is a hard prerequisite — without it there are no timings
-on `entry` to carry.
+The schema work:
+
+- §5.2 — V1 declared at the PR#37 shape, `costUSD` into V2,
+  `transcriptIsReconciled` out.
+- §5.3 **part 2** — the row materializer `materializeLegacySegments(in:)` carries
+  the timings; the doc comments asserting zeros corrected.
+- §5.5 — the `MigrationTests` changes.
+
+Stage 3 is a hard prerequisite — without it there are no timings on `entry` to
+carry.
+
+The §1f files land here too, because each one is bound to this stage's types:
+
+- [ ] **`ShutUpAndListenApp.swift`** (§1f) — the explicit `ModelContainer` with
+      `migrationPlan:`, launch recovery + `RecoveryGate.markDone()`, and re-applied
+      from main: `CaptureSeam.installIfNeeded()`, the `RootView` shell,
+      `SessionView` as the root, and the scene-phase forwarding. It cannot land
+      earlier: the container line does not compile until `SessionSchemaV2` and
+      `SessionMigrationPlan` exist, and this is where they are defined. It must
+      not land later either — **it is what makes the migration run at all.**
+- [ ] **`RecordingStorage.swift`** (§1f) — union: main's `allRecordingFileNames()`
+      (kept `.m4a`-only, with the reason in its doc comment) plus the rewrite's
+      CAF/M4A stem helpers.
+- [ ] **`ios/README.md`** (§1f) — main's as the base, the rewrite's engine-facing
+      edits re-applied, the `AudioPipeline` reference at `README:53` corrected.
 
 **Compile-critical, hence before Gate A.** Stage 5's checklist writes `costUSD` at
-persist against a V2 model that does not declare it until this stage lands, and
-`transcriptIsReconciled` survives on the model until this stage drops it.
+persist against a V2 model that does not declare it until this stage lands;
+`transcriptIsReconciled` survives on the model until this stage drops it; and Stage
+5's restored orphan-sweep call awaits a `RecoveryGate` that nothing marks done until
+this stage's app-entry merge.
 
 ### Stage 9 — The five UI merges
 
@@ -926,9 +1190,9 @@ config blocks the exclusion list lives in.
 |---|---|---|
 | B1 | **App-test run, explicit** — see below | `MigrationTests` (incl. the new `costUSD`, timing-materialization, agreement and base-shape cases) + `WriterTests` **actually ran**, nonzero, both classes. **The data-safety gate** (§5.3). |
 | B2 | `swift test --package-path ios/ShutUpAndListenKit` re-run | Stage 8 did not regress the package. |
-| B3 | **Scheduled regression run, explicit** — see below | Every §7 app-test row named in that table actually ran and passed: fencing, TTS rebuild + `onFinished`, injection, VAD reset (state *and* stale timestamp), listener-close, recovered-row. The package rows of §7 are covered by B2. |
+| B3 | **Scheduled regression run, explicit** — see below | Every §7 app-test row named in that table actually ran and passed: fencing, TTS rebuild + `onFinished`, injection, VAD reset (state *and* stale timestamp), listener-close, turn-machine park, analyst finalized basis, recovered-row, recovery ordering. The package rows of §7 are covered by B2. |
 | B4 | `xcodebuild -project ios/ShutUpAndListen.xcodeproj -scheme ShutUpAndListen -configuration Release archive -archivePath /tmp/sual.xcarchive` | The port builds for shipping. |
-| B5 | Inspect the archive: no `CaptureSeam` / `CaptureURLProtocol` / `CaptureAudioInjector` symbols, no `demo-conversation.wav` | **The security gate** (`765c21b`), second mechanism. A3 proved the setting; this proves the artifact. Non-negotiable — both, not either. |
+| B5 | **Archive inspection, explicit** — see below | **The security gate** (`765c21b`), second mechanism. A3 proved the setting; this proves the artifact. Non-negotiable — both, not either. |
 | B6 | `./ios/scripts/capture-demo.sh` | The capture-injection harness end-to-end on the re-homed seam (§2). **Only if Stage 0 chose the upgrade path** — otherwise §7's `injection feeds the canonical converter` test is the standing substitute. |
 | B7 | Live session on device: speak, pause, let it reply, barge in; take a call mid-session and return | AEC (own voice not re-transcribed → §3.3), floor bookkeeping on barge-in (§1c), the interruption park + truthful paused banner (§3.2), and that speech after the call starts a fresh turn (§3.2a). The one gate no test replaces. |
 | B8 | Upgrade install over a build from current main, with sessions recorded | §5.4 end-to-end on real data: transcripts intact, cost readout intact, replay now working. |
@@ -956,6 +1220,9 @@ xcodebuild test \
   -only-testing:ShutUpAndListenAppTests/MigrationTests/testMigrationCarriesPR37Timings \
   -only-testing:ShutUpAndListenAppTests/MigrationTests/testMaterializedRowsAgreeWithLazyFallback \
   -only-testing:ShutUpAndListenAppTests/MigrationTests/testBaseShapeYieldsZeroedRangesAndNoTimings \
+  -only-testing:ShutUpAndListenAppTests/MigrationTests/testMigrationMaterializesOrderedSegmentRows \
+  -only-testing:ShutUpAndListenAppTests/MigrationTests/testMigratedRecordDerivedViewsComeFromSegments \
+  -only-testing:ShutUpAndListenAppTests/MigrationTests/testLazyMaterializerDecodesLegacyBlobOnRead \
   -only-testing:ShutUpAndListenAppTests/WriterTests \
   CODE_SIGNING_ALLOWED=NO
 xc=$?
@@ -966,8 +1233,8 @@ xcrun xcresulttool get test-results tests --path "$RB" --format json \
   | jq -e '
       [.. | objects | select((.nodeType? // "") == "Test Case")]        as $cases
       | ($cases | map(select((.result? // "") == "Failed")) | length)   as $failed
-      | if ($cases | length) >= 6 and $failed == 0 then true
-        else error("B1: \($cases | length) cases ran (expected >= 6), \($failed) failed")
+      | if ($cases | length) >= 14 and $failed == 0 then true
+        else error("B1: \($cases | length) cases ran (expected >= 14), \($failed) failed")
         end' > /dev/null \
   || { echo 'B1 FAILED: result-bundle assertion' >&2; exit 1; }
 
@@ -987,9 +1254,14 @@ carry `result == "Failed"`, so a bundle that is green-but-empty also fails. And 
 result bundle is a durable artifact someone else can re-check — attach `$RB` to the
 PR.
 
-The five `MigrationTests` selectors are §5.5 items 1–5; the count floor of 6 is
-those plus at least one `WriterTests` case. Raise the floor as §7 rows are added to
-this list. (On a toolchain where the `test-results` subcommand is unavailable, use
+**Eight `MigrationTests` selectors, not five.** The first five are §5.5 items 1–5,
+the new cases. The last three are the class's **existing** tests, which §5.5 item 6
+keeps as-is — and a kept test that no gate names is a test the port can delete
+without anything going red. Naming them here gives them the same fail-by-name
+protection the new ones get. The count floor of **14** is those eight plus
+`WriterTests`' six methods; raise it as §7 rows are added to this list, and raise it
+with `WriterTests` if that class grows. (On a toolchain where the `test-results`
+subcommand is unavailable, use
 `xcrun xcresulttool get --legacy --format json --path "$RB"`, count
 `ActionTestMetadata` entries and assert none has `testStatus == "Failure"` — the
 same two properties.)
@@ -1017,18 +1289,21 @@ xcodebuild test \
   -only-testing:ShutUpAndListenAppTests/VADResetTests/testPauseClearsOnsetState \
   -only-testing:ShutUpAndListenAppTests/VADResetTests/testPauseClearsStaleVoiceTimestampAndFirstBufferIsFresh \
   -only-testing:ShutUpAndListenAppTests/ListenerSegmentTests/testPauseMidClipClosesListenerSegmentAtCut \
+  -only-testing:ShutUpAndListenAppTests/InterruptionTests/testPauseParksPendingTurnMachine \
+  -only-testing:ShutUpAndListenAppTests/AnalystFeedTests/testAnalystTickAndCandidateShareFinalizedBasis \
   -only-testing:ShutUpAndListenAppTests/RecoveryTests/testAdoptedOrphanRowIsRecoveredAndVisible \
+  -only-testing:ShutUpAndListenAppTests/RecoveryTests/testOrphanSweepRunsAfterRecoveryGate \
   CODE_SIGNING_ALLOWED=NO
 xc=$?
 [ "$xc" -eq 0 ] || { echo "B3 FAILED: xcodebuild test exited $xc" >&2; exit 1; }
 
-# All eight §7 app-test rows, none failing.
+# All eleven §7 app-test rows, none failing.
 xcrun xcresulttool get test-results tests --path "$RB" --format json \
   | jq -e '
       [.. | objects | select((.nodeType? // "") == "Test Case")]      as $cases
       | ($cases | map(select((.result? // "") == "Failed")) | length) as $failed
-      | if ($cases | length) >= 8 and $failed == 0 then true
-        else error("B3: \($cases | length) cases ran (expected >= 8), \($failed) failed")
+      | if ($cases | length) >= 11 and $failed == 0 then true
+        else error("B3: \($cases | length) cases ran (expected >= 11), \($failed) failed")
         end' > /dev/null \
   || { echo 'B3 FAILED: result-bundle assertion' >&2; exit 1; }
 
@@ -1036,15 +1311,80 @@ echo "B3 OK — result bundle at $RB"
 ```
 
 The selector list and the count floor are the §7 table's app-test rows, in order;
-**both move together whenever a row is added there.** §7's two package rows are not
+**both move together whenever a row is added there.** §7's package rows are not
 here — they are `swift test` cases, proven at Stage 7, A2 and B2.
+
+**B5 — the archive check, stated as a command with a log.** "Inspect the archive"
+is not a gate: it is an instruction to look, it produces no artifact, and it is the
+last thing anyone does at the end of a long day. B4 wrote an archive; this reads it
+and exits nonzero.
+
+```bash
+set -uo pipefail   # pipefail is load-bearing: the body runs through `tee` below,
+                   # and without it the pipeline would report tee's exit, not the
+                   # check's. Not -e — every finding must be printed before exit.
+
+ARCHIVE=/tmp/sual.xcarchive               # written by B4
+LOG=/tmp/sual-b5-archive-check.log
+
+check() {
+  APP=$(find "$ARCHIVE/Products/Applications" -maxdepth 1 -name '*.app' -print -quit 2>/dev/null)
+  [ -n "${APP:-}" ] || { echo "B5 FAILED: no .app under $ARCHIVE/Products/Applications" >&2; return 1; }
+
+  EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist" 2>/dev/null)
+  BIN="$APP/${EXE:-}"
+  [ -f "$BIN" ] || { echo "B5 FAILED: no executable inside $APP" >&2; return 1; }
+  echo "B5 inspecting: $BIN"
+
+  fail=0
+
+  # 1. The fixture must not ship — any name match, anywhere in the bundle.
+  #    This is the check dead-stripping cannot fake: a resource is either
+  #    copied into the bundle or it is not.
+  hits=$(find "$APP" -name 'demo-conversation.wav')
+  if [ -n "$hits" ]; then
+    echo "SECURITY: demo-conversation.wav present in the archived bundle:" >&2
+    echo "$hits" >&2
+    fail=1
+  fi
+
+  # 2. No capture-seam type names in the binary. Read the symbol table AND the
+  #    raw strings: a Release binary is stripped of local symbols, but Swift
+  #    type names survive in metadata/reflection sections, so `strings` sees
+  #    what `nm` no longer does. Either hit is a failure.
+  for sym in CaptureSeam CaptureURLProtocol CaptureAudioInjector; do
+    if { nm -a "$BIN" 2>/dev/null; strings -a "$BIN" 2>/dev/null; } | grep -q "$sym"; then
+      echo "SECURITY: '$sym' found in the archived binary" >&2
+      fail=1
+    fi
+  done
+
+  [ "$fail" -eq 0 ] || { echo 'B5 FAILED: archive is not clean' >&2; return 1; }
+  echo 'B5 OK — no capture fixture, no capture-seam symbols in the Release archive'
+}
+
+check 2>&1 | tee "$LOG"
+```
+
+**Attach `$LOG` to the PR (Stage 13).** A3's output and this log are the two halves
+of the security row in §2 and in Risks — the setting and the artifact — and a
+reviewer must be able to read both without a Mac.
+
+Read the symbol half honestly: **absence is necessary, not sufficient.** Dead
+stripping can remove a symbol that was compiled in, so a clean `nm`/`strings` does
+not by itself prove the source was excluded — that is A3's job, and it is why the
+two gates are not interchangeable. The resource check is the stronger of the two
+halves here, and the one that fails loudly if the pbxproj merge dropped only the
+`demo-conversation.wav` entry from `EXCLUDED_SOURCE_FILE_NAMES`.
 
 **Stage 13 — PR.** Body states: the §0.1 decision and its consequence for the visual
 workflow; that `transcriptIsReconciled` and the reconciler/stitcher/file-transcriber
 are deleted deliberately; the dropped auto-stop on `.ended(shouldResume: false)`
 (§3.2); the migration's wall-clock→audio-time approximation (§5.3); and, if Stage 0
 chose the dormant path, which §7 tests stand in for `capture-demo.sh`. Attach the
-B1 and B3 result bundles and the A3 output.
+B1 and B3 result bundles, the A3 output, and the B5 archive-check log
+(`/tmp/sual-b5-archive-check.log`) — A3 and B5 together are the reviewable evidence
+for the security row, and neither is re-runnable by a reviewer without a Mac.
 
 ---
 
@@ -1062,11 +1402,23 @@ and B3 pass these identifiers to `-only-testing`, so a row that was never writte
 fails the build by name rather than quietly not running. The selector *is* the
 contract — rename a method and you must rename it in the gate.
 
+Two selector forms, because two runners: **app** rows are
+`ShutUpAndListenAppTests/Class/method` for `xcodebuild -only-testing` (B1, B3);
+**package** rows are `Target.Class/method` for `swift test --filter`, which takes a
+regex over exactly that string (Stage 7, A2, B2). Both fail nonzero on a name that
+matches nothing, which is what makes either one a gate.
+
 | Test | Pins | Selector | Runs at |
 |---|---|---|---|
 | `stop-then-start across an in-flight reply drops the stale reply` | Generation-token fencing (§4.3) — the regression the rewrite's `isRunning`-only guards would reintroduce. Drive a reply completion whose `generation` is stale and assert nothing is appended. | `ShutUpAndListenAppTests/FencingTests/testStaleGenerationReplyIsDropped` | B3 |
-| `finalizedText length is monotonically non-decreasing across volatile revisions` | The analyst drift anchor (§4.2). Feed a shortening volatile revision and assert the finalized length never decreases. | `TranscriptCoreTests.testFinalizedTextIsMonotonic` (package, `swift test --filter`) | Stage 7, A2, B2 |
-| `candidates still expire while volatile text churns` | The same defect one layer up: `CandidatePool.expire(currentPosition:)` fed from `finalizedText` keeps expiring. | `TurnEngineTests.testCandidatesExpireWhileVolatileChurns` (package, `swift test --filter`) | Stage 7, A2, B2 |
+| `finalizedText length is monotonically non-decreasing across volatile revisions` | The analyst drift anchor (§4.2 Edit 1). Feed a shortening volatile revision and assert the finalized length never decreases. | `TranscriptCoreTests.TranscriptStoreTests/testFinalizedTextIsMonotonic` | Stage 7, A2, B2 |
+| `candidates still expire while volatile text churns` | The same defect one layer up: `CandidatePool.expire(currentPosition:)` fed from `finalizedText` keeps expiring. | `TurnEngineTests.CandidatePoolTests/testCandidatesExpireWhileVolatileChurns` | Stage 7, A2, B2 |
+| `a PR#37-era blob's startMs/endMs decode into StoredEntry` | §5.3 part 1 item 1 — the optional fields exist and a base-era blob without them still decodes. | `TranscriptCoreTests.StoredEntryTests/testStoredEntryDecodesPR37Timings` | Stage 7, A2, B2 |
+| `segments(from:) maps startMs/endMs onto audioStart/audioEnd` | §5.3 part 1 item 2 — the ÷1000 conversion, and zeroed ranges when the entry carries no timings. | `TranscriptCoreTests.StoredEntryTests/testSegmentsFromEntriesCarryTimings` | Stage 7, A2, B2 |
+| `StoredEntry.init(_:) writes the timings back` | §5.3 part 1 item 3 — the export DTO round-trips instead of flattening new records; assert `storedEntries(from:)` → `segments(from:)` preserves the ranges. | `TranscriptCoreTests.StoredEntryTests/testStoredEntryRoundTripsTimings` | Stage 7, A2, B2 |
+| `analyst tick and the gate's candidate lookup share one finalized basis` | §4.2 Edit 3 — the host-level proof of the seam. Drive a shortening volatile revision, then assert both `tick`'s transcript and `candidate(for:transcriptLength:)`'s length come from `cachedFinalizedText` and are equal at the same instant. Fails on the mixed-basis reading, which is the whole hazard. | `ShutUpAndListenAppTests/AnalystFeedTests/testAnalystTickAndCandidateShareFinalizedBasis` | B3 |
+| `pause parks the pending turn machine` | §3.2 — the third of the five things main's `.began` did. Open a turn, drive `onState` → `.paused`, and assert the machine is parked (silence decision + `dropTurn`) rather than left holding a `pending`/`deciding` turn across the gap. | `ShutUpAndListenAppTests/InterruptionTests/testPauseParksPendingTurnMachine` | B3 |
+| `orphan sweep runs after launch recovery` | §1f — the two launch sweeps are not commutative. Assert `adoptOrphanedRecordings` observes a completed `RecoveryGate`, so a CAF remuxed by `recoverIncompleteSessions` is never adopted a second time as an orphan. | `ShutUpAndListenAppTests/RecoveryTests/testOrphanSweepRunsAfterRecoveryGate` | B3 |
 | `TTS player node is re-attached after an engine rebuild` | §3.3 — the silent-companion failure after a route change or media-services reset. Drive `CaptureController`'s rebuild path and assert `ttsFormat != nil` and the node is attached to the live engine afterwards. | `ShutUpAndListenAppTests/TTSSinkTests/testPlayerNodeReattachedAfterEngineRebuild` | B3 |
 | `injection feeds the canonical converter` | §2 — injected fixture audio must reach the recording sink, the analyzer, the VAD, **and** advance the fed-samples clock. Assert a `TranscriptSegment` with a non-zero `audioStart`/`audioEnd` after injecting the fixture. **This is the standing substitute for `capture-demo.sh` (B6) if Stage 0 chose the dormant path** — without it, the injection seam ships with no coverage at all. | `ShutUpAndListenAppTests/InjectionTests/testInjectedFixtureReachesConverterAndAdvancesClock` | B3 |
 | `pause/resume clears half-formed onset` | §3.2a item 1 — assert `inSpeech`/`speechBufferRun` are cleared across a pause so post-resume speech starts a fresh turn. | `ShutUpAndListenAppTests/VADResetTests/testPauseClearsOnsetState` | B3 |
@@ -1078,8 +1430,8 @@ contract — rename a method and you must rename it in the gate.
 
 Class homes are chosen so each gate selects whole coherent groups: `MigrationTests`
 and `WriterTests` are the data-safety gate (B1); `FencingTests`, `TTSSinkTests`,
-`InjectionTests`, `VADResetTests`, `ListenerSegmentTests` and `RecoveryTests` are
-the regression gate (B3). **Adding a row here means adding its selector to B1's or
+`InjectionTests`, `VADResetTests`, `ListenerSegmentTests`, `InterruptionTests`,
+`AnalystFeedTests` and `RecoveryTests` are the regression gate (B3). **Adding a row here means adding its selector to B1's or
 B3's `-only-testing` list and raising that command's count floor** — the two move
 together, or the gate silently stops covering the new row. **If the visual-capture
 workflow is dormant (§0.1 option b), the `injection` and `TTS rebuild` rows are not
@@ -1096,10 +1448,15 @@ would have exercised, and B7's manual pass is the only other check on either.
 | `project.pbxproj` merge drops `EXCLUDED_SOURCE_FILE_NAMES` → capture seam ships in Release | **High (security)** | Stage 4 by hand; **A3 reads the resolved Release setting** right after, and again after Stage 11; B5 archive inspection as the second mechanism |
 | Migration drops `startMs`/`endMs` silently → replay permanently dead for PR#37-era sessions | **High (data)** | §5.3 **part 1 (Stage 3) AND part 2 (Stage 8)** — part 1 alone changes nothing, because the migration runs `materializeLegacySegments`, not `segments(from:)`; proven at B1 through the real migration plan |
 | The app-test gate is green without running anything | **High** | B1 and B3 run `-only-testing` at method granularity (fails outright if a case is absent), gate explicitly on the `xcodebuild` exit status, and assert case counts with zero failures from the result bundle; `⌘U` is explicitly not the gate |
+| **The migration never runs** — the app-entry merge keeps main's `.modelContainer(for:)`, which cannot carry a migration plan | **High (data)** | §1f + Stage 8's checklist. Note honestly that **B1 does not catch this**: it seeds and reopens the store through `SessionMigrationPlan` directly, so it proves the stage, not that the app installs it. B8 (upgrade install) is the only end-to-end check |
+| App-entry merge silently drops the capture-seam arming, the talk-first root, or the scene-phase policy | **High** (seam) / Medium (UX) | §1f checklist on Stage 8. The Release half of the seam is covered by A3 + B5; the **Debug** arming and the root view have no automated check by construction — they are checklist items, which is why they are enumerated per line rather than described |
+| Both launch sweeps race → duplicate "Recovered recording" rows | Medium (data) | §1f ordering rule; `RecoveryTests/testOrphanSweepRunsAfterRecoveryGate` at B3 |
+| Turn machine holds an open turn across an interruption | Medium | §3.2, in the Stage 5 checklist; `InterruptionTests/testPauseParksPendingTurnMachine` at B3 |
 | `costUSD` dropped from V2 | Medium (data) | §5.2 + B1 |
 | Generation fencing regressed to `isRunning` | Medium | §4.3, in the Stage 5 checklist; §7 `stop-then-start…` test at B3 |
 | iOS 26 vs Xcode 16 discovered late | Medium | Stage 0's ruling **and its SDK probe**, both before any code is written; Gate A1 confirms it against the assembled port |
 | Analyst candidates stop expiring on volatile churn | Medium | §4.2 finalized-text anchor; §7 monotonicity + expiry tests, headless at Stage 7 |
+| Analyst basis mixed — one call site on `finalizedText`, the other on `fullText` | Medium | §4.2 Edit 3 moves both sites together; `AnalystFeedTests/testAnalystTickAndCandidateShareFinalizedBasis` at B3 fails on exactly this |
 | VAD state survives an interruption → first post-resume turn decided on stale evidence | Medium | §3.2a — the reset is CaptureController's (Stage 6), via the `proveResumeOnNextBuffer`-style flag; §7 test; B7 |
 | Pause mid-clip persists unspoken words as spoken | Medium (data) | §3.2b — `closeOpenListener(bargedIn: true)` in the Stage 5 checklist; §7 test |
 | Recovered orphan rows land in `recording` state and are invisible in the library | Medium | §1b — explicit `state: .recovered`; the V2 init's default is the trap; §7 test |
