@@ -5,13 +5,37 @@ on:
 
 jobs:
   capture:
-    runs-on: macos-14
+    # macos-26 (arm64, GA, also reachable as macos-latest) is the image that
+    # carries Xcode 26 — and therefore the iOS 26 SDK and SpeechAnalyzer. The
+    # previous macos-14 label is now deprecated by actions/runner-images on top
+    # of shipping no Xcode newer than 16. Same architecture as before (plain
+    # macos-14 and plain macos-26 are both arm64), so capture-demo.sh's
+    # "any booted arm64 sim" assumption is unchanged.
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.app
+      - name: Select Xcode 26
+        # Every Xcode on this image is 26.x (26.0.1 … 26.6), so the image
+        # default is already correct — but select it explicitly and assert the
+        # major so a future image that re-points the default to 27 fails here,
+        # loudly, instead of silently building against the wrong SDK.
+        #
+        # Note there is deliberately no /Applications/Xcode_26.app: the image
+        # ships only exact-version paths (Xcode_26.6.app) and their x.y
+        # symlinks (Xcode_26.0.app … Xcode_26.4.app). The bare-major path that
+        # the old Xcode_16.app line would suggest does not exist, and pinning
+        # an exact patch would break on the next image refresh, so go through
+        # the /Applications/Xcode.app default symlink.
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          major="$(xcodebuild -version | awk 'NR==1 { split($2, v, "."); print v[1] }')"
+          if [ "$major" != "26" ]; then
+            echo "::error::ios-visual needs Xcode 26.x for the iOS 26 SDK and SpeechAnalyzer; runner default is ${major}.x"
+            exit 1
+          fi
 
       - name: Install capture tools
         run: |
