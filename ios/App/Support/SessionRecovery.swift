@@ -1,12 +1,31 @@
-// Launch-time crash recovery for session audio.
+// Launch-time crash recovery for orphaned session audio.
 //
-// A session that dies uncleanly (crash, jetsam, dead battery) leaves its .m4a
-// on disk. Checkpointing (SessionController.persistSession(final: false))
-// means the transcript usually already has a SessionRecord pointing at that
-// file — nothing to do. A recording with NO owning record is a session that
-// died before its first checkpoint: adopt it into a bare "Recovered
-// recording" record so it surfaces in the library instead of leaking
-// invisibly on disk.
+// After the transcript-core port there are TWO launch recovery paths, and they
+// cover different failures:
+//
+//   PersistenceWriter.recoverIncompleteSessions  — a RECORD in `recording`
+//       state, i.e. a session that died with its record already on disk. It
+//       owns the crashed CAF, remuxes it, and stamps the record `recovered`.
+//       Under record-at-start this is the normal case: every live capture has
+//       a record from its first sample.
+//
+//   adoptOrphanedRecordings (this file)          — an AUDIO FILE with no
+//       owning record at all. Record-at-start makes that impossible going
+//       FORWARD, but real devices can already be in it from pre-port builds,
+//       whose recordings were only referenced once the first checkpoint ran.
+//
+// Different failure, different input, no overlap — which is why this survives
+// the port rather than being replaced by the writer's path.
+//
+// ORDERING. The two sweeps are NOT commutative, and this one runs second.
+// `recoverIncompleteSessions` remuxes a crashed CAF to .m4a and then adopts it
+// into its record; between the remux and the save there is a window where a
+// finished-looking .m4a exists whose record does not yet point at it. An orphan
+// sweep running inside that window would adopt a duplicate "Recovered
+// recording" for audio that already has a home. The caller therefore awaits
+// `RecoveryGate.shared.waitUntilDone()` first — the same latch `startSession`
+// waits on, which also preserves this function's own precondition that no new
+// session can have started recording yet.
 //
 // Caveat, stated honestly: AVAudioFile only finalizes the .m4a container on
 // close, so a file cut off mid-write may be unreadable. An unreadable orphan
@@ -21,8 +40,9 @@ import TurnEngine
 
 enum SessionRecovery {
     /// Adopt orphaned recordings into recovered records. Called once per
-    /// launch, before any new session can start recording — so every .m4a on
-    /// disk without a record is genuinely an orphan, never an active file.
+    /// launch, behind `RecoveryGate` (see the file header) — so every .m4a on
+    /// disk without a record is genuinely an orphan, never an active file and
+    /// never one the writer's recovery path is midway through claiming.
     @MainActor
     static func adoptOrphanedRecordings(in context: ModelContext) {
         let records = (try? context.fetch(FetchDescriptor<SessionRecord>())) ?? []
@@ -52,6 +72,16 @@ enum SessionRecovery {
                 startedAt: created,
                 duration: duration,
                 title: "Recovered recording",
+                // `state` MUST be named here. Under V2 the initializer defaults
+                // to `.recording`, and LibraryView's query filters
+                // `state != "recording"` — so a defaulted insert would land in
+                // a live-session state, be filtered out of the library, and
+                // silently produce rows no user can ever see: the exact failure
+                // this sweep exists to prevent. Every argument below also
+                // type-checks against V2 unchanged, so nothing would have
+                // flagged it. `.recovered` is a visible terminal state and
+                // LibraryView already ships its badge.
+                state: .recovered,
                 transcriptJSON: Data("[]".utf8), // audio survived; the words did not
                 criteriaText: "",
                 audioFileName: fileName
@@ -59,53 +89,5 @@ enum SessionRecovery {
             adopted = true
         }
         if adopted { try? context.save() }
-    }
-
-    /// Finish any reconciliation that never completed (spec §1, resumable). A
-    /// record with audio but `transcriptIsReconciled == false` still carries its
-    /// best-effort live transcript; re-run the file pass and upgrade it. Called
-    /// once per launch, after `adoptOrphanedRecordings`.
-    @MainActor
-    static func reconcilePendingTranscripts(in context: ModelContext) {
-        let records = (try? context.fetch(FetchDescriptor<SessionRecord>())) ?? []
-        // Gather reconcilable work on the main actor; settle legacy records
-        // (whose untimed listener lines reconciliation can't preserve) in place
-        // WITHOUT running the expensive file pass on them.
-        var work: [(id: UUID, url: URL)] = []
-        for record in records where !record.transcriptIsReconciled {
-            guard let fileName = record.audioFileName else { continue }
-            let url = RecordingStorage.url(for: fileName)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            guard record.canReconcileWithoutListenerLoss else {
-                record.transcriptIsReconciled = true // keep live transcript; stop retrying
-                continue
-            }
-            work.append((record.id, url))
-        }
-        try? context.save() // persist the legacy settles
-        guard !work.isEmpty else { return }
-        // Capture an immutable copy: a mutable `var` caught by the @Sendable
-        // Task closure is "an error in the Swift 6 language mode". (`context`
-        // is an immutable parameter, so it needs no such treatment.)
-        let pending = work
-        // Process SEQUENTIALLY — one on-device recognition at a time — so the
-        // first launch after this ships (every prior record unreconciled) does
-        // not spawn an unbounded fleet of SFSpeechURLRecognitionRequests.
-        Task {
-            for item in pending {
-                guard let segments = await FileTranscriber.transcribe(url: item.url) else { continue }
-                // Bind to a plain local: #Predicate can't capture a tuple member
-                // (`item.id`) — it must close over a simple value.
-                let recordID = item.id
-                await MainActor.run {
-                    let descriptor = FetchDescriptor<SessionRecord>(
-                        predicate: #Predicate { $0.id == recordID }
-                    )
-                    guard let record = try? context.fetch(descriptor).first else { return }
-                    record.applyReconciledSegments(segments)
-                    try? context.save()
-                }
-            }
-        }
     }
 }
