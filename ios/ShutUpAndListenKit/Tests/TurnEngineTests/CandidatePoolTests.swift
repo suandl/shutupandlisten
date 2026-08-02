@@ -52,6 +52,52 @@ final class CandidatePoolTests: XCTestCase {
         XCTAssertEqual(pool.bestQuestion()?.text, "the question?")
     }
 
+    /// The transcript-core port's analyst-basis defect, one layer up from
+    /// `TranscriptStore.finalizedText` (port plan §4.2).
+    ///
+    /// Expiry is `currentPosition - anchorPosition > maxDrift`, which is only
+    /// meaningful while `currentPosition` never decreases. The host used to
+    /// feed it `fullText.count`, and `fullText` includes VOLATILE segments that
+    /// SpeechAnalyzer revises in place — a revision can be shorter. Drift then
+    /// goes negative and NOTHING ever expires, precisely while the transcript
+    /// is churning. Fed from `finalizedText` (monotonic by construction, since
+    /// finalization is one-way), the same pool keeps expiring correctly.
+    ///
+    /// `CandidatePool` itself is unchanged by the port; this pins the contract
+    /// the host must honor when choosing which projection to hand it.
+    func testCandidatesExpireWhileVolatileChurns() {
+        var pool = CandidatePool(maxDrift: 600)
+        pool.replace(with: [c("what changed?", .question, anchor: 100)])
+
+        // The wrong basis: a shortening volatile revision drags the reported
+        // position BACKWARDS past the anchor.
+        let volatileHigh = 900   // fullText.count with a long open volatile
+        let volatileLow = 120    // …after the engine revises it shorter
+        XCTAssertGreaterThan(volatileHigh - 100, 600,
+                             "fixture check: the long reading is past maxDrift")
+        XCTAssertLessThan(volatileLow - 100, 600,
+                          "fixture check: the short reading is not — the basis really does move both ways")
+
+        var churning = pool
+        churning.expire(currentPosition: volatileLow)
+        XCTAssertFalse(churning.isEmpty,
+                       "a non-monotonic basis lets a stale candidate survive indefinitely")
+
+        // The finalized basis only ever grows, so the same candidate expires
+        // once the thinker has genuinely moved on.
+        var settled = pool
+        settled.expire(currentPosition: 400)
+        XCTAssertFalse(settled.isEmpty, "still within the drift window")
+        settled.expire(currentPosition: 800)
+        XCTAssertTrue(settled.isEmpty,
+                      "past maxDrift on a monotonic basis — the candidate retires")
+
+        // And monotonicity is what makes that irreversible: a later, larger
+        // position can never resurrect what an earlier one dropped.
+        settled.expire(currentPosition: 900)
+        XCTAssertTrue(settled.isEmpty)
+    }
+
     func testExpireDropsCandidatesPastMaxDrift() {
         var pool = CandidatePool(maxDrift: 100)
         pool.replace(with: [c("stale", .question, anchor: 0), c("fresh", .question, anchor: 500)])
