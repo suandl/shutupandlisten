@@ -88,9 +88,19 @@ the transcript's `startMs`/`endMs`) rather than reconstructed from prose.
 ## Enablers (cheap, high-return)
 - ⬜ **Commit a few anonymized real session bundles** (transcript JSON + trace +
   `.m4a`) into `ios/fixtures/` so the agent develops against real conversations.
-- ⬜ **Allowlist the model endpoint** in the devcontainer firewall
-  (`.devcontainer/allowed-domains.txt` + `sudo /usr/local/bin/init-firewall.sh`)
-  so #3 evals and `sul-demo --live` run in-container.
+- ✅ **Model endpoints allowlisted** in the devcontainer firewall: `api.openai.com`
+  and `api.anthropic.com` have been in `.devcontainer/allowed-domains.txt` since
+  #24. The network half of running #3's evals and `sul-demo --live` in-container
+  is already done.
+- ⬜ **Get the keys into the container** — what actually gates those live runs is
+  credentials, not network. `sul-demo --live` reads `ANTHROPIC_API_KEY` from the
+  environment; promptfoo takes `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` from either
+  a repo-root `.env.local` (gitignored) or 1Password via `scripts/eval-keys.sh`
+  (`op run`, authed by `OP_SERVICE_ACCOUNT_TOKEN` or
+  `~/.config/gascity/op-sa-token`). Note the `op` path resolves its `op://`
+  references over the network and **no 1Password domain is allowlisted** — that
+  path needs one added (plus `sudo /usr/local/bin/init-firewall.sh` to re-apply);
+  the `.env.local` path needs no firewall change at all.
 
 ## Suggested order
 1. **#1 structured trace emitter + real-session→vector capture** — unlocks the
