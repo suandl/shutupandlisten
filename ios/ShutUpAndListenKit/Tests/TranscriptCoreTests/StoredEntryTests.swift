@@ -138,6 +138,86 @@ final class StoredEntryTests: XCTestCase {
         XCTAssertEqual(entries.map(\.speaker), ["thinker", "thinker", "listener"])
     }
 
+    // ── PR#37-era timings (port plan §5.3 part 1) ──
+    //
+    // These three pin the fix for a silent data-loss path: `JSONDecoder` ignores
+    // unknown keys, so before `startMs`/`endMs` existed on this type, a PR#37-era
+    // blob decoded through it *successfully* and dropped its timings with no
+    // error — which would have denied replay to every session recorded on
+    // current main, permanently and invisibly.
+
+    func testStoredEntryDecodesPR37Timings() throws {
+        // A blob in the exact shape PR#37's encoder wrote: the four original
+        // keys plus startMs/endMs.
+        let pr37 = Data("""
+        [{"speaker":"thinker","text":"So the whole point is momentum.","turn":1,"startMs":1500,"endMs":4200},
+         {"speaker":"listener","text":"mm-hm","tier":"acknowledge","turn":1,"startMs":4300,"endMs":4800}]
+        """.utf8)
+
+        let entries = try JSONDecoder().decode([StoredEntry].self, from: pr37)
+        XCTAssertEqual(entries.map(\.startMs), [1500, 4300] as [Int?], "PR#37 timings survive the decode")
+        XCTAssertEqual(entries.map(\.endMs), [4200, 4800] as [Int?])
+
+        // And the base-era blob — no such keys — must still decode, as nil.
+        let base = Data("""
+        [{"speaker":"thinker","text":"no timings here","turn":1}]
+        """.utf8)
+        let legacy = try JSONDecoder().decode([StoredEntry].self, from: base)
+        XCTAssertEqual(legacy.map(\.startMs), [nil] as [Int?], "base-era blobs decode with absent timings")
+        XCTAssertEqual(legacy.map(\.endMs), [nil] as [Int?])
+    }
+
+    func testSegmentsFromEntriesCarryTimings() {
+        let entries = [
+            StoredEntry(speaker: "thinker", text: "timed", tier: nil, turn: 1,
+                        startMs: 1500, endMs: 4200),
+            StoredEntry(speaker: "listener", text: "mm", tier: "acknowledge", turn: 1,
+                        startMs: 4300, endMs: 4800),
+            StoredEntry(speaker: "thinker", text: "untimed", tier: nil, turn: 2),
+        ]
+
+        let restored = segments(from: entries)
+        XCTAssertEqual(restored[0].audioStart, 1.5, accuracy: 0.0001, "ms → s, ÷1000")
+        XCTAssertEqual(restored[0].audioEnd, 4.2, accuracy: 0.0001)
+        XCTAssertEqual(restored[1].audioStart, 4.3, accuracy: 0.0001)
+        XCTAssertEqual(restored[1].audioEnd, 4.8, accuracy: 0.0001)
+
+        XCTAssertEqual(restored[2].audioStart, 0, "an entry with no timings rehydrates zeroed")
+        XCTAssertEqual(restored[2].audioEnd, 0)
+
+        XCTAssertTrue(hasTimings(restored), "a blob carrying real timings keeps replay")
+        XCTAssertFalse(hasTimings(segments(from: [entries[2]])),
+                       "a blob carrying none still degrades to the static view")
+    }
+
+    func testStoredEntryRoundTripsTimings() {
+        // storedEntries(from:) → segments(from:) must preserve the ranges, or
+        // every new record flattens on export exactly as the PR#37 blobs did.
+        let segs = [
+            segment(speaker: .thinker, text: "first", turn: 1, range: 1.5...4.2, index: 0),
+            segment(speaker: .listener, text: "mm", turn: 1, tier: .acknowledge,
+                    range: 4.3...4.8, index: 1),
+        ]
+
+        let entries = storedEntries(from: segs)
+        XCTAssertEqual(entries.map(\.startMs), [1500, 4300] as [Int?], "the export DTO carries the ranges out")
+        XCTAssertEqual(entries.map(\.endMs), [4200, 4800] as [Int?])
+
+        let restored = segments(from: entries)
+        XCTAssertEqual(restored.map(\.audioStart), segs.map(\.audioStart))
+        XCTAssertEqual(restored.map(\.audioEnd), segs.map(\.audioEnd))
+        XCTAssertTrue(hasTimings(restored))
+
+        // The other direction of the bijection: a zero-range segment writes back
+        // as ABSENT, not as 0, so a base-era record stays byte-identical through
+        // a round trip rather than gaining keys the app's encoder never wrote.
+        let untimed = [segment(speaker: .thinker, text: "legacy", turn: 1, index: 0)]
+        let untimedEntries = storedEntries(from: untimed)
+        XCTAssertEqual(untimedEntries.map(\.startMs), [nil] as [Int?])
+        XCTAssertEqual(untimedEntries.map(\.endMs), [nil] as [Int?])
+        XCTAssertFalse(hasTimings(segments(from: untimedEntries)))
+    }
+
     func testHasTimings() {
         let zeroed = [
             segment(speaker: .thinker, text: "a", turn: 1, index: 0),

@@ -292,6 +292,65 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(segments[0].state, .final)
     }
 
+    /// The analyst's drift basis (port plan §4.2 Edit 1).
+    ///
+    /// `CandidatePool` expires candidates on `currentPosition - anchorPosition >
+    /// maxDrift`, which is only meaningful while `currentPosition` never
+    /// decreases. `fullText` includes volatile segments and SpeechAnalyzer
+    /// revises those in place — a revision can be SHORTER — so feeding the pool
+    /// from `fullText` lets drift go negative and candidates stop expiring
+    /// exactly when the transcript is churning. `finalizedText` excludes
+    /// volatiles, and finalization is one-way, so its length cannot move
+    /// backwards.
+    func testFinalizedTextIsMonotonic() async {
+        let store = TranscriptStore()
+
+        let settled = SegmentID()
+        await store.append(id: settled, text: "First thought.", range: 0.0...1.0)
+        await store.finalize(id: settled, into: [
+            FinalizedText(id: settled, text: "First thought.", range: 0.0...1.0)
+        ])
+
+        let baseline = await store.finalizedText
+        XCTAssertEqual(baseline, "First thought.")
+
+        // An open volatile that the engine then revises DOWNWARD — the case
+        // that breaks a fullText-based basis.
+        let open = SegmentID()
+        await store.append(id: open, text: "and the second one goes on for a while", range: 2.0...5.0)
+
+        let fullAfterLongVolatile = await store.fullText
+        let finalizedAfterLongVolatile = await store.finalizedText
+        XCTAssertEqual(finalizedAfterLongVolatile, baseline,
+                       "a volatile segment does not move the finalized basis at all")
+
+        await store.revise(id: open, text: "and the", range: 2.0...2.4)
+
+        let fullAfterShortening = await store.fullText
+        let finalizedAfterShortening = await store.finalizedText
+
+        XCTAssertLessThan(fullAfterShortening.count, fullAfterLongVolatile.count,
+                          "the fixture is honest: fullText really does shrink here")
+        XCTAssertGreaterThanOrEqual(finalizedAfterShortening.count, finalizedAfterLongVolatile.count,
+                                    "finalizedText never moves backwards across a shortening revision")
+        XCTAssertEqual(finalizedAfterShortening, baseline)
+
+        // Finalizing is the only thing that may grow it, and it only grows.
+        await store.finalize(id: open, into: [
+            FinalizedText(id: open, text: "And the.", range: 2.0...2.4)
+        ])
+        let afterFinalize = await store.finalizedText
+        XCTAssertGreaterThan(afterFinalize.count, baseline.count,
+                             "finalization is what advances the basis")
+        XCTAssertEqual(afterFinalize, "First thought. And the.")
+
+        // And it mirrors fullText exactly but for the state filter: listener
+        // lines stay out, so the two bases remain comparable in length.
+        await store.appendListener(text: "mm", tier: .acknowledge, estimatedRange: 6.0...6.3)
+        let withListener = await store.finalizedText
+        XCTAssertEqual(withListener, afterFinalize, "listener lines are excluded, as in fullText")
+    }
+
     func testFullTextIsThinkerOnly() async {
         let store = TranscriptStore()
         let a = SegmentID()

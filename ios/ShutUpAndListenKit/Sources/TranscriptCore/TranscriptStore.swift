@@ -320,6 +320,32 @@ public actor TranscriptStore {
             .joined(separator: " ")
     }
 
+    /// The THINKER's settled text only — the analyst's drift basis. Mirrors
+    /// `fullText` except for `state == .final`: volatile segments are excluded,
+    /// so the length is monotonically non-decreasing (finalization is one-way)
+    /// and a shortening revision cannot move it backwards.
+    ///
+    /// Why this exists rather than reusing `fullText`: the analyst's
+    /// `CandidatePool` anchors candidate freshness to a character offset and
+    /// expires on `currentPosition - anchorPosition > maxDrift`, which requires
+    /// `currentPosition` never to decrease. `fullText` includes volatile
+    /// segments, SpeechAnalyzer revises those in place, and a revision can be
+    /// SHORTER — so drift can go negative and candidates stop expiring exactly
+    /// when the transcript is churning. Anchoring by character offset into a
+    /// mutable string is the defect this module was written to remove; this
+    /// projection is what lets the analyst keep its cheap integer drift without
+    /// re-introducing it.
+    ///
+    /// The mirroring is exact on purpose — same speaker filter, same empty-drop,
+    /// same `" "` join — because the separator is part of the length basis and
+    /// the two projections have to be comparable.
+    public var finalizedText: String {
+        segments
+            .filter { $0.speaker == .thinker && $0.state == .final && !$0.text.isEmpty }
+            .map(\.text)
+            .joined(separator: " ")
+    }
+
     /// The thinker's utterance for `turn`, as the gate must see it (the WHOLE
     /// thought so far, spec §4b): the turn's finalized segments plus — when
     /// the open volatile straddles the turn's start boundary — the portion of
