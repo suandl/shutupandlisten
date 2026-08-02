@@ -4,7 +4,7 @@
 # the script matches the seed transcript in App/Resources/capture-fixture.json.
 #
 # The [[slnc 600]] pauses between sentences are load-bearing: each inter-sentence
-# gap must exceed the AudioPipeline VAD's 380 ms hangover so the in-app injector
+# gap must exceed the CaptureController VAD's 380 ms hangover so the in-app injector
 # (design: in-app audio injection) produces a real speech-end → turn-end at each
 # pause, which is what lets the gate escalate and a listener reply land.
 set -euo pipefail
