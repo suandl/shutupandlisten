@@ -20,7 +20,7 @@ The question it must answer is the split between:
 - **(a) listener-LLM generation** — gate decides to speak → reply text
 - **(b) TTS time-to-first-audio** — reply text → first audible sample
 
-**Answer: (a) listener-LLM generation dominates, by ~2.8–3.6×.**
+**Answer: (a) listener-LLM generation dominates, by ~2.8–4.3×.**
 
 But the headline number is neither: a **one-time listener model load of 156.6 s**
 that is 3.6× the generation cost and 10× TTS first-audio, and which made the
@@ -81,9 +81,9 @@ Normalised, so the two legs can be compared at any reply length:
 | | (a) listener generation | (b) TTS first-audio | ratio |
 |---|---:|---:|---:|
 | `works-check` smoke (16 tokens / 1 sentence) | 43,347 ms | 15,231 ms | **2.85×** |
-| In-loop, turn 3 (independent measurement) | 51,930 ms\* | 12,139 ms | **3.57×** (\*load-contaminated) |
+| In-loop, turn 3 (independent measurement) | 51,930 ms\* | 12,139 ms | **4.28×** (\*load-contaminated) |
 
-> **(a) LISTENER-LLM GENERATION IS THE DOMINANT STAGE.** It is ~2.8–3.6× TTS
+> **(a) LISTENER-LLM GENERATION IS THE DOMINANT STAGE.** It is ~2.8–4.3× TTS
 > time-to-first-audio, and it scales at ~2.7 s per generated token, so the gap
 > *widens* with reply length rather than narrowing.
 
@@ -233,7 +233,7 @@ The demo's own canonical entrypoint is `?demo=u6-warmed-loop&llm=off&tts=off`
 ## 6. What this does and does not establish
 
 **Establishes.** On the browser/WASM rung, with every backend live: listener-LLM
-generation is the dominant reply-latency stage at ~2.7 s/token, ~2.8–3.6× TTS
+generation is the dominant reply-latency stage at ~2.7 s/token, ~2.8–4.3× TTS
 time-to-first-audio. A separate one-time 156.6 s listener load dominates the first
 reply outright.
 
