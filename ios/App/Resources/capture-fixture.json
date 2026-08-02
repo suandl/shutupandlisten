@@ -1,0 +1,22 @@
+{
+  "listenerReplies": [
+    "You said the wall is configuration — which single setup step feels most skippable before someone sees their first real result?"
+  ],
+  "analystCandidates": [
+    {
+      "text": "Which onboarding step could you defer until after the first real result?",
+      "register": "question",
+      "anchor": "wall of configuration"
+    },
+    {
+      "text": "Showing value before setup quietly flips the usual order of trust.",
+      "register": "reflection",
+      "anchor": "see one real result first"
+    }
+  ],
+  "seedTranscript": [
+    "So I've been thinking about why our onboarding drops off.",
+    "I think the issue is we ask for too much before showing any value.",
+    "What if we flipped it — let them see one real result first, then ask for the setup?"
+  ]
+}

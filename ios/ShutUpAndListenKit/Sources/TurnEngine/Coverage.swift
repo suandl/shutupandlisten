@@ -23,12 +23,25 @@ public struct CoverageResult: Codable, Equatable, Sendable {
         public let covered: Bool
         /// A short quote or paraphrase of where it was covered; empty if not.
         public let evidence: String
+
+        public init(topic: String, covered: Bool, evidence: String) {
+            self.topic = topic
+            self.covered = covered
+            self.evidence = evidence
+        }
     }
 
     public let topics: [TopicResult]
     /// One brief sentence pointing at the most important gap, phrased as a
     /// nudge to keep talking — or empty when everything is covered.
     public let nudge: String
+
+    /// Public so callers outside this module can BUILD a result, not just
+    /// decode one — the CI capture stub replays a canned coverage check.
+    public init(topics: [TopicResult], nudge: String) {
+        self.topics = topics
+        self.nudge = nudge
+    }
 }
 
 public enum Coverage {
@@ -67,6 +80,19 @@ public enum Coverage {
         "required": ["topics", "nudge"],
         "additionalProperties": false,
     ]
+
+    /// Parse a newline-separated checklist — the shape the Settings field
+    /// stores and `CoveragePreset.criteriaText` produces — into criteria: one
+    /// topic per line, whitespace-trimmed, blank lines dropped. Same logic the
+    /// app applies to its stored checklist text, so presets and hand-typed
+    /// checklists flow through one path.
+    public static func parseCriteria(_ text: String) -> [CoverageCriterion] {
+        text
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .map(CoverageCriterion.init(topic:))
+    }
 
     public static func userMessage(transcript: String, criteria: [CoverageCriterion]) -> String {
         let list = criteria.map { "- \($0.topic)" }.joined(separator: "\n")

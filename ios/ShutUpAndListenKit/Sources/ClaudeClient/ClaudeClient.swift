@@ -67,8 +67,14 @@ public final class ClaudeClient: @unchecked Sendable {
     /// An empty string is a valid reply — the prompt tells the model that
     /// silence is the correct response for most turns.
     public func respond(to request: ListenerRequest) async throws -> String {
-        let text = try await complete(
-            system: request.system,
+        try await respondWithUsage(to: request).text
+    }
+
+    /// As `respond`, but also returns the token usage the call reported (nil if
+    /// the response carried no `usage` block).
+    public func respondWithUsage(to request: ListenerRequest) async throws -> ListenerReply {
+        let result = try await complete(
+            systemField: Self.systemField(request.system, cachedPrefix: request.cachedSystemPrefix),
             messages: request.messages.map { ["role": $0.role.rawValue, "content": $0.content] },
             maxTokens: request.maxTokens,
             // A text-less reply is the model choosing silence — a valid outcome
@@ -76,7 +82,10 @@ public final class ClaudeClient: @unchecked Sendable {
             // path, which must decode JSON, treats an empty body as an error.
             allowEmpty: true
         )
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ListenerReply(
+            text: result.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            usage: result.usage
+        )
     }
 
     /// Coverage check: transcript + checklist → structured CoverageResult,
@@ -85,8 +94,8 @@ public final class ClaudeClient: @unchecked Sendable {
         transcript: String,
         criteria: [CoverageCriterion]
     ) async throws -> CoverageResult {
-        let text = try await complete(
-            system: Coverage.systemPrompt,
+        let result = try await complete(
+            systemField: Self.systemField(Coverage.systemPrompt, cachedPrefix: nil),
             messages: [[
                 "role": "user",
                 "content": Coverage.userMessage(transcript: transcript, criteria: criteria),
@@ -94,7 +103,7 @@ public final class ClaudeClient: @unchecked Sendable {
             maxTokens: 2048,
             outputSchema: Coverage.resultSchema
         )
-        guard let data = text.data(using: .utf8) else {
+        guard let data = result.text.data(using: .utf8) else {
             throw ClaudeClientError.decoding("coverage result was not UTF-8")
         }
         do {
@@ -104,15 +113,42 @@ public final class ClaudeClient: @unchecked Sendable {
         }
     }
 
+    /// One analyst cycle: whole-transcript request (sent as the analyst's block
+    /// sequence, cache breakpoint included) → parsed `AnalystResult` + token
+    /// usage. Uses the Messages API structured outputs so the candidate list
+    /// parses cleanly.
+    public func analyze(_ request: AnalystRequest) async throws -> AnalystReply {
+        let result = try await complete(
+            systemField: Self.systemField(blocks: request.systemBlocks),
+            messages: request.messages.map { ["role": $0.role.rawValue, "content": $0.content] },
+            maxTokens: request.maxTokens,
+            outputSchema: Analyst.resultSchema
+        )
+        guard let data = result.text.data(using: .utf8) else {
+            throw ClaudeClientError.decoding("analyst result was not UTF-8")
+        }
+        do {
+            let parsed = try JSONDecoder().decode(AnalystResult.self, from: data)
+            return AnalystReply(result: parsed, usage: result.usage)
+        } catch {
+            throw ClaudeClientError.decoding("analyst result did not match schema: \(error)")
+        }
+    }
+
     // ── raw Messages API call ──
 
+    private struct CompletionResult { let text: String; let usage: Usage? }
+
+    /// `systemField` is the already-serialized Messages API `system` value —
+    /// a plain string or a block array, built by one of the `systemField`
+    /// helpers below.
     private func complete(
-        system: String,
+        systemField: Any,
         messages: [[String: String]],
         maxTokens: Int,
         outputSchema: [String: Any]? = nil,
         allowEmpty: Bool = false
-    ) async throws -> String {
+    ) async throws -> CompletionResult {
         guard !config.apiKey.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw ClaudeClientError.missingAPIKey
         }
@@ -120,7 +156,7 @@ public final class ClaudeClient: @unchecked Sendable {
         var body: [String: Any] = [
             "model": config.model,
             "max_tokens": maxTokens,
-            "system": system,
+            "system": systemField,
             "messages": messages,
         ]
         if let outputSchema {
@@ -155,14 +191,22 @@ public final class ClaudeClient: @unchecked Sendable {
         if decoded.stopReason == "refusal" {
             throw ClaudeClientError.refusal
         }
+        let usage = decoded.usage.map {
+            Usage(
+                inputTokens: $0.inputTokens ?? 0,
+                outputTokens: $0.outputTokens ?? 0,
+                cacheCreationInputTokens: $0.cacheCreationInputTokens ?? 0,
+                cacheReadInputTokens: $0.cacheReadInputTokens ?? 0
+            )
+        }
         guard let text = decoded.content.first(where: { $0.type == "text" })?.text else {
             // No text block: the model returned nothing. For the listener path
             // that is a valid "silence" reply; only callers that require content
             // (coverage) treat it as an error.
-            if allowEmpty { return "" }
+            if allowEmpty { return CompletionResult(text: "", usage: usage) }
             throw ClaudeClientError.emptyResponse
         }
-        return text
+        return CompletionResult(text: text, usage: usage)
     }
 
     private static func errorMessage(from data: Data) -> String? {
@@ -173,18 +217,66 @@ public final class ClaudeClient: @unchecked Sendable {
         return (try? JSONDecoder().decode(ErrorEnvelope.self, from: data))?.error.message
     }
 
+    /// Build the Messages API `system` field. Plain string when there is no
+    /// cache prefix; otherwise a two-block array — the stable prefix carrying a
+    /// cache_control breakpoint, then the volatile remainder. `cachedPrefix`
+    /// is expected to be a leading substring of `system`.
+    private static func systemField(_ system: String, cachedPrefix: String?) -> Any {
+        guard let cachedPrefix, !cachedPrefix.isEmpty, system.hasPrefix(cachedPrefix) else {
+            return system
+        }
+        let suffix = String(system.dropFirst(cachedPrefix.count))
+        var blocks: [[String: Any]] = [[
+            "type": "text",
+            "text": cachedPrefix,
+            "cache_control": ["type": "ephemeral"],
+        ]]
+        if !suffix.isEmpty {
+            blocks.append(["type": "text", "text": suffix])
+        }
+        return blocks
+    }
+
+    /// Build the Messages API `system` field from an explicit block list (the
+    /// analyst path): one `{"type":"text","text":…}` per block, with the
+    /// cache_control breakpoint on the flagged one. Empty blocks are dropped —
+    /// the API rejects empty text blocks — though `Analyst.buildRequest` never
+    /// emits one.
+    private static func systemField(blocks: [SystemBlock]) -> Any {
+        blocks.filter { !$0.text.isEmpty }.map { block -> [String: Any] in
+            var out: [String: Any] = ["type": "text", "text": block.text]
+            if block.cached { out["cache_control"] = ["type": "ephemeral"] }
+            return out
+        }
+    }
+
     private struct MessagesResponse: Decodable {
         struct ContentBlock: Decodable {
             let type: String
             let text: String?
         }
+        struct UsageBlock: Decodable {
+            let inputTokens: Int?
+            let outputTokens: Int?
+            let cacheCreationInputTokens: Int?
+            let cacheReadInputTokens: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case inputTokens = "input_tokens"
+                case outputTokens = "output_tokens"
+                case cacheCreationInputTokens = "cache_creation_input_tokens"
+                case cacheReadInputTokens = "cache_read_input_tokens"
+            }
+        }
 
         let content: [ContentBlock]
         let stopReason: String?
+        let usage: UsageBlock?
 
         enum CodingKeys: String, CodingKey {
             case content
             case stopReason = "stop_reason"
+            case usage
         }
     }
 }

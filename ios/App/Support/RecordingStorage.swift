@@ -25,4 +25,16 @@ enum RecordingStorage {
     static func exists(fileName: String) -> Bool {
         FileManager.default.fileExists(atPath: url(for: fileName).path)
     }
+
+    /// Every .m4a currently on disk. Ownership is one-way (records point at
+    /// files), so crash recovery diffs this list against the records to find
+    /// orphans — see `SessionRecovery`.
+    static func allRecordingFileNames() -> [String] {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        )) ?? []
+        return urls
+            .filter { $0.pathExtension == "m4a" }
+            .map(\.lastPathComponent)
+    }
 }

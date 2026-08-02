@@ -10,14 +10,34 @@
 // the state machine's patience floor sits on top (seconds), sub-100ms VAD
 // jitter does not move product behaviour.
 //
-// Echo: voice processing (AEC) is enabled on the input node so the companion's
-// own TTS is cancelled from the mic path — which is what makes barge-in
-// detection during a response trustworthy.
+// Echo: voice processing (AEC) is enabled on the duplex vpio unit (both input
+// and output nodes), and the listener's TTS is rendered THROUGH this engine via
+// a player node (see `playTTS` / `SpeechOutput`) rather than a separate audio
+// path. That is what gives the canceller a correct echo reference, so the
+// companion's own speech is removed from the mic and barge-in stays trustworthy.
 
 import AVFoundation
 import Foundation
 
-final class AudioPipeline {
+final class AudioPipeline: TTSPlaybackSink {
+    /// System events that take the mic out from under a running session. The
+    /// pipeline only *reports* — the host decides whether to park, resume, or
+    /// finalize, because that decision touches the turn machine and storage.
+    enum Interruption {
+        /// The system claimed the audio session (phone call, Siri, alarm).
+        case began
+        /// The interruption is over; `shouldResume` is the system's hint that
+        /// taking the mic back immediately is appropriate.
+        case ended(shouldResume: Bool)
+        /// The active input route disappeared (`.oldDeviceUnavailable` —
+        /// headphones unplugged, AirPods case shut). The session should fall
+        /// back to the built-in mic, not die.
+        case routeLost
+        /// The media services daemon was reset: every audio object we hold is
+        /// dead and the engine must be rebuilt from scratch.
+        case mediaServicesReset
+    }
+
     /// Called on the main queue with ms-since-session timestamps.
     var onSpeechStart: ((Double) -> Void)?
     var onSpeechEnd: ((Double) -> Void)?
@@ -25,9 +45,31 @@ final class AudioPipeline {
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     /// Live input level in dBFS for the UI meter (main queue, throttled).
     var onLevel: ((Float) -> Void)?
+    /// Interruption/route/reset events, delivered on the main queue while the
+    /// pipeline is running. See `Interruption`.
+    var onInterruption: ((Interruption) -> Void)?
 
-    private let engine = AVAudioEngine()
+    /// `var`, not `let`: a media-services reset invalidates the engine and the
+    /// only correct recovery is a fresh instance (`resume(rebuild: true)`).
+    private var engine = AVAudioEngine()
     private var running = false
+    /// Capture injection mode (design: in-app audio injection). When true,
+    /// `startEngine()` skips the mic input tap — buffers arrive via
+    /// `injectForCapture(_:)` instead — but the engine still starts so the
+    /// listener's TTS renders through the AEC graph as in production. Set only
+    /// under the `-captureInjectAudio` launch flag; false in every shipped path.
+    private var isInjecting = false
+    private var notificationObservers: [NSObjectProtocol] = []
+
+    // ── TTS playback through THIS engine (see `TTSPlaybackSink`) ──
+    // The listener's voice is rendered through the same voice-processing IO
+    // unit that captures the mic, so the AEC has a correct echo reference and
+    // cancels our own speech from the input — which is what the barge-in path
+    // assumes. Recreated per engine build; scheduled by `SpeechOutput`.
+    private var ttsPlayer = AVAudioPlayerNode()
+    /// The format TTS buffers must be in to schedule on the player node (the
+    /// engine mixer's format). `nil` until the engine is running.
+    private(set) var ttsFormat: AVAudioFormat?
 
     // ── VAD tuning (see header note) ──
     /// Speech must exceed the noise floor by this margin to count as onset.
@@ -52,15 +94,88 @@ final class AudioPipeline {
     // format matching the tap buffers (float32, deinterleaved).
     private let recordingLock = NSLock()
     private var recordingFile: AVAudioFile?
+    /// Re-formats tap buffers into the file's processing format after a route
+    /// change moves the input to another sample rate or channel count. Built
+    /// lazily on the first mismatching buffer and rebuilt if the input format
+    /// changes again; it is stateful (the resampler carries filter state), so
+    /// the instance is kept rather than recreated per buffer. Touched only
+    /// under `recordingLock`.
+    private var recordingConverter: AVAudioConverter?
+    /// The input format `recordingConverter` was last built FOR — set even when
+    /// the build failed, so an unbridgeable pair is attempted only once.
+    private var recordingConverterInput: AVAudioFormat?
 
     private func nowMs() -> Double {
         (ProcessInfo.processInfo.systemUptime - clockOrigin) * 1000
     }
 
-    func start(clockOrigin: TimeInterval) throws {
+    func start(clockOrigin: TimeInterval, injecting: Bool = false) throws {
         guard !running else { return }
         self.clockOrigin = clockOrigin
+        self.isInjecting = injecting
+        try activateSession()
+        try startEngine()
+        observeSessionNotifications()
+        running = true
+    }
 
+    func stop() {
+        guard running else { return }
+        stopRecording() // safety net; the host normally stops recording first
+        removeSessionNotificationObservers()
+        ttsPlayer.stop()
+        ttsFormat = nil
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        running = false
+        inSpeech = false
+        speechBufferRun = 0
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    /// Capture-only entry point (design: in-app audio injection). Feed one
+    /// fixture buffer through the SAME fan-out the mic tap uses — recording
+    /// write + RMS VAD + `onBuffer`/`onLevel` — so transcription, turn-end, and
+    /// metering all run for real. There is deliberately ONE `process(_:)`
+    /// implementation, exercised by both the mic and the injector.
+    func injectForCapture(_ buffer: AVAudioPCMBuffer) {
+        guard running else { return }
+        process(buffer)
+    }
+
+    // ── interruption handling ──
+
+    /// Park the engine during a system interruption. The system has already
+    /// silenced the session; we just pause the engine and clear per-utterance
+    /// VAD state so a half-formed onset doesn't survive the gap. The tap and
+    /// the recording file stay in place for `resume()`.
+    func suspend() {
+        guard running else { return }
+        engine.pause()
+        inSpeech = false
+        speechBufferRun = 0
+    }
+
+    /// Take the mic back after `suspend()` or a route loss. The tap is always
+    /// reinstalled against the *current* input format — after a route change
+    /// (AirPods → built-in mic) the old format may be stale, and a mismatched
+    /// tap is worse than a rebuilt one. Pass `rebuild: true` after a
+    /// media-services reset, when the old engine instance is unusable.
+    func resume(rebuild: Bool = false) throws {
+        guard running else { return }
+        if rebuild {
+            engine = AVAudioEngine()
+        } else {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        try activateSession()
+        try startEngine()
+        inSpeech = false
+        speechBufferRun = 0
+    }
+
+    private func activateSession() throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(
             .playAndRecord,
@@ -68,30 +183,114 @@ final class AudioPipeline {
             options: [.defaultToSpeaker, .allowBluetoothA2DP]
         )
         try session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
 
+    private func startEngine() throws {
         let input = engine.inputNode
         // AEC so our own TTS never reads as thinker speech (barge-in stays honest).
         try? input.setVoiceProcessingEnabled(true)
 
-        let format = input.outputFormat(forBus: 0)
-        input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
-            self?.process(buffer)
+        // Injection mode drives the pipeline from a bundled file via
+        // `injectForCapture(_:)`, so no live tap — the sim mic is silent and a
+        // tap would only add a noise floor. The engine still starts below so
+        // the listener's TTS renders through the AEC graph as in production.
+        if !isInjecting {
+            let format = input.outputFormat(forBus: 0)
+            input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+                self?.process(buffer)
+            }
         }
+
+        // Voice-process the OUTPUT node too — the documented duplex pattern —
+        // and route a player node into the graph so the listener's TTS is
+        // rendered by the vpio unit itself. That gives the AEC a correct echo
+        // reference (so it can cancel our speech from the mic) AND drives the
+        // duplex unit's render side, which otherwise render-faults every cycle
+        // ("auou/vpio/appl, render err: -1"). Accessing mainMixerNode also
+        // establishes the mixer→output connection we read the format from.
+        try? engine.outputNode.setVoiceProcessingEnabled(true)
+        if ttsPlayer.engine === engine { engine.detach(ttsPlayer) }
+        ttsPlayer = AVAudioPlayerNode() // fresh node — safe across engine rebuilds
+        engine.attach(ttsPlayer)
+        let mixer = engine.mainMixerNode
+        let playbackFormat = mixer.outputFormat(forBus: 0)
+        engine.connect(ttsPlayer, to: mixer, format: playbackFormat)
+        ttsFormat = playbackFormat
 
         engine.prepare()
         try engine.start()
-        running = true
+        // The player must be running to accept and render scheduled buffers.
+        ttsPlayer.play()
     }
 
-    func stop() {
+    // ── TTS playback (TTSPlaybackSink) ──
+
+    /// Schedule one synthesized buffer for playback through the AEC engine.
+    /// `onComplete` fires on the main queue when this buffer finishes rendering
+    /// (used to detect the end of the whole clip on the last buffer).
+    func playTTS(_ buffer: AVAudioPCMBuffer, onComplete: @escaping @Sendable () -> Void) {
         guard running else { return }
-        stopRecording() // safety net; the host normally stops recording first
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        running = false
-        inSpeech = false
-        speechBufferRun = 0
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if !ttsPlayer.isPlaying { ttsPlayer.play() }
+        // `.dataPlayedBack` fires when the buffer has actually finished rendering
+        // (not merely been consumed), so the clip-end signal is accurate.
+        ttsPlayer.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { _ in
+            DispatchQueue.main.async(execute: onComplete)
+        }
+    }
+
+    /// Instant yield on barge-in: stop the player and flush anything queued.
+    /// The next `playTTS` restarts the player.
+    func stopTTS() {
+        ttsPlayer.stop()
+    }
+
+    /// Translate AVAudioSession notifications into `Interruption` values for
+    /// the host. Observed only while running; delivered on the main queue to
+    /// match the rest of the pipeline's callback contract.
+    private func observeSessionNotifications() {
+        let center = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
+
+        notificationObservers.append(center.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: session, queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw)
+            else { return }
+            switch type {
+            case .began:
+                self?.onInterruption?(.began)
+            case .ended:
+                let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
+                self?.onInterruption?(.ended(shouldResume: options.contains(.shouldResume)))
+            @unknown default:
+                break
+            }
+        })
+
+        notificationObservers.append(center.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: session, queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
+                  reason == .oldDeviceUnavailable
+            else { return }
+            self?.onInterruption?(.routeLost)
+        })
+
+        notificationObservers.append(center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main
+        ) { [weak self] _ in
+            self?.onInterruption?(.mediaServicesReset)
+        })
+    }
+
+    private func removeSessionNotificationObservers() {
+        for observer in notificationObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        notificationObservers.removeAll()
     }
 
     // ── recording sink ──
@@ -122,6 +321,8 @@ final class AudioPipeline {
         )
         recordingLock.lock()
         recordingFile = file
+        recordingConverter = nil
+        recordingConverterInput = nil
         recordingLock.unlock()
     }
 
@@ -129,7 +330,56 @@ final class AudioPipeline {
     func stopRecording() {
         recordingLock.lock()
         recordingFile = nil
+        recordingConverter = nil
+        recordingConverterInput = nil
         recordingLock.unlock()
+    }
+
+    /// Re-format one tap buffer into the recording file's processing format.
+    /// The caller must hold `recordingLock`: `AVAudioConverter` is not
+    /// thread-safe and the instance is shared with start/stopRecording.
+    ///
+    /// Returns nil only when no converter exists for the pair (e.g. a channel
+    /// layout AVAudioConverter will not map) or the conversion produced
+    /// nothing — the write is skipped then, exactly as it was before.
+    private func convertedForRecording(
+        _ buffer: AVAudioPCMBuffer,
+        to format: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        // Build once per input format — successfully or not. `…Input` records
+        // the format last ATTEMPTED, so a pair the converter cannot bridge is
+        // not retried on every buffer: this is the audio thread.
+        if recordingConverterInput != buffer.format {
+            recordingConverterInput = buffer.format
+            recordingConverter = AVAudioConverter(from: buffer.format, to: format)
+        }
+        guard let converter = recordingConverter else { return nil }
+
+        // A sample-rate change moves the frame count, so size the output by the
+        // rate ratio, plus headroom for the resampler's tail.
+        let ratio = format.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up) + 1024)
+        guard let converted = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+            return nil
+        }
+
+        // `error: nil` deliberately: the pipeline has no log sink and the write
+        // decision is entirely `status` — an errored conversion is skipped just
+        // like an unbridgeable format, so there is nothing an NSError would add.
+        var supplied = false
+        let status = converter.convert(to: converted, error: nil) { _, inputStatus in
+            // One tap buffer per call: once it has been handed over, report
+            // "nothing more right now" so the converter flushes what it can.
+            if supplied {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error, converted.frameLength > 0 else { return nil }
+        return converted
     }
 
     // ── audio thread ──
@@ -137,12 +387,24 @@ final class AudioPipeline {
     private func process(_ buffer: AVAudioPCMBuffer) {
         onBuffer?(buffer)
 
-        // Recording sink: write the tap buffer straight through. Guarded by
-        // the file's processing format — if the input layout ever differs
-        // (e.g. a multichannel interface), we skip rather than corrupt.
+        // Recording sink. The file's processing format is pinned at
+        // startRecording to whatever the input was THEN, but the input can
+        // change under a running session: a route loss (AirPods → built-in
+        // mic) or a media-services reset re-taps at whatever format is current.
+        // Skipping every mismatching buffer — the old behavior — left the
+        // transcript running while the .m4a silently went quiet for the rest of
+        // the session, and the file gave no sign of the gap. Convert instead,
+        // so the recording survives the change in one continuous file. A pair
+        // AVAudioConverter cannot bridge still skips (see
+        // `convertedForRecording`), but that is now the rare residue rather
+        // than every route change.
         recordingLock.lock()
-        if let file = recordingFile, file.processingFormat == buffer.format {
-            try? file.write(from: buffer)
+        if let file = recordingFile {
+            if file.processingFormat == buffer.format {
+                try? file.write(from: buffer)
+            } else if let converted = convertedForRecording(buffer, to: file.processingFormat) {
+                try? file.write(from: converted)
+            }
         }
         recordingLock.unlock()
 

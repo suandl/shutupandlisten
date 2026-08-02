@@ -53,17 +53,26 @@ public struct GateConfig: Sendable {
     public var acks: [String]
     public var questionCooldownTurns: Int
     public var completionThreshold: Double
+    /// "Just listen" — questions off. Caps the hierarchy at the acknowledge
+    /// rung for UNINVITED turns, so the model tiers (reflection/question) are
+    /// unreachable no matter how substantive the turn or how long the cooldown
+    /// has been elapsed. A direct question FROM the thinker still escalates
+    /// (an invited question bypasses the cap), and the explicit pull-a-thread
+    /// path never enters the gate at all — both invited routes survive.
+    public var justListen: Bool
 
     public init(
         substantiveWords: Int = defaultSubstantiveWords,
         acks: [String] = defaultAcks,
         questionCooldownTurns: Int = defaultQuestionCooldownTurns,
-        completionThreshold: Double = defaultCompletionThreshold
+        completionThreshold: Double = defaultCompletionThreshold,
+        justListen: Bool = false
     ) {
         self.substantiveWords = substantiveWords
         self.acks = acks
         self.questionCooldownTurns = questionCooldownTurns
         self.completionThreshold = completionThreshold
+        self.justListen = justListen
     }
 
     public static let defaults = GateConfig()
@@ -160,6 +169,22 @@ public func wordCount(_ text: String) -> Int {
 /// dash, comma) reads as "still going" — the thinker paused, they are not done.
 private let trailingOffMarkers: Set<Character> = ["…", ",", "-", "—"]
 
+/// The rules-only acknowledge rung: rotate the ack by utterance number so a
+/// run of gated turns never reads as one stuck token. An empty ack set (a
+/// config choice, not the default) degrades to silence — the more restrained
+/// rung, per §1's tie-breaking rule.
+private func ackDecision(
+    _ ctx: EvalContext, _ cfg: GateConfig, reason: String, silentReason: String
+) -> GateDecision {
+    guard !cfg.acks.isEmpty else {
+        return GateDecision(tier: .silence, callModel: false, ackText: nil,
+                            reason: silentReason)
+    }
+    let n = cfg.acks.count
+    let ack = cfg.acks[((ctx.utteranceIndex % n) + n) % n]
+    return GateDecision(tier: .acknowledge, callModel: false, ackText: ack, reason: reason)
+}
+
 /// Decide the response tier for an evaluated pause under the "escalate slowly"
 /// policy. Pure: same inputs → same output.
 ///
@@ -169,6 +194,8 @@ private let trailingOffMarkers: Set<Character> = ["…", ",", "-", "—"]
 ///  2. EOU says incomplete               → silence   (mid-thought; B1 — never interrupt)
 ///  3. text trails off (…, — ,)          → silence   (mid-thought)
 ///  4. short finished aside              → acknowledge (rules-only rotating backchannel)
+///  4b. just-listen cap (questions off)  → acknowledge — an uninvited turn never
+///      reaches the model tiers; a direct question FROM the thinker still does
 ///  5. substantive / a direct question   → reflection, or question when EARNED
 public func decideTier(_ ctx: EvalContext, config: GateConfig = .defaults) -> GateDecision {
     let cfg = config
@@ -203,18 +230,27 @@ public func decideTier(_ ctx: EvalContext, config: GateConfig = .defaults) -> Ga
     let substantive = words >= cfg.substantiveWords
 
     // 4. A short, finished, non-question aside → minimal acknowledgment.
-    //    Rules only, no model. Rotate the ack by turn number. An empty ack set
-    //    (a config choice, not the default) degrades to silence — the more
-    //    restrained rung, per §1's tie-breaking rule.
+    //    Rules only, no model.
     if !invited && !substantive {
-        guard !cfg.acks.isEmpty else {
-            return GateDecision(tier: .silence, callModel: false, ackText: nil,
-                                reason: "brief turn (\(words)w), no acks configured — holding silence")
-        }
-        let n = cfg.acks.count
-        let ack = cfg.acks[((ctx.utteranceIndex % n) + n) % n]
-        return GateDecision(tier: .acknowledge, callModel: false, ackText: ack,
-                            reason: "brief turn (\(words)w) — minimal acknowledgment")
+        return ackDecision(
+            ctx, cfg,
+            reason: "brief turn (\(words)w) — minimal acknowledgment",
+            silentReason: "brief turn (\(words)w), no acks configured — holding silence"
+        )
+    }
+
+    // 4b. Just-listen: questions are off for this session. An UNINVITED turn —
+    //     however substantive — is capped at the acknowledge rung, so the model
+    //     tiers (reflection/question) are unreachable. A direct question FROM
+    //     the thinker still escalates via rule 5 (an invited question bypasses
+    //     the cap), and the explicit "pull a thread now" path never enters the
+    //     gate at all — it builds its `.question` request directly.
+    if cfg.justListen && !invited {
+        return ackDecision(
+            ctx, cfg,
+            reason: "just listen — substantive turn (\(words)w) capped to acknowledgment",
+            silentReason: "just listen (\(words)w), no acks configured — holding silence"
+        )
     }
 
     // 5. Substantive (or a direct question) → escalate to the model. Default to
@@ -241,6 +277,33 @@ public func decideTier(_ ctx: EvalContext, config: GateConfig = .defaults) -> Ga
     }
     return GateDecision(tier: .reflection, callModel: true, ackText: nil,
                         reason: "substantive turn (\(words)w) — short reflection")
+}
+
+/// What the host should do with an `.acknowledge` gate decision, split so the
+/// spoken side (suppressed when acknowledgments are off) never drags the
+/// recorded side (the gate history that spaces questions) with it.
+public struct ResolvedAck: Equatable, Sendable {
+    /// What to store in the decision history — always `.acknowledge` here, so
+    /// the question cooldown counts this turn correctly even when silent.
+    public let recordedTier: Tier
+    /// The backchannel to speak, or nil to stay silent (acks off, or no ack).
+    public let spokenText: String?
+
+    public init(recordedTier: Tier, spokenText: String?) {
+        self.recordedTier = recordedTier
+        self.spokenText = spokenText
+    }
+}
+
+/// Resolve an `.acknowledge` decision into (what to record, what to speak).
+/// Precondition: `decision.tier == .acknowledge`.
+public func resolveAcknowledge(
+    _ decision: GateDecision,
+    speakAcknowledgments: Bool
+) -> ResolvedAck {
+    let spoken = (speakAcknowledgments ? decision.ackText : nil)
+        .flatMap { $0.isEmpty ? nil : $0 }
+    return ResolvedAck(recordedTier: .acknowledge, spokenText: spoken)
 }
 
 // ── Prompt construction for the substantive tiers ──
@@ -281,12 +344,25 @@ public struct ListenerRequest: Sendable {
     public let tier: Tier
     /// Generation cap — reflections/questions are brief (a sentence or two).
     public let maxTokens: Int
+    /// When set, the leading `cachedSystemPrefix` of `system` is sent as a
+    /// cache_control breakpoint block and the remainder follows as a volatile
+    /// block — Opus reads the stable prefix from cache (~0.1× input). MUST be a
+    /// prefix of `system`; nil ⇒ `system` is sent as one plain block (today's
+    /// behavior). Ignored by ProxyClient, which caches server-side.
+    public let cachedSystemPrefix: String?
 
-    public init(system: String, messages: [ListenerChatMessage], tier: Tier, maxTokens: Int) {
+    public init(
+        system: String,
+        messages: [ListenerChatMessage],
+        tier: Tier,
+        maxTokens: Int,
+        cachedSystemPrefix: String? = nil
+    ) {
         self.system = system
         self.messages = messages
         self.tier = tier
         self.maxTokens = maxTokens
+        self.cachedSystemPrefix = cachedSystemPrefix
     }
 }
 
@@ -330,6 +406,27 @@ public func toChatMessages(_ turns: [ConversationTurn]) -> [ListenerChatMessage]
     return out
 }
 
+/// Shared message construction for the listener builders: append the current
+/// thinker turn onto `history`, normalize to an alternating chat array, and
+/// wrap it with the already-assembled system prompt + tier. Both public
+/// builders differ only in which instruction they append to the system prompt.
+private func makeRequest(
+    system: String,
+    tier: Tier,
+    currentTurnText: String,
+    history: [ConversationTurn],
+    maxTokens: Int
+) -> ListenerRequest {
+    var turns = history
+    turns.append(ConversationTurn(speaker: .thinker, text: currentTurnText))
+    return ListenerRequest(
+        system: system,
+        messages: toChatMessages(turns),
+        tier: tier,
+        maxTokens: maxTokens
+    )
+}
+
 /// Build the model request for a substantive turn. `history` is the prior
 /// conversation (not including the current turn); `currentTurnText` is appended
 /// as the final thinker (user) message.
@@ -342,12 +439,36 @@ public func buildListenerRequest(
 ) -> ListenerRequest {
     let system = (systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         + "\n\n" + tierInstruction(tier)).trimmingCharacters(in: .whitespacesAndNewlines)
-    var turns = history
-    turns.append(ConversationTurn(speaker: .thinker, text: currentTurnText))
-    return ListenerRequest(
-        system: system,
-        messages: toChatMessages(turns),
-        tier: tier,
-        maxTokens: maxTokens
+    return makeRequest(
+        system: system, tier: tier, currentTurnText: currentTurnText,
+        history: history, maxTokens: maxTokens
+    )
+}
+
+/// The forcing instruction for the explicit "pull a thread now" path. Unlike
+/// the gate's `tierInstruction(.question)`, it never offers silence and never
+/// permits a deferral — the user asked, so the listener asks.
+public let pullThreadInstruction =
+    "You were explicitly asked to pull a thread; ask ONE specific question "
+    + "anchored to what they've said. If genuinely too little has been said, "
+    + "say that plainly — never tell them to take their time."
+
+/// Build the model request for the invited "pull a thread now" path. Mirrors
+/// `buildListenerRequest`'s message construction (append the current turn onto
+/// `history`, then normalise with `toChatMessages` so consecutive same-speaker
+/// turns merge and roles strictly alternate, per the Messages API) but swaps in
+/// `pullThreadInstruction` (NOT the gate's optional-silence question
+/// instruction) so the reply is always a question or an honest "not yet".
+public func buildPullThreadRequest(
+    systemPrompt: String,
+    currentTurnText: String,
+    history: [ConversationTurn] = [],
+    maxTokens: Int = defaultMaxListenerTokens
+) -> ListenerRequest {
+    let system = (systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        + "\n\n" + pullThreadInstruction).trimmingCharacters(in: .whitespacesAndNewlines)
+    return makeRequest(
+        system: system, tier: .question, currentTurnText: currentTurnText,
+        history: history, maxTokens: maxTokens
     )
 }

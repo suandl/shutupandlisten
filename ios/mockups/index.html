@@ -1,0 +1,269 @@
+<!-- shutupandlisten · mockups · gallery + visual identity -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shutupandlisten — design mockups</title>
+<style>
+  :root{
+    --page:#08090B; --bg:#0B0D10; --surface:#12151A; --raised:#191D23;
+    --ink:#E9E4DA; --ink2:#8E9298; --ink3:#565B62; --line:#20242B;
+    --track:rgba(233,228,218,.09);
+    --accent:#D9A15E; --accent-ink:#E7BE8A; --accent-dim:rgba(217,161,94,.13);
+    --shadow:0 24px 60px rgba(0,0,0,.45);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --page:#EFEDE7; --bg:#F7F5F0; --surface:#FFFFFF; --raised:#FBFAF6;
+      --ink:#20232A; --ink2:#5E636B; --ink3:#9EA2A9; --line:#E5E1D8;
+      --track:rgba(30,33,42,.10);
+      --accent:#96661F; --accent-ink:#7C5316; --accent-dim:rgba(150,102,31,.10);
+      --shadow:0 20px 50px rgba(70,58,34,.14);
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--page); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent); text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{max-width:1080px; margin:0 auto; padding:64px 40px 96px}
+  .brand{font-size:14px; font-weight:600; letter-spacing:.02em; color:var(--ink2)}
+  h1{font-size:34px; font-weight:700; letter-spacing:-.022em; margin:14px 0 10px; line-height:1.15}
+  .lede{max-width:64ch; color:var(--ink2); font-size:16px; line-height:1.65; margin:0 0 8px}
+  .lede b{color:var(--ink); font-weight:600}
+  section{margin-top:64px}
+  h2{font-size:12px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:var(--ink3); margin:0 0 18px;
+    display:flex; align-items:center; gap:14px}
+  h2::after{content:""; flex:1; height:1px; background:var(--line)}
+
+  /* identity: the ring demo */
+  .id-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:20px}
+  .card{border:1px solid var(--line); border-radius:20px; background:var(--surface); padding:24px}
+  .card h3{margin:0 0 6px; font-size:15px; font-weight:600}
+  .card .s{font-size:13px; color:var(--ink2); line-height:1.55; margin:0 0 16px}
+  .rings{display:flex; justify-content:space-around; align-items:center; padding:10px 0 4px}
+  .ringcase{text-align:center}
+  .ringcase .cap{margin-top:12px; font-size:10.5px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:var(--ink3)}
+  .mini{display:inline-block; position:relative}
+  .mini .trk{stroke:var(--track); stroke-width:2; fill:none}
+  .mini .arc{stroke:var(--accent); stroke-width:2.4; fill:none; stroke-linecap:round;
+    transform:rotate(-90deg); transform-origin:50% 50%}
+  .mini .dotc{fill:var(--accent)}
+  .breathe{animation:br 5.8s ease-in-out infinite}
+  @keyframes br{0%,100%{transform:scale(1)} 50%{transform:scale(1.05)}}
+  .filling .arc{stroke-dasharray:239; animation:fill 9s ease-in-out infinite}
+  @keyframes fill{0%{stroke-dashoffset:239; opacity:0} 8%{opacity:.95} 60%{stroke-dashoffset:84; opacity:.95}
+    72%{stroke-dashoffset:84; opacity:.95} 86%{opacity:0; stroke-dashoffset:92} 100%{stroke-dashoffset:239; opacity:0}}
+  .glowdot{filter:drop-shadow(0 0 6px var(--accent))}
+
+  /* palette */
+  .swatches{display:grid; grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:10px}
+  .sw{border:1px solid var(--line); border-radius:14px; overflow:hidden}
+  .sw .chip{height:56px}
+  .sw .l{padding:9px 11px 10px; background:var(--surface)}
+  .sw .n{font-size:12px; font-weight:600}
+  .sw .h{font:400 11px/1.5 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3)}
+
+  /* type ramp */
+  .ramp .r{display:flex; align-items:baseline; gap:22px; padding:14px 2px; border-bottom:1px solid var(--line)}
+  .ramp .r:last-child{border-bottom:0}
+  .ramp .spec{flex:none; width:210px; font:400 11px/1.6 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3)}
+  .t-q{font-size:24px; line-height:1.42; letter-spacing:-.008em; font-weight:400}
+  .t-title{font-size:20px; font-weight:600; letter-spacing:-.012em}
+  .t-body{font-size:16px; line-height:1.55}
+  .t-sub{font-size:13px; color:var(--ink2)}
+  .t-caps{font-size:11px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--ink3)}
+  .t-stamp{font:500 12px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3); letter-spacing:.04em}
+
+  /* gallery */
+  .gal{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:20px}
+  .shot{display:block; border:1px solid var(--line); border-radius:20px; background:var(--surface); overflow:hidden;
+    color:inherit; transition:transform .25s ease, box-shadow .25s ease}
+  .shot:hover{transform:translateY(-3px); box-shadow:var(--shadow); text-decoration:none}
+  .thumb{height:190px; background:var(--bg); border-bottom:1px solid var(--line); position:relative; overflow:hidden;
+    display:flex; align-items:center; justify-content:center}
+  .shot .tx{padding:16px 18px 18px}
+  .shot .tt{font-size:15px; font-weight:600; margin-bottom:5px; display:flex; align-items:center; gap:8px}
+  .shot .tt .go{color:var(--accent)}
+  .shot .why{font-size:13px; color:var(--ink2); line-height:1.55}
+
+  /* thumbnail vignettes */
+  .th-q{width:78%; background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:12px 14px}
+  .th-q .k{font-size:8px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); margin-bottom:6px}
+  .th-q .q{font-size:12.5px; line-height:1.45}
+  .th-la{width:82%; background:rgba(22,24,28,.9); border:1px solid rgba(233,228,218,.08); border-radius:14px; padding:11px 13px; color:#E9E4DA}
+  .th-la .r1{display:flex; align-items:center; gap:9px}
+  .th-la .st{font-size:11.5px; font-weight:600}
+  .th-la .who{font-size:8px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:rgba(233,228,218,.4)}
+  .th-la .el{margin-left:auto; font:500 13px/1 ui-monospace,"SF Mono",Menlo,monospace; color:rgba(233,228,218,.85)}
+  .th-la .r2{margin-top:8px; padding-top:8px; border-top:1px solid rgba(233,228,218,.08); font-size:9.5px; color:rgba(233,228,218,.5)}
+  .th-th{width:82%}
+  .th-th .tc{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:9px 11px; margin-bottom:7px}
+  .th-th .tn{font-size:11px; font-weight:600; display:flex; justify-content:space-between}
+  .th-th .tn span:last-child{font-weight:400; color:var(--ink3); font-size:9.5px}
+  .th-th .tq{font-size:10px; font-style:italic; color:var(--accent-ink); margin-top:4px}
+  .th-ip{width:78%; background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:12px 14px}
+  .th-ip .k{font-size:7.5px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--accent)}
+  .th-ip .t{font-size:12px; font-weight:700; margin:4px 0 6px}
+  .th-ip p{margin:0; font-size:9.5px; line-height:1.5; color:var(--ink2)}
+  .th-ip .c{font:400 7.5px/1 ui-monospace,monospace; color:var(--accent); background:var(--accent-dim); border-radius:4px; padding:1.5px 4px}
+
+  footer{margin-top:72px; padding-top:20px; border-top:1px solid var(--line); font-size:13px; color:var(--ink3); line-height:1.6}
+  @media (prefers-reduced-motion: reduce){ *{animation:none !important} .filling .arc{stroke-dashoffset:84; opacity:.95} }
+</style>
+
+<div class="wrap">
+  <div class="brand">shutupandlisten · design mockups · July 2026</div>
+  <h1>Silence is the product.<br>The design should look like it.</h1>
+  <p class="lede">Four screens that need discussion before implementation, plus the identity that binds them.
+  The engine already proves restraint; these mockups dress it as one: <b>e-ink calm, not dashboard energy</b> —
+  generous negative space, a single ember accent, motion that breathes, dark-mode-first (people think out loud
+  at night and on walks). Attitude in the name, serenity in the behavior. Rationale and open questions live in
+  <a href="README.md">README.md</a>.</p>
+
+  <!-- ═══════════ IDENTITY ═══════════ -->
+  <section>
+    <h2>The signature — the patience ring</h2>
+    <div class="id-grid">
+      <div class="card" style="grid-column:1 / -1">
+        <h3>One mark, three tenses</h3>
+        <p class="s">A 2&thinsp;px hairline circle is the entire brand mark. It <b>breathes</b> while it listens
+        (5.8&thinsp;s cycle, ±3% scale), an ember arc <b>fills</b> clockwise while it waits out a pause — dissolving
+        the instant you resume — and it <b>settles to a single point</b> when its one question arrives. The same
+        grammar at every size: 284&thinsp;pt session hero, 34&thinsp;pt Live Activity, 22&thinsp;pt Dynamic Island,
+        7&thinsp;pt question marker in lists. Never a bar, never a spinner, never a second color.</p>
+        <div class="rings">
+          <div class="ringcase">
+            <span class="mini breathe"><svg width="86" height="86" viewBox="0 0 86 86"><circle class="trk" cx="43" cy="43" r="38"/></svg></span>
+            <div class="cap">Listening — breathes</div>
+          </div>
+          <div class="ringcase">
+            <span class="mini filling"><svg width="86" height="86" viewBox="0 0 86 86"><circle class="trk" cx="43" cy="43" r="38"/><circle class="arc" cx="43" cy="43" r="38"/></svg></span>
+            <div class="cap">Waiting — the arc fills</div>
+          </div>
+          <div class="ringcase">
+            <span class="mini"><svg width="86" height="86" viewBox="0 0 86 86"><circle class="trk" cx="43" cy="43" r="38"/><circle class="dotc glowdot" cx="43" cy="43" r="7"/></svg></span>
+            <div class="cap">The question — a point</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Palette — night paper &amp; ember</h2>
+    <div class="id-grid">
+      <div class="card" style="grid-column:1 / -1">
+        <p class="s" style="margin-bottom:18px">Dark is the designed experience; light is a faithful paper
+        translation (toggle your OS appearance — this page and every mockup follow
+        <code>prefers-color-scheme</code>). One accent, used only for what the listener does: the arc, the
+        question, a citation. Everything else is warm ink.</p>
+        <div class="swatches">
+          <div class="sw"><div class="chip" style="background:#0B0D10"></div><div class="l"><div class="n">bg / night</div><div class="h">#0B0D10 · #F7F5F0</div></div></div>
+          <div class="sw"><div class="chip" style="background:#12151A"></div><div class="l"><div class="n">surface</div><div class="h">#12151A · #FFFFFF</div></div></div>
+          <div class="sw"><div class="chip" style="background:#191D23"></div><div class="l"><div class="n">raised</div><div class="h">#191D23 · #FBFAF6</div></div></div>
+          <div class="sw"><div class="chip" style="background:#E9E4DA"></div><div class="l"><div class="n">ink / paper</div><div class="h">#E9E4DA · #20232A</div></div></div>
+          <div class="sw"><div class="chip" style="background:#8E9298"></div><div class="l"><div class="n">ink 2</div><div class="h">#8E9298 · #5E636B</div></div></div>
+          <div class="sw"><div class="chip" style="background:#565B62"></div><div class="l"><div class="n">ink 3</div><div class="h">#565B62 · #9EA2A9</div></div></div>
+          <div class="sw"><div class="chip" style="background:#20242B"></div><div class="l"><div class="n">hairline</div><div class="h">#20242B · #E5E1D8</div></div></div>
+          <div class="sw"><div class="chip" style="background:#D9A15E"></div><div class="l"><div class="n">ember ★</div><div class="h">#D9A15E · #96661F</div></div></div>
+          <div class="sw"><div class="chip" style="background:#E7BE8A"></div><div class="l"><div class="n">ember ink</div><div class="h">#E7BE8A · #7C5316</div></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Type — SF Pro, quiet ramp</h2>
+    <div class="card ramp">
+      <div class="r"><span class="spec">Question · 24/1.42 · regular · −0.8%</span>
+        <span class="t-q">With the number gone, what makes someone open the app again tomorrow?</span></div>
+      <div class="r"><span class="spec">Title · 20 · semibold · −1.2%</span>
+        <span class="t-title">A reading app that doesn't show you progress</span></div>
+      <div class="r"><span class="spec">Body · 16/1.55 · regular</span>
+        <span class="t-body">I start reading to move the number instead of reading to actually read.</span></div>
+      <div class="r"><span class="spec">Sub · 13 · regular · ink&thinsp;2</span>
+        <span class="t-sub">5 sessions · Jun 12 – Jul 24 · 1 h 04 m of thinking</span></div>
+      <div class="r"><span class="spec">Caps · 11 · semibold · +20% tracking</span>
+        <span class="t-caps">Waiting it out</span></div>
+      <div class="r"><span class="spec">Stamp · SF Mono 12</span>
+        <span class="t-stamp">asked at 04:47 · 12:36</span></div>
+    </div>
+    <p class="lede" style="font-size:13px; margin-top:14px">The question style is deliberately <i>regular</i> weight
+    at display size — a question, not a headline. Caps style carries all state words; mono carries all time.
+    No bold shouting anywhere in the app.</p>
+  </section>
+
+  <!-- ═══════════ GALLERY ═══════════ -->
+  <section>
+    <h2>The mockups</h2>
+    <div class="gal">
+
+      <a class="shot" href="session-screen.html">
+        <div class="thumb">
+          <span class="mini filling"><svg width="120" height="120" viewBox="0 0 86 86"><circle class="trk" cx="43" cy="43" r="38"/><circle class="arc" cx="43" cy="43" r="38"/></svg></span>
+        </div>
+        <div class="tx">
+          <div class="tt">Live session <span class="go">→</span></div>
+          <div class="why">The waiting becomes the interface: hero ring, three calm states, the staged
+          question moment, transcript demoted to a peek. Informs the W2a rebuild.</div>
+        </div>
+      </a>
+
+      <a class="shot" href="live-activity.html">
+        <div class="thumb">
+          <div class="th-la">
+            <div class="r1">
+              <span class="mini breathe"><svg width="26" height="26" viewBox="0 0 26 26"><circle class="trk" cx="13" cy="13" r="10.5"/></svg></span>
+              <div><div class="who">shutupandlisten</div><div class="st">listening</div></div>
+              <span class="el">12:40</span>
+            </div>
+            <div class="r2">3 thoughts · no questions yet</div>
+          </div>
+        </div>
+        <div class="tx">
+          <div class="tt">Lock screen &amp; Dynamic Island <span class="go">→</span></div>
+          <div class="why">The session survives the pocket. Coarse state only, timer rendered free by the
+          system, updates on state transitions alone — restraint fits the ActivityKit budget.</div>
+        </div>
+      </a>
+
+      <a class="shot" href="threads.html">
+        <div class="thumb">
+          <div class="th-th">
+            <div class="tc"><div class="tn"><span>Reading app</span><span>5 sessions · 6 wks</span></div>
+              <div class="tq">“What does that picking actually look like…?”</div></div>
+            <div class="tc"><div class="tn"><span>Newsletter relaunch</span><span>3 sessions</span></div>
+              <div class="tq">“Who is actually going back to read it?”</div></div>
+          </div>
+        </div>
+        <div class="tx">
+          <div class="tt">Threads &amp; ask your library <span class="go">→</span></div>
+          <div class="why">Sessions cluster into idea-threads led by their open questions; resume seeds the
+          listener's memory; library answers are always quotes of your own words, cited.</div>
+        </div>
+      </a>
+
+      <a class="shot" href="idea-page.html">
+        <div class="thumb">
+          <div class="th-ip">
+            <div class="k">Idea page · in your words</div>
+            <div class="t">A reading app that doesn't show you progress</div>
+            <p>Every reading app I've used turns a book into a task… I start reading to move the number
+            instead of reading to actually read. <span class="c">00:41</span></p>
+          </div>
+        </div>
+        <div class="tx">
+          <div class="tt">Session detail &amp; idea page <span class="go">→</span></div>
+          <div class="why">Ending lands on the question you left with; the idea page is made only on request —
+          cleaned prose in your own voice, every paragraph timestamp-cited.</div>
+        </div>
+      </a>
+
+    </div>
+  </section>
+
+  <footer>
+    Self-contained HTML — no external requests, no frameworks. Dark mode is the showcase; switch your OS
+    appearance for the light translation. Full rationale, open questions (ring vs bar, question-moment
+    loudness, threads privacy) and S/M/L implementation sizing: <a href="README.md">ios/mockups/README.md</a>.
+  </footer>
+</div>

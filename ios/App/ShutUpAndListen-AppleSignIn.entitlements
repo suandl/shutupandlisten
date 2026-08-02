@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Paid-team entitlements: the Sign in with Apple capability.
+
+  This file is NOT the active entitlements. It is kept so the account path can
+  be restored on a paid Apple Developer team, since "Sign in with Apple" cannot
+  be provisioned by a free/personal team (automatic signing fails with
+  "Personal development teams do not support the Sign In with Apple capability").
+
+  To re-enable the feature on a paid team:
+    1. Point CODE_SIGN_ENTITLEMENTS at this file (both build configs) in
+       ShutUpAndListen.xcodeproj, OR copy its <dict> into
+       App/ShutUpAndListen.entitlements.
+    2. Add APPLE_SIGN_IN to SWIFT_ACTIVE_COMPILATION_CONDITIONS.
+  See ios/README.md → Building.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
+</dict>
+</plist>

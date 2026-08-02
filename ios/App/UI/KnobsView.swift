@@ -1,6 +1,11 @@
-// Live knobs — the same tuning surface as web/src/knobs.ts, adjustable
-// mid-session; a change applies to the next pause. Defaults bias to
-// "keep listening".
+// Tuning (developer) — the operator's feel-test harness, the same surface as
+// web/src/knobs.ts, adjustable mid-session; a change applies to the next
+// pause. Defaults bias to "keep listening".
+//
+// This is deliberately NOT a consumer surface: it is reachable only from the
+// hidden Developer section in Settings. Consumers get the shipped defaults
+// (the su-lou feel-test verdict); these sliders exist so the operator can keep
+// running that experiment.
 
 import SwiftUI
 import TurnEngine
@@ -18,11 +23,14 @@ struct KnobsView: View {
                         value: $controller.knobs.silenceFloorMs,
                         range: 200...6000, step: 50, unit: "ms"
                     )
+                } header: {
+                    Text("Developer surface")
                 } footer: {
                     Text(
                         "The patience window: minimum silence before a pause may "
                         + "end the turn. The load-bearing tunable — raise it to "
-                        + "wait through longer thinking-pauses."
+                        + "wait through longer thinking-pauses. Consumer builds "
+                        + "ship the defaults; nothing here is required."
                     )
                 }
 
@@ -42,12 +50,13 @@ struct KnobsView: View {
                     Text(
                         "When the pause reads as mid-thought (trailing “and…”, "
                         + "a comma), extra patience is added — the veto can only "
-                        + "lengthen the wait, never cut you off. Toggle off for "
-                        + "the patience-only baseline."
+                        + "lengthen the wait, never cut you off. Toggling off is "
+                        + "the patience-only baseline arm of the experiment; no "
+                        + "user benefits from it."
                     )
                 }
             }
-            .navigationTitle("Patience")
+            .navigationTitle("Tuning (developer)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

@@ -1,0 +1,303 @@
+<!-- shutupandlisten · mockup · session detail + on-demand idea page -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Idea page — shutupandlisten mockups</title>
+<style>
+  :root{
+    --page:#08090B; --bg:#0B0D10; --surface:#12151A; --raised:#191D23;
+    --ink:#E9E4DA; --ink2:#8E9298; --ink3:#565B62; --line:#20242B;
+    --track:rgba(233,228,218,.09);
+    --accent:#D9A15E; --accent-ink:#E7BE8A; --accent-dim:rgba(217,161,94,.13);
+    --bezel:#000; --shadow:0 34px 80px rgba(0,0,0,.55);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --page:#EFEDE7; --bg:#F7F5F0; --surface:#FFFFFF; --raised:#FBFAF6;
+      --ink:#20232A; --ink2:#5E636B; --ink3:#9EA2A9; --line:#E5E1D8;
+      --track:rgba(30,33,42,.10);
+      --accent:#96661F; --accent-ink:#7C5316; --accent-dim:rgba(150,102,31,.10);
+      --bezel:#101114; --shadow:0 24px 60px rgba(70,58,34,.16);
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--page); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent); text-decoration:none} a:hover{text-decoration:underline}
+  header.page{padding:44px 44px 6px; max-width:1780px}
+  .crumb{font-size:13px; color:var(--ink3)}
+  header.page h1{font-size:23px; font-weight:600; letter-spacing:-.01em; margin:10px 0 8px}
+  header.page p{max-width:68ch; color:var(--ink2); font-size:15px; line-height:1.6; margin:0}
+  header.page p b{color:var(--ink); font-weight:600}
+  .row{display:flex; gap:44px; overflow-x:auto; padding:26px 44px 60px; align-items:flex-start}
+  .study{flex:none; width:415px}
+  .study h2{font-size:12px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ink3); margin:0 0 4px 6px}
+  .study .sub{font-size:13px; color:var(--ink2); margin:0 0 14px 6px; line-height:1.5}
+  .notes{list-style:none; margin:16px 2px 0; padding:0; border-top:1px solid var(--line)}
+  .notes li{display:flex; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line); font-size:13px; line-height:1.55; color:var(--ink2)}
+  .notes b{color:var(--ink); font-weight:600}
+  .notes .n{flex:none; width:17px; height:17px; margin-top:1px; border-radius:50%; background:var(--accent);
+    color:var(--page); font:600 10.5px/17px system-ui; text-align:center}
+  .pin{position:absolute; z-index:9; width:18px; height:18px; border-radius:50%; background:var(--accent);
+    color:var(--page); font:600 11px/18px system-ui; text-align:center; box-shadow:0 0 0 5px var(--accent-dim)}
+
+  .device{position:relative; width:415px; padding:11px; background:var(--bezel); border-radius:64px; box-shadow:var(--shadow)}
+  .screen{position:relative; width:393px; height:852px; border-radius:54px; overflow:hidden; background:var(--bg); display:flex; flex-direction:column}
+  .island{position:absolute; top:12px; left:50%; transform:translateX(-50%); width:122px; height:36px; border-radius:19px; background:#000; z-index:5}
+  .statusbar{flex:none; height:56px; display:flex; align-items:center; justify-content:space-between; padding:14px 36px 0; font-size:15px; font-weight:600}
+  .statusbar .icons{display:flex; gap:7px; align-items:center; opacity:.92}
+  .homebar{position:absolute; bottom:9px; left:50%; transform:translateX(-50%); width:134px; height:5px; border-radius:3px; background:var(--ink); opacity:.32; z-index:6}
+  .navrow{flex:none; display:flex; align-items:center; justify-content:space-between; padding:14px 24px 0}
+  .navrow .back{display:flex; align-items:center; gap:5px; color:var(--accent); font-size:16px}
+  .navrow .share{color:var(--accent)}
+
+  /* session detail */
+  .dhead{flex:none; padding:10px 24px 0}
+  .dhead h3{margin:6px 0 3px; font-size:22px; font-weight:700; letter-spacing:-.015em; line-height:1.25}
+  .dhead .m{font:400 12.5px/1.5 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3)}
+  .qleft{margin:16px 24px 0; border:1px solid var(--line); border-radius:20px; background:var(--surface); padding:19px 20px 15px}
+  .qleft .k{display:flex; align-items:center; gap:8px; font-size:10.5px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); margin-bottom:11px}
+  .qleft .k i{width:7px; height:7px; border-radius:50%; background:var(--accent); font-style:normal}
+  .qleft .q{font-size:18px; line-height:1.45; letter-spacing:-.008em}
+  .qleft .meta{margin-top:12px; padding-top:11px; border-top:1px solid var(--line);
+    font:400 11.5px/1.5 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3)}
+  .player{flex:none; margin:16px 24px 0; display:flex; align-items:center; gap:12px}
+  .pbtn{flex:none; width:40px; height:40px; border-radius:50%; border:1px solid var(--line); background:var(--surface);
+    display:flex; align-items:center; justify-content:center}
+  .pbtn i{width:0; height:0; border-left:11px solid var(--ink); border-top:7px solid transparent; border-bottom:7px solid transparent; margin-left:3px}
+  .track{flex:1; height:3px; border-radius:2px; background:var(--track); position:relative}
+  .track .played{position:absolute; left:0; top:0; bottom:0; width:34%; border-radius:2px; background:var(--accent)}
+  .track .knob{position:absolute; left:34%; top:50%; transform:translate(-50%,-50%); width:11px; height:11px; border-radius:50%; background:var(--ink)}
+  .ptime{font:400 11.5px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3)}
+  .flow{flex:1; overflow:hidden; padding:18px 24px 0}
+  .utt{display:flex; gap:14px; margin-bottom:16px}
+  .utt .ts{flex:none; width:38px; font:400 11px/1.75 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3); text-align:right}
+  .utt .ts.hot{color:var(--accent)}
+  .utt p{margin:0; font-size:14.5px; line-height:1.6}
+  .utt.q p{color:var(--accent-ink); font-style:italic; border-left:2px solid var(--accent); padding-left:12px}
+  .footrow{flex:none; display:flex; gap:10px; padding:14px 24px 44px}
+  .fbtn{flex:1; border:1px solid var(--line); background:var(--surface); color:var(--ink); border-radius:14px;
+    font-size:13.5px; font-weight:600; padding:12px 0; display:flex; align-items:center; justify-content:center; gap:8px}
+  .fbtn.quiet{color:var(--ink2); font-weight:500}
+
+  /* idea page */
+  .ipage{flex:1; overflow:hidden; padding:6px 26px 0}
+  .ipage .k{font-size:10.5px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--accent)}
+  .ipage h3{margin:10px 0 4px; font-size:24px; font-weight:700; letter-spacing:-.02em; line-height:1.28}
+  .ipage .byline{font-size:12.5px; color:var(--ink3); margin-bottom:6px}
+  .ipage h4{margin:20px 0 6px; font-size:12px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ink2)}
+  .ipage p{margin:0 0 12px; font-size:14.5px; line-height:1.66}
+  .cite{font:400 10.5px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--accent); background:var(--accent-dim);
+    border-radius:7px; padding:2.5px 6px; white-space:nowrap}
+  .ipage .openq{margin-top:16px; border-top:1px solid var(--line); padding-top:13px; font-size:14px; font-style:italic; color:var(--accent-ink); line-height:1.5}
+  .ipage .actions{margin-top:16px; border:1px solid var(--line); border-radius:16px; background:var(--surface); padding:14px 16px}
+  .ipage .actions .ak{font-size:10.5px; font-weight:600; letter-spacing:.18em; text-transform:uppercase; color:var(--ink3); margin-bottom:9px}
+  .acti{display:flex; gap:10px; align-items:baseline; font-size:13.5px; line-height:1.5; padding:5px 0}
+  .acti .box{flex:none; width:15px; height:15px; border:1.5px solid var(--ink3); border-radius:5px; position:relative; top:2px}
+
+  /* next actions sheet */
+  .dim .navrow,.dim .dhead,.dim .ipage{opacity:.25}
+  .sheet{position:absolute; left:0; right:0; bottom:0; z-index:4; background:var(--surface);
+    border:1px solid var(--line); border-bottom:0; border-radius:26px 26px 0 0; padding:0 24px 46px}
+  .grab{width:38px; height:5px; border-radius:3px; background:var(--ink3); opacity:.5; margin:10px auto 14px}
+  .sheet h4{margin:0 0 4px; font-size:17px; font-weight:700}
+  .sheet .s{font-size:13px; color:var(--ink2); margin:0 0 14px; line-height:1.5}
+  .cand{display:flex; gap:12px; align-items:flex-start; padding:12px 2px; border-top:1px solid var(--line)}
+  .cand .box{flex:none; width:20px; height:20px; border-radius:7px; border:1.5px solid var(--ink3); margin-top:1px; position:relative}
+  .cand .box.on{background:var(--accent); border-color:var(--accent)}
+  .cand .box.on::after{content:""; position:absolute; left:6px; top:2.5px; width:5px; height:9px;
+    border:solid var(--page); border-width:0 2px 2px 0; transform:rotate(40deg)}
+  .cand p{margin:0; font-size:14.5px; line-height:1.5}
+  .cand .said{display:block; margin-top:3px; font:400 11px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3)}
+  .sheet .go{margin-top:16px; width:100%; border:0; border-radius:15px; background:var(--accent); color:var(--page);
+    font-size:15px; font-weight:600; padding:14px 0}
+  .sheet .never{margin-top:12px; text-align:center; font-size:12px; color:var(--ink3)}
+</style>
+
+<header class="page">
+  <div class="crumb"><a href="index.html">← mockups</a> · shutupandlisten</div>
+  <h1>The session's afterlife — nothing generated unless asked</h1>
+  <p>Ending a session lands here (no more “Saved to library” toast). The page leads with
+  <b>the question you left with</b> — the listener's one earned output, replayed at zero risk — over the raw
+  transcript, which stays the primary artifact. One quiet button offers more: an <b>idea page</b>, cleaned
+  prose in the thinker's own voice with timestamp citations. It is cached on the record, never replaces the
+  transcript, and never appears unbidden. Session shown: the first reading-app session, Jun 12.</p>
+</header>
+
+<div class="row">
+
+  <!-- ══════════ FRAME 1 · SESSION DETAIL (DEFAULT) ══════════ -->
+  <section class="study">
+    <h2>1 · Session detail — the default view</h2>
+    <p class="sub">What every session becomes, with zero model calls.</p>
+    <div class="device">
+      <span class="pin" style="top:225px; right:-2px">1</span>
+      <span class="pin" style="top:395px; left:-2px">2</span>
+      <span class="pin" style="top:772px; right:-2px">3</span>
+      <div class="screen">
+        <div class="island"></div>
+        <div class="statusbar"><span>23:04</span>
+          <span class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 9.5 5.7 7.2a3.3 3.3 0 0 1 4.6 0L8 9.5Z"/><path d="M3.6 5.1a6.3 6.3 0 0 1 8.8 0l-1.5 1.5a4.2 4.2 0 0 0-5.8 0L3.6 5.1Z" opacity=".85"/><path d="M1.4 2.9a9.4 9.4 0 0 1 13.2 0l-1.5 1.5a7.3 7.3 0 0 0-10.2 0L1.4 2.9Z" opacity=".6"/></svg>
+            <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="2" fill="currentColor"/><path d="M23 4v4a2.2 2.2 0 0 0 0-4Z" fill="currentColor" opacity=".4"/></svg>
+          </span>
+        </div>
+        <div class="navrow">
+          <span class="back"><svg width="10" height="17" viewBox="0 0 10 17" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 1.5 2 8.5l6.5 7"/></svg>Library</span>
+          <span class="share"><svg width="17" height="21" viewBox="0 0 17 21" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8.5 1.5v12M5 4.5l3.5-3 3.5 3"/><path d="M3.5 9.5H2.5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg></span>
+        </div>
+        <div class="dhead">
+          <h3>A reading app that doesn't show you progress</h3>
+          <div class="m">Fri Jun 12 · 22:48 · 12:36 · Reading app thread</div>
+        </div>
+        <div class="qleft">
+          <div class="k"><i></i>The question you left with</div>
+          <div class="q">You said you start reading to move the number — with the number gone, what makes someone open the app again tomorrow?</div>
+          <div class="meta">asked at 04:47 · you answered it at 05:20 · picked up again Jun 19</div>
+        </div>
+        <div class="player">
+          <span class="pbtn"><i></i></span>
+          <div class="track"><div class="played"></div><div class="knob"></div></div>
+          <span class="ptime">04:21&thinsp;/&thinsp;12:36</span>
+        </div>
+        <div class="flow">
+          <div class="utt"><span class="ts">00:12</span><p>Okay, so the idea is a reading app that doesn't show you progress.</p></div>
+          <div class="utt"><span class="ts">00:41</span><p>Every reading app I've used turns a book into a task — forty-seven percent done, twelve minutes left in this chapter — and I've noticed I start reading to move the number instead of reading to actually read,</p></div>
+          <div class="utt"><span class="ts hot">01:58</span><p>so this one just hides all of it. No percentage, no time left, no streak. Maybe at the very end it tells you you finished. That's the whole thing.</p></div>
+          <div class="utt q"><span class="ts">04:47</span><p>You said you start reading to move the number — with the number gone, what makes someone open the app again tomorrow?</p></div>
+          <div class="utt"><span class="ts">05:20</span><p>Huh. Yeah, that's the tension, isn't it. The streak is the hook and I'm removing the hook…</p></div>
+        </div>
+        <div class="footrow">
+          <button class="fbtn">
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 1.5h10v12h-10z" rx="2"/><path d="M5 5h5M5 7.5h5M5 10h3"/></svg>
+            Make an idea page
+          </button>
+          <button class="fbtn quiet">Export</button>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">1</span><div><b>The crown jewel leads.</b> “The question you left with” replays what the listener already said — zero model calls, zero risk (C1). The meta line shows whether you answered it, computed from your own following words.</div></li>
+      <li><span class="n">2</span><div><b>Transcript ↔ audio are one thing.</b> The playing utterance's timestamp turns ember; tapping any stamp seeks the recording (W1a per-utterance <code>startMs</code>). Flowing prose, margin stamps — same grammar as the live sheet.</div></li>
+      <li><span class="n">3</span><div><b>The restraint is visible:</b> this page is complete without any generation. “Make an idea page” is a quiet bordered button, not a banner; “Export” ships the richer Markdown (frontmatter + timestamps + open question).</div></li>
+      <li><span class="n"> </span><div><b>Landing here on End</b> gives the session an ending — recap, artifact, and route back to the thread in one screen.</div></li>
+    </ul>
+  </section>
+
+  <!-- ══════════ FRAME 2 · THE IDEA PAGE ══════════ -->
+  <section class="study">
+    <h2>2 · The idea page — your words, cleaned</h2>
+    <p class="sub">Made on request, cached on the record. The transcript stays one tab away.</p>
+    <div class="device">
+      <span class="pin" style="top:262px; left:-2px">4</span>
+      <span class="pin" style="top:455px; right:-2px">5</span>
+      <span class="pin" style="top:678px; left:-2px">6</span>
+      <div class="screen">
+        <div class="island"></div>
+        <div class="statusbar"><span>23:06</span>
+          <span class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 9.5 5.7 7.2a3.3 3.3 0 0 1 4.6 0L8 9.5Z"/><path d="M3.6 5.1a6.3 6.3 0 0 1 8.8 0l-1.5 1.5a4.2 4.2 0 0 0-5.8 0L3.6 5.1Z" opacity=".85"/><path d="M1.4 2.9a9.4 9.4 0 0 1 13.2 0l-1.5 1.5a7.3 7.3 0 0 0-10.2 0L1.4 2.9Z" opacity=".6"/></svg>
+            <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="2" fill="currentColor"/><path d="M23 4v4a2.2 2.2 0 0 0 0-4Z" fill="currentColor" opacity=".4"/></svg>
+          </span>
+        </div>
+        <div class="navrow">
+          <span class="back"><svg width="10" height="17" viewBox="0 0 10 17" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 1.5 2 8.5l6.5 7"/></svg>Transcript</span>
+          <span class="share"><svg width="17" height="21" viewBox="0 0 17 21" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8.5 1.5v12M5 4.5l3.5-3 3.5 3"/><path d="M3.5 9.5H2.5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg></span>
+        </div>
+        <div class="ipage">
+          <div class="k">Idea page · in your words</div>
+          <h3>A reading app that doesn't show you progress</h3>
+          <div class="byline">From the session of Jun 12 · every line traceable · citations play the tape</div>
+
+          <h4>The number problem</h4>
+          <p>Every reading app I've used turns a book into a task — forty-seven percent done, twelve
+          minutes left in this chapter. I start reading to move the number instead of reading to
+          actually read. <span class="cite">00:41</span></p>
+
+          <h4>Hide all of it</h4>
+          <p>So this one hides all of it. No percentage, no time left, no streak. You open it and
+          you're in the text, that's it. Maybe at the very end it tells you you finished.
+          <span class="cite">01:58</span></p>
+
+          <h4>Where it gets hard</h4>
+          <p>The streak is the hook, and I'm removing the hook. The thing that pulls you back has to
+          be the book itself — which means the whole job of the app shifts to how you pick what to
+          read next. <span class="cite">05:20</span> I should sketch the empty shelf screen this
+          weekend and see if it holds up without a single number on it. <span class="cite">07:12</span></p>
+
+          <div class="openq">Left open: with the number gone, what makes someone open the app again tomorrow? <span class="cite">04:47</span></div>
+
+          <div class="actions">
+            <div class="ak">Things you said you'd do</div>
+            <div class="acti"><span class="box"></span>Sketch the empty shelf screen this weekend <span class="cite">07:12</span></div>
+          </div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">4</span><div><b>Extractive-leaning, order-preserving.</b> Filler removed, grammar smoothed, nothing invented — headings come from the thinker's own pivots, not an outline the model preferred. The no-summarize rubric becomes the distill prompt's constraints.</div></li>
+      <li><span class="n">5</span><div><b>Every paragraph carries its timestamp</b> — tap a cite to hear yourself say it. Traceability is the proof that this is your page, not a consultant's memo.</div></li>
+      <li><span class="n">6</span><div><b>Next-actions are quotes too:</b> only imperatives you actually said (“I should sketch…”), each cited. Checking one opens the confirm sheet (frame 3) — nothing is ever auto-created.</div></li>
+      <li><span class="n"> </span><div><b>Where it runs:</b> on-device foundation model preferred (library never touches the network); else a stateless, metered <code>/v1/distill</code> shaped exactly like the coverage endpoint. Cached on the record; regenerate or delete anytime.</div></li>
+    </ul>
+  </section>
+
+  <!-- ══════════ FRAME 3 · NEXT ACTIONS SHEET ══════════ -->
+  <section class="study">
+    <h2>3 · Next actions — opt-in, quoted, confirmed</h2>
+    <p class="sub">A slice of the idea page, offered as checkboxes into Reminders.</p>
+    <div class="device">
+      <span class="pin" style="top:520px; left:-2px">7</span>
+      <span class="pin" style="top:735px; right:-2px">8</span>
+      <div class="screen dim">
+        <div class="island"></div>
+        <div class="statusbar"><span>23:07</span>
+          <span class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 9.5 5.7 7.2a3.3 3.3 0 0 1 4.6 0L8 9.5Z"/><path d="M3.6 5.1a6.3 6.3 0 0 1 8.8 0l-1.5 1.5a4.2 4.2 0 0 0-5.8 0L3.6 5.1Z" opacity=".85"/><path d="M1.4 2.9a9.4 9.4 0 0 1 13.2 0l-1.5 1.5a7.3 7.3 0 0 0-10.2 0L1.4 2.9Z" opacity=".6"/></svg>
+            <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="2" fill="currentColor"/><path d="M23 4v4a2.2 2.2 0 0 0 0-4Z" fill="currentColor" opacity=".4"/></svg>
+          </span>
+        </div>
+        <div class="navrow">
+          <span class="back"><svg width="10" height="17" viewBox="0 0 10 17" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 1.5 2 8.5l6.5 7"/></svg>Transcript</span>
+        </div>
+        <div class="ipage">
+          <div class="k">Idea page · in your words</div>
+          <h3>A reading app that doesn't show you progress</h3>
+          <div class="byline">From the session of Jun 12</div>
+          <h4>The number problem</h4>
+          <p>Every reading app I've used turns a book into a task — forty-seven percent done, twelve
+          minutes left in this chapter…</p>
+        </div>
+        <div class="sheet">
+          <div class="grab"></div>
+          <h4>Things you said you'd do</h4>
+          <p class="s">In your words, from this session. Nothing is added to Reminders until you say so.</p>
+          <div class="cand">
+            <span class="box on"></span>
+            <p>Sketch the empty shelf screen this weekend
+              <span class="said">“I should sketch the empty shelf screen this weekend” · 07:12</span></p>
+          </div>
+          <div class="cand">
+            <span class="box"></span>
+            <p>Look at how physical bookshops surface the next book
+              <span class="said">“I want to go look at how bookshops do it” · 09:48</span></p>
+          </div>
+          <button class="go">Add 1 to Reminders</button>
+          <div class="never">It will never create a reminder on its own.</div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">7</span><div><b>Candidates are verbatim-backed.</b> Each row shows the cleaned imperative <i>and</i> the exact words + timestamp it came from. If the model can't cite it, it can't offer it.</div></li>
+      <li><span class="n">8</span><div><b>Explicit commit, counted.</b> “Add 1 to Reminders” — the number restates consent. The closing line is the contract: opt-in forever, auto-create never (C3's premise-risk line).</div></li>
+      <li><span class="n"> </span><div><b>Task management is not the product.</b> This sheet exists only because losing your own stated intentions in a 20-minute ramble is a real loss; it stays two taps deep.</div></li>
+    </ul>
+  </section>
+
+</div>

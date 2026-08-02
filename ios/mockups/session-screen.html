@@ -1,0 +1,374 @@
+<!-- shutupandlisten · mockup · live session screen -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session screen — shutupandlisten mockups</title>
+<style>
+  /* ───────────────────────── identity tokens ─────────────────────────
+     Palette: "night paper & ember" — dark is the showcase.
+     One accent. Everything else is ink on near-black.               */
+  :root{
+    --page:#08090B;            /* page behind the devices            */
+    --bg:#0B0D10;              /* in-app background                  */
+    --surface:#12151A;         /* cards, sheets                      */
+    --raised:#191D23;          /* pressed / elevated                 */
+    --ink:#E9E4DA;             /* warm paper white                   */
+    --ink2:#8E9298;            /* secondary                          */
+    --ink3:#565B62;            /* faint                              */
+    --line:#20242B;            /* hairline                           */
+    --track:rgba(233,228,218,.09);
+    --accent:#D9A15E;          /* ember — the only color             */
+    --accent-ink:#E7BE8A;
+    --accent-dim:rgba(217,161,94,.13);
+    --bezel:#000;
+    --shadow:0 34px 80px rgba(0,0,0,.55);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --page:#EFEDE7; --bg:#F7F5F0; --surface:#FFFFFF; --raised:#FBFAF6;
+      --ink:#20232A; --ink2:#5E636B; --ink3:#9EA2A9; --line:#E5E1D8;
+      --track:rgba(30,33,42,.10);
+      --accent:#96661F; --accent-ink:#7C5316; --accent-dim:rgba(150,102,31,.10);
+      --bezel:#101114;
+      --shadow:0 24px 60px rgba(70,58,34,.16);
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--page); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent); text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* ── page chrome ── */
+  header.page{padding:44px 44px 6px; max-width:1780px}
+  .crumb{font-size:13px; color:var(--ink3); letter-spacing:.02em}
+  header.page h1{font-size:23px; font-weight:600; letter-spacing:-.01em; margin:10px 0 8px}
+  header.page p{max-width:66ch; color:var(--ink2); font-size:15px; line-height:1.6; margin:0}
+  header.page p b{color:var(--ink); font-weight:600}
+  .row{display:flex; gap:44px; overflow-x:auto; padding:26px 44px 60px; align-items:flex-start}
+  .study{flex:none; width:415px}
+  .study h2{font-size:12px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ink3); margin:0 0 4px 6px}
+  .study .sub{font-size:13px; color:var(--ink2); margin:0 0 14px 6px; line-height:1.5}
+  .notes{list-style:none; margin:16px 2px 0; padding:0; border-top:1px solid var(--line)}
+  .notes li{display:flex; gap:10px; padding:10px 4px; border-bottom:1px solid var(--line); font-size:13px; line-height:1.55; color:var(--ink2)}
+  .notes b{color:var(--ink); font-weight:600}
+  .notes .n{flex:none; width:17px; height:17px; margin-top:1px; border-radius:50%; background:var(--accent);
+    color:var(--page); font:600 10.5px/17px system-ui; text-align:center}
+
+  /* ── iPhone frame ── */
+  .device{position:relative; width:415px; padding:11px; background:var(--bezel); border-radius:64px; box-shadow:var(--shadow)}
+  .screen{position:relative; width:393px; height:852px; border-radius:54px; overflow:hidden; background:var(--bg); display:flex; flex-direction:column}
+  .island{position:absolute; top:12px; left:50%; transform:translateX(-50%); width:122px; height:36px; border-radius:19px; background:#000; z-index:5}
+  .statusbar{flex:none; height:56px; display:flex; align-items:center; justify-content:space-between; padding:14px 36px 0; font-size:15px; font-weight:600}
+  .statusbar .icons{display:flex; gap:7px; align-items:center; opacity:.92}
+  .homebar{position:absolute; bottom:9px; left:50%; transform:translateX(-50%); width:134px; height:5px; border-radius:3px; background:var(--ink); opacity:.32; z-index:6}
+  .pin{position:absolute; z-index:9; width:18px; height:18px; border-radius:50%; background:var(--accent);
+    color:var(--page); font:600 11px/18px system-ui; text-align:center; box-shadow:0 0 0 5px var(--accent-dim)}
+
+  /* ── session layout ── */
+  .session-top{flex:none; text-align:center; padding-top:26px}
+  .elapsed{font:500 14px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink2); letter-spacing:.04em}
+  .stateword{margin-top:9px; font-size:11px; font-weight:600; letter-spacing:.22em; text-transform:uppercase; color:var(--ink3)}
+  .stage{flex:1; display:flex; align-items:center; justify-content:center; position:relative}
+  .peek{flex:none; margin:0 44px 18px; padding:11px 14px; display:flex; align-items:center; gap:10px;
+    border:1px solid var(--line); border-radius:14px; background:var(--surface)}
+  .peek span{flex:1; font-size:13px; line-height:1.4; color:var(--ink2); white-space:nowrap; overflow:hidden;
+    -webkit-mask-image:linear-gradient(90deg,transparent,#000 34px); mask-image:linear-gradient(90deg,transparent,#000 34px);
+    direction:rtl; text-align:left}
+  .peek svg{flex:none; opacity:.5}
+  .controls{flex:none; display:flex; justify-content:space-between; padding:0 60px 40px}
+  .ctl{display:flex; flex-direction:column; align-items:center; gap:8px; background:none; border:0; color:var(--ink2); padding:0}
+  .ctl .disc{width:54px; height:54px; border-radius:50%; border:1px solid var(--line); background:var(--surface);
+    display:flex; align-items:center; justify-content:center}
+  .ctl .lbl{font-size:10px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ink3)}
+
+  /* ── the patience ring ── */
+  .breath{position:relative; width:284px; height:284px; animation:breathe 5.8s ease-in-out infinite}
+  .ring{position:absolute; inset:0}
+  .ring .trackc{stroke:var(--track); stroke-width:2; fill:none}
+  .ring .arc{stroke:var(--accent); stroke-width:2.5; fill:none; stroke-linecap:round;
+    stroke-dasharray:817; stroke-dashoffset:817; transform:rotate(-90deg); transform-origin:50% 50%}
+  .glow{position:absolute; inset:52px; border-radius:50%;
+    background:radial-gradient(circle, var(--accent-dim) 0%, transparent 68%); opacity:0}
+  @keyframes breathe{0%,100%{transform:scale(1)} 50%{transform:scale(1.03)}}
+  /* voice: the glow answers the mic while the thinker talks */
+  .s-listening .glow{animation:voice 2.9s ease-in-out infinite}
+  @keyframes voice{0%,100%{opacity:.5; transform:scale(.96)} 28%{opacity:.9; transform:scale(1.02)}
+    55%{opacity:.6; transform:scale(.98)} 78%{opacity:.95; transform:scale(1.04)}}
+  /* patience: a pause fills the arc; resumed speech dissolves it — looped as a demo */
+  .s-waiting .arc{animation:patience 9s ease-in-out infinite}
+  .s-waiting .glow{opacity:.28}
+  @keyframes patience{
+    0%   {stroke-dashoffset:817; opacity:0}
+    7%   {opacity:.95}
+    60%  {stroke-dashoffset:286; opacity:.95}   /* the pause, filling */
+    72%  {stroke-dashoffset:286; opacity:.95}   /* holding…           */
+    86%  {stroke-dashoffset:300; opacity:0}     /* speech resumed — dissolve */
+    100% {stroke-dashoffset:817; opacity:0}
+  }
+
+  /* ── the question moment ── */
+  .s-question .session-top,.s-question .peek,.s-question .controls{opacity:.26}
+  .qstage{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:0 34px; cursor:pointer}
+  .qdot{width:11px; height:11px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 22px 6px var(--accent-dim); margin-bottom:30px; animation:settle 1.4s ease-out both}
+  .qcard{background:var(--surface); border:1px solid var(--line); border-radius:22px; padding:26px 26px 22px;
+    animation:rise 1.2s .25s cubic-bezier(.2,.7,.2,1) both}
+  .qcard .k{font-size:10.5px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); margin-bottom:14px}
+  .qcard .q{font-size:24px; line-height:1.42; font-weight:400; letter-spacing:-.008em; color:var(--ink)}
+  .qcard .meta{margin-top:18px; padding-top:14px; border-top:1px solid var(--line);
+    font:400 12px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3); letter-spacing:.03em}
+  .speaking{display:flex; gap:5px; margin-top:26px}
+  .speaking i{width:4px; height:4px; border-radius:50%; background:var(--ink3); animation:sp 1.3s ease-in-out infinite}
+  .speaking i:nth-child(2){animation-delay:.18s} .speaking i:nth-child(3){animation-delay:.36s}
+  @keyframes sp{0%,100%{opacity:.25} 50%{opacity:.9}}
+  @keyframes settle{from{transform:scale(3.4); opacity:0} to{transform:scale(1); opacity:1}}
+  @keyframes rise{from{transform:translateY(16px); opacity:0} to{transform:translateY(0); opacity:1}}
+
+  /* ── transcript sheet (peek, expanded) ── */
+  .s-sheet .stage{opacity:.3}
+  .sheet{position:absolute; left:0; right:0; bottom:0; top:295px; z-index:4; background:var(--surface);
+    border:1px solid var(--line); border-bottom:0; border-radius:26px 26px 0 0; display:flex; flex-direction:column}
+  .grab{flex:none; width:38px; height:5px; border-radius:3px; background:var(--ink3); opacity:.5; margin:10px auto 4px}
+  .sheet .shead{flex:none; display:flex; align-items:baseline; justify-content:space-between; padding:8px 24px 12px; border-bottom:1px solid var(--line)}
+  .sheet .shead .t{font-size:11px; font-weight:600; letter-spacing:.18em; text-transform:uppercase; color:var(--ink3)}
+  .sheet .shead .d{font-size:12px; color:var(--ink3)}
+  .flow{flex:1; overflow:hidden; padding:18px 24px 0}
+  .utt{display:flex; gap:14px; margin-bottom:18px}
+  .utt .ts{flex:none; width:38px; font:400 11px/1.7 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3); text-align:right}
+  .utt p{margin:0; font-size:15px; line-height:1.62; color:var(--ink)}
+  .utt.q p{color:var(--accent-ink); font-style:italic; border-left:2px solid var(--accent); padding-left:12px}
+  .sheet .sfoot{flex:none; display:flex; justify-content:space-between; align-items:center; padding:14px 24px 46px; border-top:1px solid var(--line)}
+  .endbtn{border:1px solid var(--line); background:var(--raised); color:var(--ink); border-radius:22px;
+    font-size:14px; font-weight:600; padding:11px 22px}
+  .ghost{background:none; border:0; color:var(--ink3); font-size:13px}
+
+  /* variant strip */
+  .variant{margin-top:14px; width:393px; margin-left:11px; border:1px solid var(--line); border-radius:16px; background:var(--surface); padding:12px 16px; display:flex; gap:10px; align-items:center}
+  .variant .vdot{flex:none; width:7px; height:7px; border-radius:50%; background:var(--ink3)}
+  .variant p{margin:0; font-size:13px; color:var(--ink2); line-height:1.45}
+  .variant b{color:var(--ink)}
+
+  @media (prefers-reduced-motion: reduce){ *{animation:none !important} .s-waiting .arc{stroke-dashoffset:286; opacity:.95} }
+</style>
+
+<header class="page">
+  <div class="crumb"><a href="index.html">← mockups</a> · shutupandlisten</div>
+  <h1>The live session — the waiting is the interface</h1>
+  <p>One screen, three calm states, no chrome. The <b>patience ring</b> replaces the five-color debug
+  taxonomy: it breathes while you talk, quietly fills during a pause, and dissolves the moment you resume —
+  the machine visibly holding its tongue. The transcript is demoted to a one-line peek. When a thought
+  finally lands, the screen itself goes quiet and the one earned question is staged alone.
+  Running example: the reading-app idea from <code>prompts/claude.md</code>.</p>
+</header>
+
+<div class="row">
+
+  <!-- ══════════ STATE 1 · LISTENING ══════════ -->
+  <section class="study">
+    <h2>1 · Listening</h2>
+    <p class="sub">The thinker is mid-sentence. Nothing on screen asks for attention.</p>
+    <div class="device">
+      <span class="pin" style="top:335px; left:-2px">1</span>
+      <span class="pin" style="top:700px; left:24px">2</span>
+      <span class="pin" style="top:775px; right:-2px">3</span>
+      <div class="screen s-listening">
+        <div class="island"></div>
+        <div class="statusbar"><span>11:24</span>
+          <span class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 9.5 5.7 7.2a3.3 3.3 0 0 1 4.6 0L8 9.5Z"/><path d="M3.6 5.1a6.3 6.3 0 0 1 8.8 0l-1.5 1.5a4.2 4.2 0 0 0-5.8 0L3.6 5.1Z" opacity=".85"/><path d="M1.4 2.9a9.4 9.4 0 0 1 13.2 0l-1.5 1.5a7.3 7.3 0 0 0-10.2 0L1.4 2.9Z" opacity=".6"/></svg>
+            <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="2" fill="currentColor"/><path d="M23 4v4a2.2 2.2 0 0 0 0-4Z" fill="currentColor" opacity=".4"/></svg>
+          </span>
+        </div>
+        <div class="session-top"><div class="elapsed">03:12</div><div class="stateword">listening</div></div>
+        <div class="stage">
+          <div class="breath">
+            <svg class="ring" width="284" height="284" viewBox="0 0 284 284">
+              <circle class="trackc" cx="142" cy="142" r="130"/>
+              <circle class="arc" cx="142" cy="142" r="130"/>
+            </svg>
+            <div class="glow"></div>
+          </div>
+        </div>
+        <div class="peek"><span>&#x200E;…I start reading to move the number instead of reading to actually read&#x200E;</span>
+          <svg width="12" height="8" viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 6.5 6 1.5l5 5"/></svg>
+        </div>
+        <div class="controls">
+          <button class="ctl"><span class="disc">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="4.5"/><path d="M11.4 11.4c2.6 2.6 3.4 5.2 6.6 6.6"/></svg>
+          </span><span class="lbl">pull a thread</span></button>
+          <button class="ctl"><span class="disc">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2.5" y="2.5" width="11" height="11" rx="3"/></svg>
+          </span><span class="lbl">end</span></button>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">1</span><div><b>The patience ring is the whole screen.</b> 2&thinsp;px hairline track, breathing at 5.8&thinsp;s — calm even when nothing happens. No state dots, no dB meter, no progress bar strip.</div></li>
+      <li><span class="n">2</span><div><b>Voice is light, not text.</b> A soft ember glow inside the ring answers the mic level — proof it's alive without streaming words at you. Machine states <i>listening/talking</i> collapse into this one word + glow.</div></li>
+      <li><span class="n">3</span><div><b>Transcript peek:</b> the last line only, right-anchored with a fade, so the eye can confirm capture and leave. Tap or drag up to expand (state 4). No streaming partials center-stage — that invites self-editing.</div></li>
+      <li><span class="n"> </span><div><b>Two verbs only:</b> <i>pull a thread</i> (invite the one question now — bypasses the gate's earned spacing) and <i>end</i>. Knobs, gear and checklist are gone from the live screen entirely.</div></li>
+    </ul>
+    <div class="variant"><span class="vdot"></span><p><b>Degraded, not broken:</b> if the model is unreachable the only change is a quiet caption under the elapsed time — <i>“offline — still recording; questions paused”</i>. Never a modal over the silence.</p></div>
+  </section>
+
+  <!-- ══════════ STATE 2 · WAITING ══════════ -->
+  <section class="study">
+    <h2>2 · Waiting it out</h2>
+    <p class="sub">A pause. The arc fills as the patience window runs — and dissolves when speech resumes.</p>
+    <div class="device">
+      <span class="pin" style="top:300px; right:-2px">4</span>
+      <span class="pin" style="top:520px; left:-2px">5</span>
+      <div class="screen s-waiting">
+        <div class="island"></div>
+        <div class="statusbar"><span>11:25</span>
+          <span class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 9.5 5.7 7.2a3.3 3.3 0 0 1 4.6 0L8 9.5Z"/><path d="M3.6 5.1a6.3 6.3 0 0 1 8.8 0l-1.5 1.5a4.2 4.2 0 0 0-5.8 0L3.6 5.1Z" opacity=".85"/><path d="M1.4 2.9a9.4 9.4 0 0 1 13.2 0l-1.5 1.5a7.3 7.3 0 0 0-10.2 0L1.4 2.9Z" opacity=".6"/></svg>
+            <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="2" fill="currentColor"/><path d="M23 4v4a2.2 2.2 0 0 0 0-4Z" fill="currentColor" opacity=".4"/></svg>
+          </span>
+        </div>
+        <div class="session-top"><div class="elapsed">03:58</div><div class="stateword">waiting it out</div></div>
+        <div class="stage">
+          <div class="breath">
+            <svg class="ring" width="284" height="284" viewBox="0 0 284 284">
+              <circle class="trackc" cx="142" cy="142" r="130"/>
+              <circle class="arc" cx="142" cy="142" r="130"/>
+            </svg>
+            <div class="glow"></div>
+          </div>
+        </div>
+        <div class="peek"><span>&#x200E;…I start reading to move the number instead of reading to actually read,&#x200E;</span>
+          <svg width="12" height="8" viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 6.5 6 1.5l5 5"/></svg>
+        </div>
+        <div class="controls">
+          <button class="ctl"><span class="disc">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="4.5"/><path d="M11.4 11.4c2.6 2.6 3.4 5.2 6.6 6.6"/></svg>
+          </span><span class="lbl">pull a thread</span></button>
+          <button class="ctl"><span class="disc">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2.5" y="2.5" width="11" height="11" rx="3"/></svg>
+          </span><span class="lbl">end</span></button>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">4</span><div><b>State word, not state colors.</b> “waiting it out” is the best copy in the current app, promoted from a footnote. It is the only text that changes. Same ember, lower voltage — no orange/purple semaphore.</div></li>
+      <li><span class="n">5</span><div><b>The arc is the patience window</b> — <code>patienceProgress</code> drawn as stroke offset, starting at 12 o'clock. When the EOU veto extends the window (trailing “and…”), the fill visibly <i>slows</i>; sub-floor breaths never move it at all.</div></li>
+      <li><span class="n"> </span><div><b>Resume = dissolve.</b> Speech resetting the window plays as the arc melting back over ~400&thinsp;ms, not snapping. The loop shown here is the demo; live, fill duration comes from the actual deadline.</div></li>
+      <li><span class="n"> </span><div><b>Declines are invisible.</b> A window that closes and gets declined (gate says <i>silence</i>) just dissolves the arc — the thinker was never interrupted, so the UI shows nothing. No spinner, no “deciding” state.</div></li>
+    </ul>
+  </section>
+
+  <!-- ══════════ STATE 3 · THE QUESTION ══════════ -->
+  <section class="study">
+    <h2>3 · The question moment</h2>
+    <p class="sub">The idea landed. The screen quiets, the ring settles to a point, one question is staged.</p>
+    <div class="device">
+      <span class="pin" style="top:285px; left:-2px">6</span>
+      <span class="pin" style="top:420px; right:-2px">7</span>
+      <div class="screen s-question">
+        <div class="island"></div>
+        <div class="statusbar"><span>11:26</span>
+          <span class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 9.5 5.7 7.2a3.3 3.3 0 0 1 4.6 0L8 9.5Z"/><path d="M3.6 5.1a6.3 6.3 0 0 1 8.8 0l-1.5 1.5a4.2 4.2 0 0 0-5.8 0L3.6 5.1Z" opacity=".85"/><path d="M1.4 2.9a9.4 9.4 0 0 1 13.2 0l-1.5 1.5a7.3 7.3 0 0 0-10.2 0L1.4 2.9Z" opacity=".6"/></svg>
+            <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="2" fill="currentColor"/><path d="M23 4v4a2.2 2.2 0 0 0 0-4Z" fill="currentColor" opacity=".4"/></svg>
+          </span>
+        </div>
+        <div class="session-top"><div class="elapsed">04:47</div><div class="stateword">its one question</div></div>
+        <div class="qstage" onclick="replay(this)" title="click to replay the staging">
+          <div class="qdot"></div>
+          <div class="qcard">
+            <div class="k">It was listening</div>
+            <div class="q">You said you start reading to move the number — with the number gone, what makes someone open the app again tomorrow?</div>
+            <div class="meta">asked at 04:47 · its only question so far</div>
+          </div>
+          <div class="speaking"><i></i><i></i><i></i></div>
+        </div>
+        <div class="peek" style="visibility:hidden"></div>
+        <div class="controls">
+          <button class="ctl"><span class="disc">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="4.5"/><path d="M11.4 11.4c2.6 2.6 3.4 5.2 6.6 6.6"/></svg>
+          </span><span class="lbl">pull a thread</span></button>
+          <button class="ctl"><span class="disc">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2.5" y="2.5" width="11" height="11" rx="3"/></svg>
+          </span><span class="lbl">end</span></button>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">6</span><div><b>Staged, not appended.</b> Sequence: the filled ring contracts to a single ember point (≈600&thinsp;ms) → one soft haptic (<code>.impact(.soft)</code>) → the card rises onto an emptied screen → TTS speaks it. One diegetic moment instead of a chat bubble labeled “Listener · thread-pull”.</div></li>
+      <li><span class="n">7</span><div><b>The exact anchored question, verbatim</b>, set in the Question style (24/1.42, regular weight). No tier jargon — the label is “It was listening”, which is the claim the whole product makes. Click the card area here to replay the staging animation.</div></li>
+      <li><span class="n"> </span><div><b>It stays pinned.</b> The card remains until the thinker speaks; their first resumed words fade it back into the transcript (where it lives as the indented ember line, state 4). Barge-in cuts TTS instantly; the card still completes its entrance.</div></li>
+      <li><span class="n"> </span><div><b>Speaking state</b> is just the three quiet dots under the card while TTS plays — the third and last “state”, no pink, no waveform theatre.</div></li>
+    </ul>
+  </section>
+
+  <!-- ══════════ STATE 4 · TRANSCRIPT + END ══════════ -->
+  <section class="study">
+    <h2>4 · Transcript peek, expanded</h2>
+    <p class="sub">Pulled up on demand. A page being written — not a chat with an AI.</p>
+    <div class="device">
+      <span class="pin" style="top:400px; left:-2px">8</span>
+      <span class="pin" style="top:600px; right:-2px">9</span>
+      <span class="pin" style="top:800px; right:-2px">10</span>
+      <div class="screen s-sheet">
+        <div class="island"></div>
+        <div class="statusbar"><span>11:33</span>
+          <span class="icons">
+            <svg width="18" height="11" viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 9.5 5.7 7.2a3.3 3.3 0 0 1 4.6 0L8 9.5Z"/><path d="M3.6 5.1a6.3 6.3 0 0 1 8.8 0l-1.5 1.5a4.2 4.2 0 0 0-5.8 0L3.6 5.1Z" opacity=".85"/><path d="M1.4 2.9a9.4 9.4 0 0 1 13.2 0l-1.5 1.5a7.3 7.3 0 0 0-10.2 0L1.4 2.9Z" opacity=".6"/></svg>
+            <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".5" y=".5" width="21" height="11" rx="3.5" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="14" height="8" rx="2" fill="currentColor"/><path d="M23 4v4a2.2 2.2 0 0 0 0-4Z" fill="currentColor" opacity=".4"/></svg>
+          </span>
+        </div>
+        <div class="session-top"><div class="elapsed">12:40</div><div class="stateword">listening</div></div>
+        <div class="stage">
+          <div class="breath" style="width:200px;height:200px">
+            <svg class="ring" width="200" height="200" viewBox="0 0 284 284" style="width:200px;height:200px">
+              <circle class="trackc" cx="142" cy="142" r="130"/>
+            </svg>
+          </div>
+        </div>
+        <div class="sheet">
+          <div class="grab"></div>
+          <div class="shead"><span class="t">Transcript</span><span class="d">4 thoughts · 12:40</span></div>
+          <div class="flow">
+            <div class="utt"><span class="ts">00:12</span><p>Okay, so the idea is a reading app that doesn't show you progress.</p></div>
+            <div class="utt"><span class="ts">00:41</span><p>Every reading app I've used turns a book into a task — forty-seven percent done, twelve minutes left in this chapter — and I've noticed I start reading to move the number instead of reading to actually read,</p></div>
+            <div class="utt"><span class="ts">01:58</span><p>so this one just hides all of it. No percentage, no time left, no streak. Maybe at the very end it tells you you finished. That's the whole thing.</p></div>
+            <div class="utt q"><span class="ts">04:47</span><p>You said you start reading to move the number — with the number gone, what makes someone open the app again tomorrow?</p></div>
+            <div class="utt"><span class="ts">05:20</span><p>Huh. Yeah, that's the tension, isn't it. The streak is the hook and I'm removing the hook. Maybe the thing that pulls you back has to be the book itself…</p></div>
+          </div>
+          <div class="sfoot">
+            <button class="ghost">Close</button>
+            <button class="endbtn">End session</button>
+          </div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="n">8</span><div><b>Flowing prose with margin timestamps</b> — no speaker-labeled bubbles. Your monologue reads as a page being written. Per-utterance <code>startMs</code> (W1a) supplies the stamps; tapping one seeks the recording.</div></li>
+      <li><span class="n">9</span><div><b>The question is an indented ember line</b>, italic, unlabeled. Distinct enough to find later, quiet enough not to frame this as a conversation.</div></li>
+      <li><span class="n">10</span><div><b>Ending has an ending.</b> “End session” — no confirm, no “Saved to library” toast. Stopping lands directly on the saved session's page, headlined by the question it asked (see <a href="idea-page.html">idea-page</a>). Empty sessions are discarded silently, as today.</div></li>
+      <li><span class="n"> </span><div><b>Reading is opt-in.</b> The sheet exists because trust requires seeing the capture — but it must be pulled up. Default posture stays phone-on-table, eyes elsewhere.</div></li>
+    </ul>
+  </section>
+
+</div>
+
+<script>
+  // Replay the question-staging animation on tap (mockup affordance only).
+  function replay(stage){
+    stage.querySelectorAll('.qdot,.qcard').forEach(function(el){
+      el.style.animation='none'; void el.offsetWidth; el.style.animation='';
+    });
+  }
+</script>
+

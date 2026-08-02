@@ -14,7 +14,7 @@ enum AccountError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidBaseURL:
-            return "The server address is not a valid URL. Check it under Settings → Server → Advanced."
+            return "The server address is not a valid URL. Check it under Settings → Developer."
         }
     }
 }
@@ -24,7 +24,7 @@ final class AccountStore: ObservableObject {
     @Published private(set) var isSignedIn = false
     @Published private(set) var userId: String?
 
-    /// The proxy base URL — overridable under Settings → Server → Advanced.
+    /// The proxy base URL — overridable under Settings → Developer.
     @AppStorage("proxyBaseURL") var proxyBaseURL = "https://api.shutupandlisten.sh"
 
     private static let tokenKey = "proxySessionToken"

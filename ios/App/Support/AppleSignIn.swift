@@ -1,7 +1,12 @@
 // Shared Sign in with Apple plumbing: turn an authorization result into the
 // identity-token string the proxy exchanges (server/API.md POST /v1/auth/apple),
 // or a user-facing failure. Used by onboarding and Settings.
+//
+// Gated on APPLE_SIGN_IN: the capability cannot be provisioned by a free/
+// personal Apple Developer team, so personal-token builds compile this out and
+// rely on Developer mode (BYOK). See ios/README.md → Building.
 
+#if APPLE_SIGN_IN
 import AuthenticationServices
 import Foundation
 
@@ -29,3 +34,4 @@ enum AppleSignIn {
         }
     }
 }
+#endif

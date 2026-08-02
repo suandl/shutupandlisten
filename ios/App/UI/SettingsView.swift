@@ -1,9 +1,21 @@
-// Settings: account (Sign in with Apple / sign out), the proxy server address
-// (tucked under Advanced), listening behaviour, the coverage checklist, and
-// developer mode (the original bring-your-own-key path).
+// Settings, consumer edition: account, listening (the coverage checklist as a
+// preset picker), a short privacy panel, and About. Everything operator-facing
+// — BYOK key, proxy URL, tuning knobs, the acknowledgments toggle — lives in a
+// Developer section that stays hidden until the version row is tapped five
+// times. Nothing was deleted; it is all still here, just gated.
+//
+// Storage contract (do not break): the checklist is stored in
+// @AppStorage("coverageCriteria") as newline-separated topics — the exact
+// string SessionController reads. Presets only FILL that field; the
+// controller's plumbing is untouched. "sessionMode" / "justListen" are the
+// Wave-1b keys the session screen owns; this sheet only OFFERS a mode when a
+// preset suggests one, never sets it silently.
 
+#if APPLE_SIGN_IN
 import AuthenticationServices
+#endif
 import SwiftUI
+import TurnEngine
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -11,24 +23,37 @@ struct SettingsView: View {
     @EnvironmentObject private var accountStore: AccountStore
 
     @State private var apiKey: String = KeychainStore.apiKey ?? ""
-    @AppStorage("speakAcknowledgments") private var speakAcknowledgments = true
+    @AppStorage("speakAcknowledgments") private var speakAcknowledgments = false
     @AppStorage("coverageCriteria") private var coverageCriteriaText = ""
+    @AppStorage("coveragePresetId") private var coveragePresetId = ""
+    @AppStorage("sessionMode") private var sessionModeRaw = SessionMode.open.rawValue
     @AppStorage("proxyBaseURL") private var proxyBaseURL = "https://api.shutupandlisten.sh"
     @AppStorage("hasOnboarded") private var hasOnboarded = false
+    @AppStorage("developerUnlocked") private var developerUnlocked = false
+    @AppStorage("showCostReadout") private var showCostReadout = false
 
+    #if APPLE_SIGN_IN
     @State private var signingIn = false
     @State private var signInError: String?
-    @State private var showAdvanced = false
-    @State private var showDeveloper = false
+    #endif
+    @State private var showKnobs = false
+    @State private var versionTaps = 0
+    /// A preset whose suggested mode differs from the current one — the
+    /// pairing is OFFERED via an alert, never applied silently.
+    @State private var suggestedModeOffer: CoveragePreset?
+
+    private static let customPresetID = "custom"
 
     var body: some View {
         NavigationStack {
             Form {
                 accountSection
-                serverSection
                 listeningSection
-                coverageSection
-                developerSection
+                privacySection
+                aboutSection
+                if developerUnlocked {
+                    developerSection
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -40,6 +65,27 @@ struct SettingsView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showKnobs) { KnobsView() }
+            .alert(
+                "Switch the listener?",
+                isPresented: Binding(
+                    get: { suggestedModeOffer != nil },
+                    set: { if !$0 { suggestedModeOffer = nil } }
+                ),
+                presenting: suggestedModeOffer
+            ) { preset in
+                Button("Use \(preset.suggestedMode.displayName)") {
+                    sessionModeRaw = preset.suggestedMode.rawValue
+                }
+                Button("Keep current", role: .cancel) {}
+            } message: { preset in
+                Text(
+                    "\(preset.name) pairs naturally with the "
+                    + "\(preset.suggestedMode.displayName.lowercased()) listener. "
+                    + "Switch it for your next session?"
+                )
+            }
+            .onAppear(perform: reconcilePresetSelection)
         }
     }
 
@@ -58,6 +104,7 @@ struct SettingsView: View {
                     accountStore.signOut()
                 }
             } else {
+                #if APPLE_SIGN_IN
                 SignInWithAppleButton(.signIn) { request in
                     request.requestedScopes = []
                 } onCompletion: { result in
@@ -78,100 +125,239 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
+                #else
+                Text(
+                    "Sign in with Apple isn't available in this build. Unlock "
+                    + "Developer mode (tap the version row five times) to connect "
+                    + "a personal API key."
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                #endif
             }
         } header: {
             Text("Account")
         } footer: {
             Text(
                 accountStore.isSignedIn
-                    ? "The listener's rare questions go through the shutupandlisten "
-                    + "server. Your audio and running transcript never leave the phone."
-                    : "Sign in so the listener's rare questions can reach the model — "
-                    + "no API key to manage. The app works without it in developer mode."
+                    ? "The listener's rare question travels through the "
+                    + "shutupandlisten server. Your audio and recordings stay "
+                    + "on this phone."
+                    : "Sign in so the listener's rare question can reach the "
+                    + "model — nothing else to set up."
             )
         }
     }
 
-    // ── server ──
+    // ── listening: the coverage checklist as presets ──
 
-    private var serverSection: some View {
-        Section {
-            DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
-                TextField("https://api.shutupandlisten.sh", text: $proxyBaseURL)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            }
-        } header: {
-            Text("Server")
-        } footer: {
-            Text("The base URL the account path talks to. Leave it alone unless "
-                 + "you run your own proxy.")
-        }
+    /// The topics currently active, parsed exactly the way the controller
+    /// parses them — this view only ever writes the same string it reads.
+    private var activeTopics: [String] {
+        coverageCriteriaText
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
-    // ── listening ──
+    /// Picker binding that applies the preset on USER selection only —
+    /// `reconcilePresetSelection` writes the raw key directly, so reopening
+    /// the sheet never re-fires the apply path (or the mode offer).
+    private var presetSelection: Binding<String> {
+        Binding(
+            get: { coveragePresetId },
+            set: { newValue in
+                coveragePresetId = newValue
+                applyPreset(id: newValue)
+            }
+        )
+    }
 
     private var listeningSection: some View {
         Section {
-            Toggle("Speak brief acknowledgments", isOn: $speakAcknowledgments)
+            Picker("Checklist", selection: presetSelection) {
+                Text("None").tag("")
+                ForEach(CoveragePresets.all) { preset in
+                    Text(preset.name).tag(preset.id)
+                }
+                Text("Custom").tag(Self.customPresetID)
+            }
+            if let preset = CoveragePresets.preset(id: coveragePresetId) {
+                Text(preset.blurb)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if coveragePresetId == Self.customPresetID {
+                TextEditor(text: $coverageCriteriaText)
+                    .frame(minHeight: 100)
+            } else if !activeTopics.isEmpty {
+                Text(activeTopics.map { "•  \($0)" }.joined(separator: "\n"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         } header: {
             Text("Listening")
         } footer: {
             Text(
-                "A short finished aside gets a quiet “mm” / “right” with "
-                + "no model call. Turn off for pure silence between "
-                + "thread-pulls."
+                coveragePresetId == Self.customPresetID
+                    ? "One topic per line. The listener quietly makes sure the "
+                    + "session gets to each of them.\n\nPrefer no questions at "
+                    + "all? “Just listen” lives on the session screen."
+                    : "Optional. Pick what a session should cover and the "
+                    + "listener quietly makes sure you get to it.\n\nPrefer no "
+                    + "questions at all? “Just listen” lives on the session "
+                    + "screen."
             )
         }
     }
 
-    // ── coverage checklist ──
+    /// A USER picked something in the checklist picker.
+    private func applyPreset(id: String) {
+        switch id {
+        case "":
+            coverageCriteriaText = ""
+        case Self.customPresetID:
+            break // keep whatever text is there; the editor takes over
+        default:
+            guard let preset = CoveragePresets.preset(id: id) else { return }
+            coverageCriteriaText = preset.criteriaText
+            if preset.suggestedMode != .open,
+               sessionModeRaw != preset.suggestedMode.rawValue {
+                suggestedModeOffer = preset
+            }
+        }
+    }
 
-    private var coverageSection: some View {
+    /// The stored text is the source of truth (the controller reads it, and
+    /// older builds wrote it without a preset id) — on appear, point the
+    /// picker at whatever the text actually is.
+    private func reconcilePresetSelection() {
+        let text = coverageCriteriaText
+        if text.isEmpty {
+            coveragePresetId = ""
+        } else if let match = CoveragePresets.all.first(where: { $0.criteriaText == text }) {
+            coveragePresetId = match.id
+        } else {
+            coveragePresetId = Self.customPresetID
+        }
+    }
+
+    // ── privacy ──
+
+    private var privacySection: some View {
         Section {
-            TextEditor(text: $coverageCriteriaText)
-                .frame(minHeight: 120)
-                .font(.body.monospaced())
+            privacyRow(
+                "mic",
+                "Recordings stay on this phone. Audio is never uploaded to "
+                + "the shutupandlisten server."
+            )
+            privacyRow(
+                "waveform",
+                "Words are written down on-device when your device supports "
+                + "it; otherwise Apple's speech service handles dictation."
+            )
+            privacyRow(
+                "arrow.up.circle",
+                "Transcript text is sent only when the listener speaks up or "
+                + "you ask for a coverage check — never as a running stream."
+            )
+            privacyRow(
+                "externaldrive",
+                "The server keeps no audio and no transcripts — only your "
+                + "sign-in and a daily usage count."
+            )
         } header: {
-            Text("Coverage checklist")
+            Text("Privacy")
+        }
+    }
+
+    private func privacyRow(_ symbol: String, _ text: String) -> some View {
+        Label {
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } icon: {
+            Image(systemName: symbol)
+                .foregroundStyle(.tint)
+        }
+    }
+
+    // ── about (the version row is the developer latch) ──
+
+    private var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = info?["CFBundleVersion"] as? String
+        return build.map { "\(version) (\($0))" } ?? version
+    }
+
+    private var aboutSection: some View {
+        Section {
+            LabeledContent("Version") {
+                Text(versionString)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(perform: versionTapped)
+        } header: {
+            Text("About")
         } footer: {
             Text(
-                "Optional. One topic per line — e.g. the topics a pitch "
-                + "or briefing must cover. The checklist button on the "
-                + "session screen evaluates the recording so far against "
-                + "these, and the thread-pull may steer toward an "
-                + "untouched topic once an idea has landed."
+                developerUnlocked
+                    ? "Developer settings are on."
+                    : "Think out loud. It won't interrupt you."
             )
         }
     }
 
-    // ── developer mode ──
+    private func versionTapped() {
+        guard !developerUnlocked else { return }
+        versionTaps += 1
+        if versionTaps >= 5 {
+            versionTaps = 0
+            developerUnlocked = true
+        }
+    }
+
+    // ── developer (hidden until the version row is tapped five times) ──
 
     private var developerSection: some View {
         Section {
-            DisclosureGroup("Developer mode", isExpanded: $showDeveloper) {
-                SecureField("sk-ant-…", text: $apiKey)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button("Replay onboarding") {
-                    KeychainStore.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    hasOnboarded = false
-                    dismiss()
-                }
+            SecureField("sk-ant-…", text: $apiKey)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            TextField("https://api.shutupandlisten.sh", text: $proxyBaseURL)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Toggle("Speak brief acknowledgments", isOn: $speakAcknowledgments)
+            Toggle("Show model cost readout", isOn: $showCostReadout)
+            Button("Tuning (developer)") { showKnobs = true }
+            Button("Replay onboarding") {
+                KeychainStore.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                hasOnboarded = false
+                dismiss()
             }
+            Button("Hide developer settings") {
+                developerUnlocked = false
+            }
+        } header: {
+            Text("Developer")
         } footer: {
             Text(
-                "A personal Claude API key, stored in the Keychain on this "
-                + "device only. It bypasses the account backend — calls go "
-                + "straight to Anthropic. Signing in takes precedence when "
-                + "both are set.\n\nReplay onboarding shows the intro again on "
-                + "the next return to the library. You stay signed in — only "
-                + "the intro reappears."
+                "Operator surface. The key is a personal Claude API key, "
+                + "Keychain-only, bypassing the account backend — calls go "
+                + "straight to Anthropic; signing in takes precedence when "
+                + "both are set. The URL is the proxy the account path talks "
+                + "to. Acknowledgments are the rules-only “mm” / “right” on "
+                + "short finished asides — no model call either way. Tuning "
+                + "holds the patience sliders and the patience-only baseline "
+                + "arm."
             )
         }
     }
 
+    #if APPLE_SIGN_IN
     private func handleSignIn(_ result: Result<ASAuthorization, Error>) {
         switch AppleSignIn.outcome(of: result) {
         case .cancelled:
@@ -191,4 +377,5 @@ struct SettingsView: View {
             }
         }
     }
+    #endif
 }

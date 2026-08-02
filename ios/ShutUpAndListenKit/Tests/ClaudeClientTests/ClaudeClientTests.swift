@@ -65,6 +65,200 @@ final class ClaudeClientTests: XCTestCase {
         XCTAssertEqual(reply, "keep going")
     }
 
+    // ── respondWithUsage surfaces token usage alongside the text ──
+
+    func testRespondWithUsageDecodesUsageBlock() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"""
+            { "content": [{ "type": "text", "text": "keep going" }],
+              "stop_reason": "end_turn",
+              "usage": { "input_tokens": 10, "output_tokens": 3,
+                         "cache_creation_input_tokens": 4096,
+                         "cache_read_input_tokens": 8192 } }
+            """#
+        )
+
+        let reply = try await makeClient().respondWithUsage(to: makeListenerRequest())
+
+        XCTAssertEqual(reply.text, "keep going")
+        XCTAssertEqual(reply.usage?.inputTokens, 10)
+        XCTAssertEqual(reply.usage?.outputTokens, 3)
+        XCTAssertEqual(reply.usage?.cacheCreationInputTokens, 4096)
+        XCTAssertEqual(reply.usage?.cacheReadInputTokens, 8192)
+    }
+
+    func testRespondWithUsageReturnsUsageEvenWhenSilent() async throws {
+        // Empty text is silence, but the call still cost input tokens.
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"""
+            { "content": [], "stop_reason": "end_turn",
+              "usage": { "input_tokens": 7, "output_tokens": 0,
+                         "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0 } }
+            """#
+        )
+
+        let reply = try await makeClient().respondWithUsage(to: makeListenerRequest())
+
+        XCTAssertEqual(reply.text, "", "empty text is still silence")
+        XCTAssertEqual(reply.usage?.inputTokens, 7)
+    }
+
+    func testRespondWithUsageToleratesMissingUsageBlock() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"{ "content": [{ "type": "text", "text": "hi" }], "stop_reason": "end_turn" }"#
+        )
+
+        let reply = try await makeClient().respondWithUsage(to: makeListenerRequest())
+
+        XCTAssertEqual(reply.text, "hi")
+        XCTAssertNil(reply.usage, "no usage block ⇒ nil, not zeros")
+    }
+
+    // ── the listener path's string + optional-prefix system field ──
+    // (the analyst uses the block-list path instead — see below)
+
+    func testSystemSentAsPlainStringWithoutCachePrefix() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"{ "content": [{ "type": "text", "text": "ok" }], "stop_reason": "end_turn" }"#
+        )
+        _ = try await makeClient().respondWithUsage(to: makeListenerRequest())
+
+        let system = MockURLProtocol.lastRequest?.bodyJSON?["system"]
+        XCTAssertTrue(system is String, "no cache prefix ⇒ plain string system, byte-for-byte as today")
+    }
+
+    func testCachePrefixSplitsSystemIntoCachedAndVolatileBlocks() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"{ "content": [{ "type": "text", "text": "ok" }], "stop_reason": "end_turn" }"#
+        )
+        let request = ListenerRequest(
+            system: "STABLE PREFIX\n\nVOLATILE SUFFIX",
+            messages: [ListenerChatMessage(role: .user, content: "hi")],
+            tier: .reflection,
+            maxTokens: 128,
+            cachedSystemPrefix: "STABLE PREFIX"
+        )
+        _ = try await makeClient().respondWithUsage(to: request)
+
+        let blocks = MockURLProtocol.lastRequest?.bodyJSON?["system"] as? [[String: Any]]
+        XCTAssertEqual(blocks?.count, 2)
+        XCTAssertEqual(blocks?[0]["text"] as? String, "STABLE PREFIX")
+        XCTAssertEqual((blocks?[0]["cache_control"] as? [String: Any])?["type"] as? String, "ephemeral")
+        XCTAssertEqual(blocks?[1]["text"] as? String, "\n\nVOLATILE SUFFIX")
+        XCTAssertNil(blocks?[1]["cache_control"], "only the stable prefix is cached")
+    }
+
+    func testMismatchedCachePrefixFallsBackToPlainStringSystem() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"{ "content": [{ "type": "text", "text": "ok" }], "stop_reason": "end_turn" }"#
+        )
+        let request = ListenerRequest(
+            system: "ACTUAL SYSTEM TEXT",
+            messages: [ListenerChatMessage(role: .user, content: "hi")],
+            tier: .reflection,
+            maxTokens: 128,
+            cachedSystemPrefix: "NOT A PREFIX OF SYSTEM"
+        )
+        _ = try await makeClient().respondWithUsage(to: request)
+
+        let system = MockURLProtocol.lastRequest?.bodyJSON?["system"]
+        XCTAssertTrue(system is String, "a prefix that isn't actually a prefix ⇒ plain string, caching silently skipped")
+        XCTAssertEqual(system as? String, "ACTUAL SYSTEM TEXT")
+    }
+
+    func testCachePrefixEqualToWholeSystemSendsSingleCachedBlock() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"{ "content": [{ "type": "text", "text": "ok" }], "stop_reason": "end_turn" }"#
+        )
+        let request = ListenerRequest(
+            system: "WHOLE THING",
+            messages: [ListenerChatMessage(role: .user, content: "hi")],
+            tier: .reflection,
+            maxTokens: 128,
+            cachedSystemPrefix: "WHOLE THING"
+        )
+        _ = try await makeClient().respondWithUsage(to: request)
+
+        let blocks = MockURLProtocol.lastRequest?.bodyJSON?["system"] as? [[String: Any]]
+        XCTAssertEqual(blocks?.count, 1, "no volatile suffix ⇒ single cached block, no empty second block")
+        XCTAssertEqual(blocks?[0]["text"] as? String, "WHOLE THING")
+        XCTAssertEqual((blocks?[0]["cache_control"] as? [String: Any])?["type"] as? String, "ephemeral")
+    }
+
+    // ── analyze: structured candidate list, chunked transcript blocks, usage ──
+
+    func testAnalyzeDecodesCandidatesAndUsage() async throws {
+        MockURLProtocol.stub(
+            status: 200,
+            body: #"""
+            { "content": [{ "type": "text",
+                "text": "{\"candidates\":[{\"text\":\"what decides the order for a brand-new user?\",\"register\":\"question\",\"anchor\":\"ranking per-user\"}]}" }],
+              "stop_reason": "end_turn",
+              "usage": { "input_tokens": 5000, "output_tokens": 40,
+                         "cache_creation_input_tokens": 0, "cache_read_input_tokens": 4096 } }
+            """#
+        )
+
+        let reply = try await makeClient().analyze(Analyst.buildRequest(transcript: "a long transcript"))
+
+        XCTAssertEqual(reply.result.candidates.count, 1)
+        XCTAssertEqual(reply.result.candidates[0].register, "question")
+        XCTAssertEqual(reply.result.candidates[0].anchor, "ranking per-user")
+        XCTAssertEqual(reply.usage?.cacheReadInputTokens, 4096)
+    }
+
+    private static let emptyCandidates =
+        #"{ "content": [{ "type": "text", "text": "{\"candidates\":[]}" }], "stop_reason": "end_turn" }"#
+
+    /// The `system` blocks the last request actually put on the wire.
+    private func sentSystemBlocks() throws -> [[String: Any]] {
+        let system = MockURLProtocol.lastRequest?.bodyJSON?["system"]
+        return try XCTUnwrap(system as? [[String: Any]], "analyst sends a block-array system")
+    }
+
+    private func isCached(_ block: [String: Any]) -> Bool {
+        (block["cache_control"] as? [String: Any])?["type"] as? String == "ephemeral"
+    }
+
+    func testAnalyzeSendsStructuredSchemaAndTextBlockArray() async throws {
+        MockURLProtocol.stub(status: 200, body: Self.emptyCandidates)
+
+        _ = try await makeClient().analyze(Analyst.buildRequest(transcript: "some transcript text"))
+
+        XCTAssertNotNil(MockURLProtocol.lastRequest?.bodyJSON?["output_config"],
+                        "analyst uses structured outputs")
+        let blocks = try sentSystemBlocks()
+        XCTAssertEqual(blocks.count, 2, "under one chunk: instructions + volatile tail")
+        for block in blocks {
+            XCTAssertEqual(block["type"] as? String, "text")
+        }
+        XCTAssertTrue(isCached(blocks[0]))
+        XCTAssertFalse(isCached(blocks[1]), "the growing tail is never cached")
+    }
+
+    func testAnalyzeMarksOnlyTheLastFrozenChunkWithCacheControl() async throws {
+        MockURLProtocol.stub(status: 200, body: Self.emptyCandidates)
+
+        // 9000 chars ⇒ two full 4000-char chunks + a 1000-char remainder.
+        let transcript = String(repeating: "x", count: 9000)
+        _ = try await makeClient().analyze(Analyst.buildRequest(transcript: transcript))
+
+        let blocks = try sentSystemBlocks()
+        XCTAssertEqual(blocks.count, 4, "instructions + 2 chunks + tail")
+        XCTAssertEqual(blocks.filter(isCached).count, 1, "exactly one breakpoint")
+        XCTAssertTrue(isCached(blocks[2]), "the breakpoint ends the last frozen chunk")
+        XCTAssertEqual((blocks[2]["text"] as? String)?.count, Analyst.transcriptChunkSize)
+        XCTAssertTrue((blocks[3]["text"] as? String)?.contains(Analyst.volatileInstruction) == true,
+                      "the volatile instruction stays after the breakpoint")
+    }
+
     // ── errors that are NOT silence still surface ──
 
     func testRespondSurfacesRefusalStopReason() async {
