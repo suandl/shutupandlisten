@@ -15,6 +15,7 @@ import AuthenticationServices
 import ClaudeClient
 import SwiftData
 import SwiftUI
+import TranscriptCore
 import TurnEngine
 
 struct SessionView: View {

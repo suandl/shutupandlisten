@@ -11,10 +11,10 @@
 // headless-tested) enforces finals-only a second time on the way into a
 // batch.
 //
-// Delivery is silent best-effort: a failed POST is logged to the console and
-// the batch dropped — no user-facing error spam for a background firehose the
-// user pointed at their own endpoint. The receiving end can detect drops via
-// the monotonic batch index.
+// Delivery is silent best-effort: a failed POST is logged to the console in
+// DEBUG builds and the batch dropped — no user-facing error spam for a
+// background firehose the user pointed at their own endpoint. The receiving
+// end can detect drops via the monotonic batch index.
 // v2: retry with a bounded on-device backlog, so a flaky endpoint gets the
 // missed batches on the next successful push instead of a hole.
 
@@ -91,7 +91,16 @@ actor TranscriptForwarder {
             ingest(segment)
         }
         if let batch = batcher.flushRemaining() {
-            await post(batch)
+            // Deliberately discarded, unlike the tick loop's call: this is the
+            // LAST flush of the session. The tick site acts on the result only
+            // to hand a cancelled batch back for this flush to retry — there is
+            // no flush after this one, and the batcher is per-session and dies
+            // with the actor, so a requeue here would strand the words rather
+            // than resend them. A failure is already logged inside `post`, which
+            // is the documented contract for this feed (see the header: silent
+            // best-effort, drop on failure, receiver detects holes via the
+            // monotonic batch index).
+            _ = await post(batch)
         }
     }
 
@@ -126,11 +135,15 @@ actor TranscriptForwarder {
             request.httpBody = try JSONEncoder().encode(batch)
             let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, !(200 ... 299).contains(http.statusCode) {
+                #if DEBUG
                 print("TranscriptForwarder: batch \(batch.index) rejected — HTTP \(http.statusCode)")
+                #endif
             }
             return true
         } catch {
+            #if DEBUG
             print("TranscriptForwarder: batch \(batch.index) dropped — \(error.localizedDescription)")
+            #endif
             return false
         }
     }
