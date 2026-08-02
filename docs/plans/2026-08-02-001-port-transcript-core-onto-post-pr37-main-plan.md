@@ -110,8 +110,9 @@ only the `TranscriptCore` package product, the deployment-target bump, and
 The migration is the one part of this port that can destroy user data (§5). Landing
 it with zero executable coverage is not acceptable. Wiring the target is a Mac/Xcode
 GUI step, so it belongs to the operator (§6, Stage 11), and B1 is written to **fail
-if it was skipped** — `-only-testing` by class name errors out when the class is not
-in the target, and the run must show a nonzero count from both classes.
+if it was skipped** — `-only-testing` errors out when the identifier is not in the
+target, and B1 names the §5.5 cases individually, so an unwired target and a wired
+but incomplete one both fail by name.
 
 ---
 
@@ -382,7 +383,10 @@ is CaptureController's job, not `SessionController`'s:
    pattern, which solves this identical problem for the clock). **The flag form is
    the recommendation** — it reuses a pattern already proven in this file and keeps
    the audio thread the only writer.
-4. Cover it: `pause/resume clears half-formed onset` in §7.
+4. Cover it with **both** §7 rows: `pause/resume clears half-formed onset` (items 1's
+   state fields) and `pause/resume clears the stale voice timestamp, before the first
+   buffer` (item 1's `lastVoiceMs` and item 3's ordering). The first alone passes
+   against a reset applied after the first post-resume buffer, which is the bug.
 
 ### 3.2b Pausing mid-clip must close the open listener segment
 
@@ -615,7 +619,7 @@ every session recorded on current main. No exception, no log line.
 3. Have `StoredEntry.init(_ segment:)` write them back, so the export DTO
    round-trips instead of silently flattening new records too.
 
-**Fix, part 2 — in the app-side row materializer** (Stage 9). **Part 1 alone does
+**Fix, part 2 — in the app-side row materializer** (Stage 8). **Part 1 alone does
 not migrate a single timing**, because the migration stage does not go through
 `TranscriptCore.segments(from:)` at all. `SessionMigrationPlan.migrateV1toV2`'s
 `didMigrate` calls `record.materializeLegacySegments(in:)`
@@ -711,6 +715,12 @@ reopens it with `migrationPlan: SessionMigrationPlan.self`, and asserts ordered 
 6. Keep the existing three tests as-is.
 7. **Wire the target** (§0.2) — none of this runs otherwise.
 
+Items 1–5 are the five method names B1 passes to `-only-testing`:
+`testV1FixtureIsPR37Shape`, `testCostUSDSurvivesV1ToV2`,
+`testMigrationCarriesPR37Timings`, `testMaterializedRowsAgreeWithLazyFallback`,
+`testBaseShapeYieldsZeroedRangesAndNoTimings`. Rename one and B1 fails by name —
+which is the intended coupling, not an accident to route around.
+
 ---
 
 ## 6. Sequenced work breakdown for su-xkmq.2
@@ -727,11 +737,25 @@ no later stage reopens the file. Where a later stage refers to §3.2 or §4, it 
 **validation checkpoint on work Stage 5 already did**, not a second edit.
 
 **Stages are numbered in execution order, gates included.** A gate's number is its
-position in the sequence: Gate A is Stage 8 because it runs after Stage 7 and
-before Stage 9. There is no "do this stage out of order" anywhere below.
+position in the sequence: Gate A is Stage 10 because it runs after Stage 9 and
+before Stage 11. There is no "do this stage out of order" anywhere below.
 
-**Stage 0 — Operator ruling on §0.1 (BLOCKING).** Xcode/runner upgrade, or dormant
-visual-capture workflow. Everything downstream assumes the answer.
+**Stage 0 — Operator ruling on §0.1 (BLOCKING), and the toolchain probe.**
+Xcode/runner upgrade, or dormant visual-capture workflow. Everything downstream
+assumes the answer. Before any code is written, run the probe below on the Mac that
+will execute Gates A and B. It needs no compiling tree, which is exactly why it
+belongs here rather than at a build failure ten stages later:
+
+```bash
+xcodebuild -version
+xcodebuild -showsdks | grep -qE 'iphoneos2[6-9]' \
+  || { echo 'BLOCKED (§0.1): no iOS 26 SDK on this Mac — Xcode 26 is required' >&2; exit 1; }
+echo 'Stage 0 OK — iOS 26 SDK present'
+```
+
+This answers the operator-Mac half of §0.1. The CI half — whether
+`ios-visual.yml`'s runner moves to Xcode 26 or the workflow goes dormant — is the
+ruling itself, and is not something a probe can settle.
 
 **Stage 1 — Mechanical adoption.** Take the rewrite-only files and `Package.swift`
 wholesale (§1d). Nothing to reconcile; do it first so the tree compiles-in-principle
@@ -745,7 +769,7 @@ dangling references. Do this early: it makes the real size of Stage 5 visible.
 **Stage 3 — `TranscriptCore` timing fix** (§5.3 **part 1**). `StoredEntry` gains
 `startMs`/`endMs`; `segments(from:)` and `StoredEntry.init(_:)` carry them.
 Package-local and headless-provable, so it is proven at Stage 7 before any Mac is
-involved — and it is a prerequisite for the app-side migration in Stage 9, which
+involved — and it is a prerequisite for the app-side migration in Stage 8, which
 reads the timings this stage makes available.
 
 **Stage 4 — `project.pbxproj`, part 1: the build graph.** By hand. Merge the
@@ -792,47 +816,12 @@ so genuinely separate work, not a second pass at Stage 5:
 the adversarial suite and Stage 3's new timing cases) and that PR#37's
 TurnEngine/ClaudeClient additions still compile under the Swift-5 language-mode
 pin. Not runnable in the current worktree (no toolchain) — if the refinery cannot
-supply Swift 6.1, this folds into Gate A2. **Re-run after Stage 9** if that stage
+supply Swift 6.1, this folds into Gate A2. **Re-run after Stage 8** if that stage
 touches the package.
 
 ---
 
-### Stage 8 — OPERATOR MAC GATE A (early)
-
-Deliberately scheduled **mid-port**: Stages 1–6 change the build graph (new module,
-new deployment target, deleted files, edited pbxproj), and a toolchain failure
-discovered here costs six stages of rework instead of twelve.
-
-| # | Command | Proves |
-|---|---|---|
-| A1 | `xcodebuild -project ios/ShutUpAndListen.xcodeproj -scheme ShutUpAndListen -configuration Debug -destination 'generic/platform=iOS Simulator' build` | The iOS 26 target + `TranscriptCore` package product resolve, and the deletions left no dangling reference. **This is where §0.1 becomes real** — if the Mac's Xcode predates 26, stop and return to Stage 0. |
-| A2 | `swift test --package-path ios/ShutUpAndListenKit` | TranscriptCore green (incl. Stage 3); PR#37's TurnEngine/ClaudeClient additions still compile under the Swift-5 pin. Redundant with Stage 7 when the refinery has Swift 6.1 — run it anyway, the Mac toolchain is the one that ships. |
-| A3 | **Release build-setting check** — see below | Stage 4 did not drop the capture-seam exclusions. Catches the security regression *now*, six stages before the archive would. |
-
-**A3 — the direct `EXCLUDED_SOURCE_FILE_NAMES` check.** Archive inspection (B5) is
-a good backstop but a late and indirect one: it reads symbol *absence*, which can
-also be produced by dead-stripping, and it only runs at the very end. Read the
-setting itself, immediately after the pbxproj edits:
-
-```bash
-xcodebuild -project ios/ShutUpAndListen.xcodeproj \
-           -target ShutUpAndListen \
-           -configuration Release \
-           -showBuildSettings 2>/dev/null \
-  | grep -E '^\s*EXCLUDED_SOURCE_FILE_NAMES' \
-  | tee /dev/stderr \
-  | grep -q 'CaptureSeam.swift' \
-  && echo OK || { echo 'SECURITY: capture seam not excluded in Release'; exit 1; }
-```
-
-Assert **all four** entries are present, verbatim, in the resolved Release
-settings: `CaptureSeam.swift`, `CaptureURLProtocol.swift`,
-`CaptureAudioInjector.swift`, `demo-conversation.wav`. Resolved settings are the
-right thing to read — they reflect what the build will actually do after xcconfig
-layering and any `$(inherited)` expansion, which a `grep` of `project.pbxproj`
-does not. Re-run A3 after Stage 11, since that stage edits the same file.
-
-### Stage 9 — Schema + migration, app side
+### Stage 8 — Schema + migration, app side
 
 §5.2 (V1 declared at the PR#37 shape, `costUSD` into V2, `transcriptIsReconciled`
 out), §5.3 **part 2** (the row materializer `materializeLegacySegments(in:)` carries
@@ -840,11 +829,89 @@ the timings; the doc comments asserting zeros corrected), and the `MigrationTest
 changes of §5.5. Stage 3 is a hard prerequisite — without it there are no timings
 on `entry` to carry.
 
-### Stage 10 — The five UI merges
+**Compile-critical, hence before Gate A.** Stage 5's checklist writes `costUSD` at
+persist against a V2 model that does not declare it until this stage lands, and
+`transcriptIsReconciled` survives on the model until this stage drops it.
+
+### Stage 9 — The five UI merges
 
 §1e. `OnboardingView` last and most carefully. `LibraryView`'s
 `state != "recording"` predicate is mandatory, and is what makes the Stage 5
 `.recovered` fix observable.
+
+**Compile-critical, hence before Gate A.** Three of the five do not compile against
+the ported tree until they are merged: `OnboardingView:135` still calls the deleted
+`SpeechTranscriber.requestAuthorization()` (§1a, §1b); `SessionDetailView` still
+seeks through `StoredEntry.startMs` rather than
+`record.transcriptSegments`/`audioStart`, and reads the `costUSD` that Stage 8 puts
+on V2; and `TranscriptEntry.id` is a `UUID` where the port supplies a `SegmentID`
+(§1e).
+
+### Stage 10 — OPERATOR MAC GATE A
+
+The first gate that builds the app, placed at the **earliest point where a full app
+build is a fair test**: every agent-side reconciliation (Stages 1–9) has landed,
+and all that remains is the operator's GUI target-wiring (Stage 11) and Gate B.
+It cannot run earlier — A1 builds the whole app, and the app does not compile until
+Stages 8 and 9 land (see each stage's compile-critical note). A gate scheduled
+against known-pending work fails for a reason it was not built to detect: it would
+report the port's own unfinished edges as a build failure and say nothing about the
+toolchain, which is the one thing it was placed early to learn.
+
+Nothing is lost by not being earlier, because the cheap half of the question is
+already answered: **Stage 0's probe settles §0.1 before a line of code is written**,
+with no compiling tree required. What Gate A adds is the half that genuinely needs
+the assembled port — that the build graph resolves, that the deletions left no
+dangling reference, and that the Release exclusions survived the pbxproj merge —
+and it still runs two stages ahead of the archive at B5.
+
+| # | Command | Proves |
+|---|---|---|
+| A1 | `xcodebuild -project ios/ShutUpAndListen.xcodeproj -scheme ShutUpAndListen -configuration Debug -destination 'generic/platform=iOS Simulator' build` | The iOS 26 target + `TranscriptCore` package product resolve, and the deletions left no dangling reference. Stage 0's probe said the SDK exists; this says the port compiles against it. If it does not, and the cause is the toolchain rather than the port, return to Stage 0. |
+| A2 | `swift test --package-path ios/ShutUpAndListenKit` | TranscriptCore green (incl. Stage 3); PR#37's TurnEngine/ClaudeClient additions still compile under the Swift-5 pin. Redundant with Stage 7 when the refinery has Swift 6.1 — run it anyway, the Mac toolchain is the one that ships. |
+| A3 | **Release build-setting check** — see below | Stage 4 did not drop the capture-seam exclusions. Catches the security regression *now*, before the archive would. |
+
+**A3 — the direct `EXCLUDED_SOURCE_FILE_NAMES` check.** Archive inspection (B5) is
+a good backstop but a late and indirect one: it reads symbol *absence*, which can
+also be produced by dead-stripping, and it only runs at the very end. Read the
+setting itself, and assert **all four** artifacts by name — a check that greps for
+one of them reports OK while the other three are silently dropped, which is the
+whole failure this gate exists to catch:
+
+```bash
+required='CaptureSeam.swift CaptureURLProtocol.swift CaptureAudioInjector.swift demo-conversation.wav'
+
+# Deliberately no `set -e`: an unset setting must reach the explicit message
+# below rather than killing the shell on grep's nonzero exit.
+excluded=$(xcodebuild -project ios/ShutUpAndListen.xcodeproj \
+                      -target ShutUpAndListen \
+                      -configuration Release \
+                      -showBuildSettings 2>/dev/null \
+           | grep -E '^[[:space:]]*EXCLUDED_SOURCE_FILE_NAMES[[:space:]]*=')
+
+echo "${excluded:-<EXCLUDED_SOURCE_FILE_NAMES is unset in Release>}"
+
+missing=''
+for f in $required; do
+  case "$excluded" in
+    *"$f"*) ;;
+    *)      missing="$missing $f" ;;
+  esac
+done
+
+if [ -n "$missing" ]; then
+  echo "SECURITY: not excluded from the Release build:$missing" >&2
+  exit 1
+fi
+echo 'A3 OK — all four capture artifacts excluded in Release'
+```
+
+Resolved settings are the right thing to read — they reflect what the build will
+actually do after xcconfig layering and any `$(inherited)` expansion, which a
+`grep` of `project.pbxproj` does not. An unset `EXCLUDED_SOURCE_FILE_NAMES` fails
+exactly as a partial one does: `$excluded` is empty, every name is missing, and the
+message names all four. Re-run A3 after Stage 11, since that stage edits the same
+file, and keep the output for the PR body (Stage 13).
 
 ### Stage 11 — `project.pbxproj`, part 2: wire the app-test target
 
@@ -858,8 +925,8 @@ config blocks the exclusion list lives in.
 | # | Command / action | Proves |
 |---|---|---|
 | B1 | **App-test run, explicit** — see below | `MigrationTests` (incl. the new `costUSD`, timing-materialization, agreement and base-shape cases) + `WriterTests` **actually ran**, nonzero, both classes. **The data-safety gate** (§5.3). |
-| B2 | `swift test --package-path ios/ShutUpAndListenKit` re-run | Stage 9 did not regress the package. |
-| B3 | Scheduled regression suite (§7) green | Fencing, analyst drift, TTS rebuild, injection, VAD reset, listener-close, recovered-row. |
+| B2 | `swift test --package-path ios/ShutUpAndListenKit` re-run | Stage 8 did not regress the package. |
+| B3 | **Scheduled regression run, explicit** — see below | Every §7 app-test row named in that table actually ran and passed: fencing, TTS rebuild + `onFinished`, injection, VAD reset (state *and* stale timestamp), listener-close, recovered-row. The package rows of §7 are covered by B2. |
 | B4 | `xcodebuild -project ios/ShutUpAndListen.xcodeproj -scheme ShutUpAndListen -configuration Release archive -archivePath /tmp/sual.xcarchive` | The port builds for shipping. |
 | B5 | Inspect the archive: no `CaptureSeam` / `CaptureURLProtocol` / `CaptureAudioInjector` symbols, no `demo-conversation.wav` | **The security gate** (`765c21b`), second mechanism. A3 proved the setting; this proves the artifact. Non-negotiable — both, not either. |
 | B6 | `./ios/scripts/capture-demo.sh` | The capture-injection harness end-to-end on the re-homed seam (§2). **Only if Stage 0 chose the upgrade path** — otherwise §7's `injection feeds the canonical converter` test is the standing substitute. |
@@ -868,46 +935,116 @@ config blocks the exclusion list lives in.
 
 **B1 — the app-test run, stated as a command with a proof.** `⌘U` is not a gate:
 it is green when a test target exists but contains nothing runnable, and it leaves
-no artifact to check. Run the tests by name and assert the counts:
+no artifact to check. Name the tests, gate on the exit status, and assert the
+bundle:
 
 ```bash
+# `-u -o pipefail` but deliberately NOT `-e`: the xcodebuild status is captured
+# and reported explicitly below, which `-e` would pre-empt with a bare exit.
+set -uo pipefail
+
 RB=/tmp/sual-apptests.xcresult
 rm -rf "$RB"
+
 xcodebuild test \
   -project ios/ShutUpAndListen.xcodeproj \
   -scheme ShutUpAndListen \
   -destination 'platform=iOS Simulator,name=iPhone 16,OS=26.0' \
   -resultBundlePath "$RB" \
-  -only-testing:ShutUpAndListenAppTests/MigrationTests \
+  -only-testing:ShutUpAndListenAppTests/MigrationTests/testV1FixtureIsPR37Shape \
+  -only-testing:ShutUpAndListenAppTests/MigrationTests/testCostUSDSurvivesV1ToV2 \
+  -only-testing:ShutUpAndListenAppTests/MigrationTests/testMigrationCarriesPR37Timings \
+  -only-testing:ShutUpAndListenAppTests/MigrationTests/testMaterializedRowsAgreeWithLazyFallback \
+  -only-testing:ShutUpAndListenAppTests/MigrationTests/testBaseShapeYieldsZeroedRangesAndNoTimings \
   -only-testing:ShutUpAndListenAppTests/WriterTests \
   CODE_SIGNING_ALLOWED=NO
+xc=$?
+[ "$xc" -eq 0 ] || { echo "B1 FAILED: xcodebuild test exited $xc" >&2; exit 1; }
 
-# Both classes must have run, with a nonzero count each, and nothing failing.
+# Second mechanism: the bundle must show cases, and none of them failed.
 xcrun xcresulttool get test-results tests --path "$RB" --format json \
   | jq -e '
-      [.. | objects | select(.nodeType? == "Test Case") | .name] as $cases
-      | ($cases | map(select(startswith("MigrationTests")))  | length) as $m
-      | ($cases | map(select(startswith("WriterTests")))     | length) as $w
-      | if $m > 0 and $w > 0 then true
-        else error("app tests did not run: MigrationTests=\($m) WriterTests=\($w)")
-        end'
+      [.. | objects | select((.nodeType? // "") == "Test Case")]        as $cases
+      | ($cases | map(select((.result? // "") == "Failed")) | length)   as $failed
+      | if ($cases | length) >= 6 and $failed == 0 then true
+        else error("B1: \($cases | length) cases ran (expected >= 6), \($failed) failed")
+        end' > /dev/null \
+  || { echo 'B1 FAILED: result-bundle assertion' >&2; exit 1; }
+
+echo "B1 OK — result bundle at $RB"
 ```
 
-Three things make this a gate rather than a ritual: `-only-testing` by class name
-**fails the build outright if the class is not in the target**, which is exactly
-the §0.2 failure mode; the result bundle is a durable artifact someone else can
-re-check; and the `jq -e` assertion turns "zero tests ran" into a nonzero exit
-instead of a green tick. Attach `$RB` to the PR. (On a toolchain where the
-`test-results` subcommand is unavailable, `xcrun xcresulttool get --legacy --format
-json --path "$RB"` and count `ActionTestMetadata` entries — assert the same two
-nonzero counts.)
+Four things make this a gate rather than a ritual. `-only-testing` **fails the
+build outright when the identifier is not in the target** — at method granularity
+that covers both the §0.2 failure mode (no test class wired) and the §5.5 one (the
+class is wired but a required case was never written), so "nonzero count per class"
+is enforced by xcodebuild itself rather than by name-matching in `jq`. The explicit
+`$xc` gate means a failing test run cannot be followed by a passing count: without
+it, `jq` is reached however `xcodebuild` exited, and a red suite with a
+well-populated result bundle reports green. The `jq -e` assertion independently
+requires that cases ran and that none
+carry `result == "Failed"`, so a bundle that is green-but-empty also fails. And the
+result bundle is a durable artifact someone else can re-check — attach `$RB` to the
+PR.
+
+The five `MigrationTests` selectors are §5.5 items 1–5; the count floor of 6 is
+those plus at least one `WriterTests` case. Raise the floor as §7 rows are added to
+this list. (On a toolchain where the `test-results` subcommand is unavailable, use
+`xcrun xcresulttool get --legacy --format json --path "$RB"`, count
+`ActionTestMetadata` entries and assert none has `testStatus == "Failure"` — the
+same two properties.)
+
+**B3 — the scheduled regression run, stated as a command.** §7 is a list of named
+tests; this is the command that proves the list is real. Same shape as B1: one
+`-only-testing` per §7 app-test row, so a row that was never written fails the
+build by name instead of quietly not running.
+
+```bash
+set -uo pipefail   # not -e, for the same reason as B1
+
+RB=/tmp/sual-regression.xcresult
+rm -rf "$RB"
+
+xcodebuild test \
+  -project ios/ShutUpAndListen.xcodeproj \
+  -scheme ShutUpAndListen \
+  -destination 'platform=iOS Simulator,name=iPhone 16,OS=26.0' \
+  -resultBundlePath "$RB" \
+  -only-testing:ShutUpAndListenAppTests/FencingTests/testStaleGenerationReplyIsDropped \
+  -only-testing:ShutUpAndListenAppTests/TTSSinkTests/testPlayerNodeReattachedAfterEngineRebuild \
+  -only-testing:ShutUpAndListenAppTests/TTSSinkTests/testOnFinishedFiresOncePerClipAndNeverAfterStop \
+  -only-testing:ShutUpAndListenAppTests/InjectionTests/testInjectedFixtureReachesConverterAndAdvancesClock \
+  -only-testing:ShutUpAndListenAppTests/VADResetTests/testPauseClearsOnsetState \
+  -only-testing:ShutUpAndListenAppTests/VADResetTests/testPauseClearsStaleVoiceTimestampAndFirstBufferIsFresh \
+  -only-testing:ShutUpAndListenAppTests/ListenerSegmentTests/testPauseMidClipClosesListenerSegmentAtCut \
+  -only-testing:ShutUpAndListenAppTests/RecoveryTests/testAdoptedOrphanRowIsRecoveredAndVisible \
+  CODE_SIGNING_ALLOWED=NO
+xc=$?
+[ "$xc" -eq 0 ] || { echo "B3 FAILED: xcodebuild test exited $xc" >&2; exit 1; }
+
+# All eight §7 app-test rows, none failing.
+xcrun xcresulttool get test-results tests --path "$RB" --format json \
+  | jq -e '
+      [.. | objects | select((.nodeType? // "") == "Test Case")]      as $cases
+      | ($cases | map(select((.result? // "") == "Failed")) | length) as $failed
+      | if ($cases | length) >= 8 and $failed == 0 then true
+        else error("B3: \($cases | length) cases ran (expected >= 8), \($failed) failed")
+        end' > /dev/null \
+  || { echo 'B3 FAILED: result-bundle assertion' >&2; exit 1; }
+
+echo "B3 OK — result bundle at $RB"
+```
+
+The selector list and the count floor are the §7 table's app-test rows, in order;
+**both move together whenever a row is added there.** §7's two package rows are not
+here — they are `swift test` cases, proven at Stage 7, A2 and B2.
 
 **Stage 13 — PR.** Body states: the §0.1 decision and its consequence for the visual
 workflow; that `transcriptIsReconciled` and the reconciler/stitcher/file-transcriber
 are deleted deliberately; the dropped auto-stop on `.ended(shouldResume: false)`
 (§3.2); the migration's wall-clock→audio-time approximation (§5.3); and, if Stage 0
 chose the dormant path, which §7 tests stand in for `capture-demo.sh`. Attach the
-B1 result bundle and the A3 output.
+B1 and B3 result bundles and the A3 output.
 
 ---
 
@@ -918,26 +1055,36 @@ drop again — the port itself is the proof, since PR#37 re-introduced a
 character-offset anchor the rewrite had already been written to remove (§4.2). Each
 row below is a **named test the execution bead must write**, not a hope. "Where"
 decides which gate can run it: package tests run headless (Stage 7), app tests need
-the target wired (Stage 11) and run at B1/B3.
+the target wired (Stage 11) and run at B1 or B3.
 
-| Test | Pins | Where | Runs at |
+**Every row names its selector**, because a gate can only run what it can name: B1
+and B3 pass these identifiers to `-only-testing`, so a row that was never written
+fails the build by name rather than quietly not running. The selector *is* the
+contract — rename a method and you must rename it in the gate.
+
+| Test | Pins | Selector | Runs at |
 |---|---|---|---|
-| `stop-then-start across an in-flight reply drops the stale reply` | Generation-token fencing (§4.3) — the regression the rewrite's `isRunning`-only guards would reintroduce. Drive a reply completion whose `generation` is stale and assert nothing is appended. | `ShutUpAndListenAppTests` | B1, B3 |
-| `finalizedText length is monotonically non-decreasing across volatile revisions` | The analyst drift anchor (§4.2). Feed a shortening volatile revision and assert the finalized length never decreases. | `TranscriptCoreTests` (package) | Stage 7, A2, B2 |
-| `candidates still expire while volatile text churns` | The same defect one layer up: `CandidatePool.expire(currentPosition:)` fed from `finalizedText` keeps expiring. | `TurnEngineTests` (package) | Stage 7, A2, B2 |
-| `TTS player node is re-attached after an engine rebuild` | §3.3 — the silent-companion failure after a route change or media-services reset. Drive `CaptureController`'s rebuild path and assert `ttsFormat != nil` and the node is attached to the live engine afterwards. | `ShutUpAndListenAppTests` | B1, B3 |
-| `injection feeds the canonical converter` | §2 — injected fixture audio must reach the recording sink, the analyzer, the VAD, **and** advance the fed-samples clock. Assert a `TranscriptSegment` with a non-zero `audioStart`/`audioEnd` after injecting the fixture. **This is the standing substitute for `capture-demo.sh` (B6) if Stage 0 chose the dormant path** — without it, the injection seam ships with no coverage at all. | `ShutUpAndListenAppTests` | B1, B3 |
-| `pause/resume clears half-formed onset` | §3.2a — assert `inSpeech`/`speechBufferRun` are cleared across a pause so post-resume speech starts a fresh turn. | `ShutUpAndListenAppTests` | B1, B3 |
-| `pause mid-clip closes the listener segment at the cut point` | §3.2b — assert the open listener segment is closed, `bargedIn == true`, `audioEnd` at the cut, before the park. | `ShutUpAndListenAppTests` | B1, B3 |
-| `recovered orphan row is visible` | §1b — assert `adoptOrphanedRecordings` produces `state == "recovered"` and that the row survives `LibraryView`'s `state != "recording"` predicate. | `ShutUpAndListenAppTests` | B1, B3 |
-| `onFinished fires exactly once per clip, never after stop()` | §1c — the reasoning behind the dropped `didCancel` addition, carried forward as a test rather than as code. | `ShutUpAndListenAppTests` | B1, B3 |
-| `migration carries PR#37 timings` + agreement + base-shape negative | §5.3, §5.5 — the data-safety trio. | `ShutUpAndListenAppTests/MigrationTests` | B1 |
+| `stop-then-start across an in-flight reply drops the stale reply` | Generation-token fencing (§4.3) — the regression the rewrite's `isRunning`-only guards would reintroduce. Drive a reply completion whose `generation` is stale and assert nothing is appended. | `ShutUpAndListenAppTests/FencingTests/testStaleGenerationReplyIsDropped` | B3 |
+| `finalizedText length is monotonically non-decreasing across volatile revisions` | The analyst drift anchor (§4.2). Feed a shortening volatile revision and assert the finalized length never decreases. | `TranscriptCoreTests.testFinalizedTextIsMonotonic` (package, `swift test --filter`) | Stage 7, A2, B2 |
+| `candidates still expire while volatile text churns` | The same defect one layer up: `CandidatePool.expire(currentPosition:)` fed from `finalizedText` keeps expiring. | `TurnEngineTests.testCandidatesExpireWhileVolatileChurns` (package, `swift test --filter`) | Stage 7, A2, B2 |
+| `TTS player node is re-attached after an engine rebuild` | §3.3 — the silent-companion failure after a route change or media-services reset. Drive `CaptureController`'s rebuild path and assert `ttsFormat != nil` and the node is attached to the live engine afterwards. | `ShutUpAndListenAppTests/TTSSinkTests/testPlayerNodeReattachedAfterEngineRebuild` | B3 |
+| `injection feeds the canonical converter` | §2 — injected fixture audio must reach the recording sink, the analyzer, the VAD, **and** advance the fed-samples clock. Assert a `TranscriptSegment` with a non-zero `audioStart`/`audioEnd` after injecting the fixture. **This is the standing substitute for `capture-demo.sh` (B6) if Stage 0 chose the dormant path** — without it, the injection seam ships with no coverage at all. | `ShutUpAndListenAppTests/InjectionTests/testInjectedFixtureReachesConverterAndAdvancesClock` | B3 |
+| `pause/resume clears half-formed onset` | §3.2a item 1 — assert `inSpeech`/`speechBufferRun` are cleared across a pause so post-resume speech starts a fresh turn. | `ShutUpAndListenAppTests/VADResetTests/testPauseClearsOnsetState` | B3 |
+| `pause/resume clears the stale voice timestamp, before the first buffer` | §3.2a items 1 and 3 — the half that state-only assertions miss. Assert `lastVoiceMs == 0` after the pause, so the hangover timer cannot fire against a pre-gap voice timestamp; then feed **one** buffer after resume and assert it is evaluated against already-reset state (`inSpeech == false`, `speechBufferRun == 0`, `lastVoiceMs == 0` on entry) — that is the `resetVADOnNextBuffer` ordering, and it is what makes the audio thread the only writer. A reset applied *after* that first buffer passes an `inSpeech`-only test and still decides the first post-interruption turn on stale evidence. | `ShutUpAndListenAppTests/VADResetTests/testPauseClearsStaleVoiceTimestampAndFirstBufferIsFresh` | B3 |
+| `pause mid-clip closes the listener segment at the cut point` | §3.2b — assert the open listener segment is closed, `bargedIn == true`, `audioEnd` at the cut, before the park. | `ShutUpAndListenAppTests/ListenerSegmentTests/testPauseMidClipClosesListenerSegmentAtCut` | B3 |
+| `recovered orphan row is visible` | §1b — assert `adoptOrphanedRecordings` produces `state == "recovered"` and that the row survives `LibraryView`'s `state != "recording"` predicate. | `ShutUpAndListenAppTests/RecoveryTests/testAdoptedOrphanRowIsRecoveredAndVisible` | B3 |
+| `onFinished fires exactly once per clip, never after stop()` | §1c — the reasoning behind the dropped `didCancel` addition, carried forward as a test rather than as code. | `ShutUpAndListenAppTests/TTSSinkTests/testOnFinishedFiresOncePerClipAndNeverAfterStop` | B3 |
+| `migration carries PR#37 timings` + agreement + base-shape negative + `costUSD` + PR#37-shaped V1 fixture | §5.3, §5.5 items 1–5 — the data-safety set. | `ShutUpAndListenAppTests/MigrationTests/` + the five method names listed in B1 | B1 |
 
-Add the app-test classes to B1's `-only-testing` list as they are written, so the
-count assertion covers them too. **If the visual-capture workflow is dormant
-(§0.1 option b), the `injection` and `TTS rebuild` rows are not optional** — they
-are the only remaining coverage of the seam `capture-demo.sh` would have exercised,
-and B7's manual pass is the only other check on either.
+Class homes are chosen so each gate selects whole coherent groups: `MigrationTests`
+and `WriterTests` are the data-safety gate (B1); `FencingTests`, `TTSSinkTests`,
+`InjectionTests`, `VADResetTests`, `ListenerSegmentTests` and `RecoveryTests` are
+the regression gate (B3). **Adding a row here means adding its selector to B1's or
+B3's `-only-testing` list and raising that command's count floor** — the two move
+together, or the gate silently stops covering the new row. **If the visual-capture
+workflow is dormant (§0.1 option b), the `injection` and `TTS rebuild` rows are not
+optional** — they are the only remaining coverage of the seam `capture-demo.sh`
+would have exercised, and B7's manual pass is the only other check on either.
 
 ---
 
@@ -947,17 +1094,17 @@ and B7's manual pass is the only other check on either.
 |---|---|---|
 | The silent set survives the merge — dead reconciler/stitcher/file-transcriber compile fine and ship | **High** | Stage 2 is explicit and early; §1b grep list worked to zero |
 | `project.pbxproj` merge drops `EXCLUDED_SOURCE_FILE_NAMES` → capture seam ships in Release | **High (security)** | Stage 4 by hand; **A3 reads the resolved Release setting** right after, and again after Stage 11; B5 archive inspection as the second mechanism |
-| Migration drops `startMs`/`endMs` silently → replay permanently dead for PR#37-era sessions | **High (data)** | §5.3 **part 1 (Stage 3) AND part 2 (Stage 9)** — part 1 alone changes nothing, because the migration runs `materializeLegacySegments`, not `segments(from:)`; proven at B1 through the real migration plan |
-| The app-test gate is green without running anything | **High** | B1 runs `-only-testing` by class name (fails outright if a class is absent) and asserts nonzero counts from the result bundle; `⌘U` is explicitly not the gate |
+| Migration drops `startMs`/`endMs` silently → replay permanently dead for PR#37-era sessions | **High (data)** | §5.3 **part 1 (Stage 3) AND part 2 (Stage 8)** — part 1 alone changes nothing, because the migration runs `materializeLegacySegments`, not `segments(from:)`; proven at B1 through the real migration plan |
+| The app-test gate is green without running anything | **High** | B1 and B3 run `-only-testing` at method granularity (fails outright if a case is absent), gate explicitly on the `xcodebuild` exit status, and assert case counts with zero failures from the result bundle; `⌘U` is explicitly not the gate |
 | `costUSD` dropped from V2 | Medium (data) | §5.2 + B1 |
-| Generation fencing regressed to `isRunning` | Medium | §4.3, in the Stage 5 checklist; §7 `stop-then-start…` test at B1/B3 |
-| iOS 26 vs Xcode 16 discovered late | Medium | Stage 0 ruling; Gate A1 fails fast |
+| Generation fencing regressed to `isRunning` | Medium | §4.3, in the Stage 5 checklist; §7 `stop-then-start…` test at B3 |
+| iOS 26 vs Xcode 16 discovered late | Medium | Stage 0's ruling **and its SDK probe**, both before any code is written; Gate A1 confirms it against the assembled port |
 | Analyst candidates stop expiring on volatile churn | Medium | §4.2 finalized-text anchor; §7 monotonicity + expiry tests, headless at Stage 7 |
 | VAD state survives an interruption → first post-resume turn decided on stale evidence | Medium | §3.2a — the reset is CaptureController's (Stage 6), via the `proveResumeOnNextBuffer`-style flag; §7 test; B7 |
 | Pause mid-clip persists unspoken words as spoken | Medium (data) | §3.2b — `closeOpenListener(bargedIn: true)` in the Stage 5 checklist; §7 test |
 | Recovered orphan rows land in `recording` state and are invisible in the library | Medium | §1b — explicit `state: .recovered`; the V2 init's default is the trap; §7 test |
-| TTS player node not re-attached after engine rebuild → silent companion | Medium | §3.3; §7 rebuild test at B1/B3; B7 |
-| `OnboardingView` merge (both sides restructure page flow) | Medium | Stage 10, last, unhurried |
+| TTS player node not re-attached after engine rebuild → silent companion | Medium | §3.3; §7 rebuild test at B3; B7 |
+| `OnboardingView` merge (both sides restructure page flow) | Medium | Stage 9, last of the code stages, unhurried |
 | Migration is untestable until the target is wired | Medium | Stage 11 before B1 |
 | Injection seam ships uncovered because the visual workflow is dormant | Medium | §7 `injection feeds the canonical converter` is mandatory under §0.1 option (b) |
 
