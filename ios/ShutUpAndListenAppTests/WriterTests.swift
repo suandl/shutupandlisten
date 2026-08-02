@@ -154,6 +154,7 @@ final class WriterTests: XCTestCase {
             audioFileName: "stem.m4a",
             coverage: coverage,
             criteria: "pricing",
+            costUSD: 0.0231,
             finalSegments: [first, second]
         )
         XCTAssertTrue(kept)
@@ -170,6 +171,10 @@ final class WriterTests: XCTestCase {
         XCTAssertEqual(closed.audioFileName, "stem.m4a")
         XCTAssertEqual(closed.criteriaText, "pricing")
         XCTAssertNotNil(closed.coverageJSON)
+        // The metered figure is written through to the record — this is what
+        // SessionDetailView's cost readout reads, and the only close-out
+        // coverage of the field the V2 migration goes to such lengths to carry.
+        XCTAssertEqual(try XCTUnwrap(closed.costUSD), 0.0231, accuracy: 1e-9)
         XCTAssertEqual(closed.orderedSegments.map(\.text), [
             "It hides every number.",
             "Everything becomes a feeling.",
@@ -193,11 +198,14 @@ final class WriterTests: XCTestCase {
         )
 
         // Only a listener segment — no finalized thinker speech.
+        // costUSD nil is the unmetered path (cost unknown, not zero); the
+        // zero-speech rule deletes the record before it could be written.
         let kept = await writer.closeOut(
             duration: 10,
             audioFileName: m4aName,
             coverage: nil,
             criteria: "",
+            costUSD: nil,
             finalSegments: [listenerFinal(index: 0, text: "mm", start: 1, end: 2, tier: .acknowledge)]
         )
         XCTAssertFalse(kept)
