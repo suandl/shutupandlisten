@@ -20,9 +20,12 @@ The question it must answer is the split between:
 - **(a) listener-LLM generation** — gate decides to speak → reply text
 - **(b) TTS time-to-first-audio** — reply text → first audible sample
 
-**Answer: (a) listener-LLM generation dominates, by ~2.8–4.3×.**
+**Answer: (a) listener-LLM generation dominates — ~2.85× TTS time-to-first-audio**
+on the clean, uncontended warmed measurement (`works-check --with-listener`, §2).
+The in-loop run reads the gap wider still (4.28×), but its `gate→reply` is load *plus*
+generation, so that row is a load-contaminated diagnostic (§3c), not part of the split.
 
-But the headline number is neither: a **one-time listener model load of 156.6 s**
+But the biggest number in this capture is neither leg: a **one-time listener model load of 156.6 s**
 that is 3.6× the generation cost and 10× TTS first-audio, and which made the
 end-to-end loop run unmeasurable (1 of 3 turns spoken). Details below.
 
@@ -78,14 +81,26 @@ Normalised, so the two legs can be compared at any reply length:
 
 ### The dominant stage
 
+The clean split, from that same uncontended `works-check` run:
+
 | | (a) listener generation | (b) TTS first-audio | ratio |
 |---|---:|---:|---:|
 | `works-check` smoke (16 tokens / 1 sentence) | 43,347 ms | 15,231 ms | **2.85×** |
-| In-loop, turn 3 (independent measurement) | 51,930 ms\* | 12,139 ms | **4.28×** (\*load-contaminated) |
 
-> **(a) LISTENER-LLM GENERATION IS THE DOMINANT STAGE.** It is ~2.8–4.3× TTS
+> **(a) LISTENER-LLM GENERATION IS THE DOMINANT STAGE.** It is **~2.85×** TTS
 > time-to-first-audio, and it scales at ~2.7 s per generated token, so the gap
 > *widens* with reply length rather than narrowing.
+
+The in-loop run reads the same ratio a second way, but **not cleanly** — its
+`gate→reply` is one lazy model load *plus* generation (§3c), so it is recorded as a
+corroborating diagnostic only, never as the split:
+
+| diagnostic — *not* the split | (a) gate→reply | (b) reply→speech-start | ratio |
+|---|---:|---:|---:|
+| In-loop, turn 3 — **load-contaminated** | 51,930 ms | 12,139 ms | 4.28× |
+
+It points the same direction (generation dominates by *more*), which is why the
+headline takes the conservative clean number rather than a range spanning both.
 
 Per su-lou.14's own instruction, this document stops here and **selects no lever**.
 
@@ -233,9 +248,10 @@ The demo's own canonical entrypoint is `?demo=u6-warmed-loop&llm=off&tts=off`
 ## 6. What this does and does not establish
 
 **Establishes.** On the browser/WASM rung, with every backend live: listener-LLM
-generation is the dominant reply-latency stage at ~2.7 s/token, ~2.8–4.3× TTS
-time-to-first-audio. A separate one-time 156.6 s listener load dominates the first
-reply outright.
+generation is the dominant reply-latency stage at ~2.7 s/token, ~2.85× TTS
+time-to-first-audio on the clean warmed measurement (the load-contaminated in-loop
+reading puts it wider still, 4.28×). A separate one-time 156.6 s listener load
+dominates the first reply outright.
 
 **Does not establish.** Anything about the WebGPU or cross-origin-isolated rungs —
 neither was reachable in this environment, so the *browser floor* measured here is
@@ -249,7 +265,15 @@ re-gated.
 
 ## 7. Reproduce
 
-Every number above comes from the two commands in §5 — `measure:loop` for the
-per-turn table and `works-check --with-listener` for the split. Both write
-machine-readable output (`--json`, and `web/.works-check/report.json`
-respectively).
+Every number above comes from the **three measurement invocations** in §5:
+
+1. `measure:loop -- --port 5193 --timeout 2100000 --json` — real provisioned models,
+   the per-turn table in §3a (and the overlap evidence in §3c).
+2. `measure:loop -- --query 'llm=off&tts=off' --port 5192 --json` — stub substrate,
+   the structure-sanity table in §3b.
+3. `works-check -- --with-listener` — the load-vs-generation split in §2, the only
+   instrument that separates the two legs.
+
+All three write machine-readable output: `--json` on stdout for both `measure:loop`
+runs, `web/.works-check/report.json` for `works-check`. (The four `provision:*` steps
+in §5 are setup, not measurements.)
