@@ -1,167 +1,350 @@
-// A finished session, persisted with SwiftData: the transcript, the coverage
-// snapshot (when a check ran), and the name of the audio file under
-// Application Support/Recordings.
+// The session library's SwiftData schema — now VERSIONED, per the rewrite
+// plan's PersistenceWriter section (docs/plans/
+// 2026-08-01-001-feat-ios-transcript-core-rewrite-plan.md, R3 + "Migration"),
+// reconciled with PR#37's own schema additions by the port plan
+// (docs/plans/2026-08-02-001-port-transcript-core-onto-post-pr37-main-plan.md
+// §5).
+//
+// THREE shapes have shipped or are about to, and V1 has to cover two of them:
+//
+//   base      (pre-PR#37)  the launch shape
+//   PR#37     current main  + costUSD, + transcriptIsReconciled;
+//                           StoredEntry gains startMs/endMs inside the blob
+//   V2        this port     + state, transcriptJSON optional, SegmentRecord rows
+//
+// V1 BELOW IS DECLARED AT THE PR#37 SHAPE, NOT THE BASE SHAPE. The rewrite
+// declared its V1 as a snapshot of the base — it had never seen PR#37 — so
+// landing that as-is would point SwiftData's migration source at a shape that
+// does not match the store on any device that ran a current-main build. Both
+// PR#37 additions are lightweight-inferrable from the true base (costUSD is
+// optional, transcriptIsReconciled is defaulted), so ONE V1 at the PR#37 shape
+// opens a pre-PR#37 store and a PR#37 store alike.
+//
+// V2 is the incremental-persistence shape: the record is created at session
+// START in `recording` state, grows a `SegmentRecord` row per finalized segment
+// (cascade-deleted with the record), and is closed as `complete` at stop — or
+// `recovered` by launch recovery after a crash (R3.1/R3.2).
+//
+// Migration is NOT lightweight-as-in-inferred, for two reasons that both
+// require a custom stage: `transcriptIsReconciled` is DROPPED at V2 (a
+// destructive change — reconciliation itself is deleted, so the flag has no
+// meaning), and each old record's `transcriptJSON` must be decoded into
+// `SegmentRecord` rows. The blob is KEPT as a legacy optional field, and the
+// derived views fall back to decoding it on read whenever a record has no
+// segment rows — the plan's lazy-materialize guard rail for any record the
+// stage missed. The two paths MUST agree: a record must not gain or lose
+// replay depending on which one reached it.
+//
+// `costUSD` is carried INTO V2. The rewrite's V2 omitted it; dropping it would
+// silently void the cost readout for every past session.
+//
+// The storage DTO (`StoredEntry`) and the segment ↔ entry mapping live in
+// TranscriptCore — byte-compatible with the blob this app has always written,
+// verified by TranscriptCoreTests/StoredEntryTests. The app-local StoredEntry
+// struct that used to live in this file is gone.
 
 import Foundation
 import SwiftData
+import TranscriptCore
 import TurnEngine
 
-/// One transcript line, flattened for storage. `speaker` is "thinker" or
-/// "listener"; `tier` is the listener tier's raw value ("acknowledge" /
-/// "reflection" / "question"), nil for thinker turns.
-struct StoredEntry: Codable {
-    let speaker: String
-    let text: String
-    let tier: String?
-    let turn: Int
-    /// Utterance timing in ms since session start. The recording shares the
-    /// same clock origin, so these double as offsets into the session audio
-    /// (transcript↔audio seek). Optional on purpose: records saved before
-    /// timing shipped carry no keys and decode as nil.
-    let startMs: Int?
-    let endMs: Int?
+/// The record's lifecycle (plan R3): `recording` from session start until a
+/// graceful stop closes it as `complete`; a crash leaves it `recording` and
+/// launch recovery closes it as `recovered`. Stored as the raw string —
+/// `#Predicate` compares against raw values.
+enum SessionState: String {
+    case recording, complete, recovered
+}
 
-    init(
-        speaker: String,
-        text: String,
-        tier: String?,
-        turn: Int,
-        startMs: Int? = nil,
-        endMs: Int? = nil
-    ) {
-        self.speaker = speaker
-        self.text = text
-        self.tier = tier
-        self.turn = turn
-        self.startMs = startMs
-        self.endMs = endMs
+// ── Schema V1: the PR#37 shape (what current main writes) ──
+
+enum SessionSchemaV1: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(1, 0, 0) }
+    static var models: [any PersistentModel.Type] { [SessionRecord.self] }
+
+    @Model
+    final class SessionRecord {
+        var id: UUID
+        var startedAt: Date
+        var duration: TimeInterval
+        var title: String
+        /// JSON-encoded `[StoredEntry]`. PR#37-era blobs carry per-utterance
+        /// `startMs`/`endMs`; base-era blobs do not.
+        var transcriptJSON: Data
+        /// The coverage checklist in effect (one topic per line; may be empty).
+        var criteriaText: String
+        /// JSON-encoded `CoverageResult`, when a coverage check ran.
+        var coverageJSON: Data?
+        /// File name under Application Support/Recordings, when audio was captured.
+        var audioFileName: String?
+        /// PR#37. Optional, so a pre-PR#37 store still infers into this shape.
+        var costUSD: Double?
+        /// PR#37. Defaulted, so a pre-PR#37 store still infers into this shape.
+        /// Dropped at V2 — the second offline transcription pass it gated is
+        /// deleted, so the flag has no meaning there.
+        var transcriptIsReconciled: Bool = false
+
+        init(
+            id: UUID = UUID(),
+            startedAt: Date,
+            duration: TimeInterval,
+            title: String,
+            transcriptJSON: Data,
+            criteriaText: String,
+            coverageJSON: Data? = nil,
+            audioFileName: String? = nil,
+            costUSD: Double? = nil,
+            transcriptIsReconciled: Bool = false
+        ) {
+            self.id = id
+            self.startedAt = startedAt
+            self.duration = duration
+            self.title = title
+            self.transcriptJSON = transcriptJSON
+            self.criteriaText = criteriaText
+            self.coverageJSON = coverageJSON
+            self.audioFileName = audioFileName
+            self.costUSD = costUSD
+            self.transcriptIsReconciled = transcriptIsReconciled
+        }
     }
 }
 
-@Model
-final class SessionRecord {
-    var id: UUID
-    var startedAt: Date
-    var duration: TimeInterval
-    var title: String
-    /// JSON-encoded `[StoredEntry]`.
-    var transcriptJSON: Data
-    /// The coverage checklist in effect (one topic per line; may be empty).
-    var criteriaText: String
-    /// JSON-encoded `CoverageResult`, when a coverage check ran.
-    var coverageJSON: Data?
-    /// File name under Application Support/Recordings, when audio was captured.
-    var audioFileName: String?
-    /// Total model spend for the session, USD. Optional: records saved before
-    /// cost tracking (and sessions on the usage-less proxy path) carry nil.
-    var costUSD: Double?
-    /// Whether `transcriptJSON` is the authoritative file-derived transcript
-    /// (true) or the best-effort live transcript still awaiting reconciliation
-    /// (false). Defaulting to false means every existing record — and every
-    /// freshly checkpointed one — is treated as "live, reconcile when possible".
-    var transcriptIsReconciled: Bool = false
+// ── Schema V2: incremental persistence (record-at-start + segment rows) ──
 
-    init(
-        id: UUID = UUID(),
-        startedAt: Date,
-        duration: TimeInterval,
-        title: String,
-        transcriptJSON: Data,
-        criteriaText: String,
-        coverageJSON: Data? = nil,
-        audioFileName: String? = nil,
-        costUSD: Double? = nil,
-        transcriptIsReconciled: Bool = false
-    ) {
-        self.id = id
-        self.startedAt = startedAt
-        self.duration = duration
-        self.title = title
-        self.transcriptJSON = transcriptJSON
-        self.criteriaText = criteriaText
-        self.coverageJSON = coverageJSON
-        self.audioFileName = audioFileName
-        self.costUSD = costUSD
-        self.transcriptIsReconciled = transcriptIsReconciled
+enum SessionSchemaV2: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(2, 0, 0) }
+    static var models: [any PersistentModel.Type] {
+        [SessionRecord.self, SegmentRecord.self]
     }
 
-    // ── decoded views ──
+    @Model
+    final class SessionRecord {
+        var id: UUID
+        var startedAt: Date
+        var duration: TimeInterval
+        var title: String
+        /// Raw `SessionState`. The declaration default is what migrated V1
+        /// records receive from the schema transform (every V1 record is a
+        /// finished session); the custom stage re-stamps it anyway.
+        var state: String = "complete"
+        /// LEGACY: the V1 whole-transcript blob (JSON-encoded `[StoredEntry]`).
+        /// Nil for records written under V2 — segments are the truth; this
+        /// survives only as the lazy-materialize fallback for old records.
+        var transcriptJSON: Data?
+        /// The coverage checklist in effect (one topic per line; may be empty).
+        var criteriaText: String
+        /// JSON-encoded `CoverageResult`, when a coverage check ran.
+        var coverageJSON: Data?
+        /// File name under Application Support/Recordings, when audio was
+        /// captured: the crash-safe `.caf` while `state == recording`, swapped
+        /// to the remuxed `.m4a` at close-out/recovery. Set at session START so
+        /// the file can never be orphaned (plan: record-at-start).
+        var audioFileName: String?
+        /// The session's model spend, when every call was metered — nil means
+        /// "cost unknown", not "free" (the usage-less proxy path). Carried
+        /// forward from PR#37: SessionDetailView reads it behind the
+        /// `showCostReadout` toggle, so dropping it at V2 would have silently
+        /// voided the readout for every past session.
+        var costUSD: Double?
+        /// One row per finalized transcript segment, owned by the record —
+        /// deleting the record deletes its segments. SwiftData relationships
+        /// are unordered; `SegmentRecord.index` is the order.
+        @Relationship(deleteRule: .cascade, inverse: \SegmentRecord.session)
+        var segments: [SegmentRecord] = []
 
-    var entries: [StoredEntry] {
-        (try? JSONDecoder().decode([StoredEntry].self, from: transcriptJSON)) ?? []
-    }
-
-    // ── reconciliation inputs (rebuilt from the stored live transcript) ──
-    //
-    // Reconciliation is resumable: a record saved with the live transcript can
-    // be upgraded to the file-derived one at any later launch, because the turn
-    // windows and the synthesized listener lines are recoverable from what was
-    // already saved. Only the file-derived thinker segments come fresh (from
-    // FileTranscriber); these two provide the rest.
-
-    /// The thinker turn windows the machine recorded — grouping + tap-to-seek
-    /// anchors for `TranscriptReconciler`.
-    var turnWindows: [TurnWindow] {
-        entries
-            .filter { $0.speaker == "thinker" }
-            .compactMap { e in
-                guard let start = e.startMs else { return nil }
-                return TurnWindow(turn: e.turn, startMs: start, endMs: e.endMs)
-            }
-    }
-
-    /// The synthesized listener lines — not in the mic .m4a, re-inserted as-is.
-    var listenerLines: [ListenerLine] {
-        entries.compactMap { e in
-            guard e.speaker == "listener",
-                  let start = e.startMs,
-                  let tier = e.tier.flatMap(Tier.init(rawValue:))
-            else { return nil }
-            return ListenerLine(text: e.text, tier: tier, turn: e.turn, startMs: start)
+        init(
+            id: UUID = UUID(),
+            startedAt: Date,
+            duration: TimeInterval = 0,
+            title: String,
+            state: SessionState = .recording,
+            transcriptJSON: Data? = nil,
+            criteriaText: String,
+            coverageJSON: Data? = nil,
+            audioFileName: String? = nil,
+            costUSD: Double? = nil
+        ) {
+            self.id = id
+            self.startedAt = startedAt
+            self.duration = duration
+            self.title = title
+            self.state = state.rawValue
+            self.transcriptJSON = transcriptJSON
+            self.criteriaText = criteriaText
+            self.coverageJSON = coverageJSON
+            self.audioFileName = audioFileName
+            self.costUSD = costUSD
         }
     }
 
-    /// True only if every stored listener line has the timing reconciliation
-    /// needs. Listener lines are NOT in the mic .m4a, so reconciliation (which
-    /// overwrites the transcript) must not run when it would drop an untimed
-    /// listener line — that content is unrecoverable. Legacy records saved
-    /// before per-utterance timing shipped fail this and keep their live
-    /// transcript. Thinker text is unaffected (it is regenerated from the file).
-    var canReconcileWithoutListenerLoss: Bool {
-        entries.allSatisfy { $0.speaker != "listener" || $0.startMs != nil }
+    /// One finalized transcript segment, mirroring `TranscriptSegment` minus
+    /// `state` (only finals persist) and minus the engine's `SegmentID`
+    /// (identity matters live, not at rest — `index` orders the log).
+    @Model
+    final class SegmentRecord {
+        /// `Speaker` raw value: "thinker" or "listener".
+        var speaker: String
+        var text: String
+        /// Listener tier raw value ("acknowledge"/"reflection"/"question"),
+        /// nil for thinker segments.
+        var tier: String?
+        var turn: Int
+        /// Canonical timeline (recorded-audio seconds). Zeroed only for
+        /// segments materialized from a legacy blob that carried no timings at
+        /// all (base-era records); a PR#37-era blob materializes with real
+        /// ranges.
+        var audioStart: TimeInterval
+        var audioEnd: TimeInterval
+        /// Listener segment cut short by barge-in — replay/export must never
+        /// present the unspoken tail as spoken.
+        var bargedIn: Bool
+        /// Monotonic append order within the session.
+        var index: Int
+        var session: SessionRecord?
+
+        init(
+            speaker: String,
+            text: String,
+            tier: String?,
+            turn: Int,
+            audioStart: TimeInterval,
+            audioEnd: TimeInterval,
+            bargedIn: Bool,
+            index: Int
+        ) {
+            self.speaker = speaker
+            self.text = text
+            self.tier = tier
+            self.turn = turn
+            self.audioStart = audioStart
+            self.audioEnd = audioEnd
+            self.bargedIn = bargedIn
+            self.index = index
+        }
+    }
+}
+
+/// The app speaks the current schema version unqualified.
+typealias SessionRecord = SessionSchemaV2.SessionRecord
+typealias SegmentRecord = SessionSchemaV2.SegmentRecord
+
+// ── Migration plan ──
+
+enum SessionMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [SessionSchemaV1.self, SessionSchemaV2.self]
     }
 
-    /// Apply a file-derived reconciliation to this record and settle
-    /// `transcriptIsReconciled`. `segments` is the .m4a transcription (empty for
-    /// a no-speech file). The transcript is overwritten ONLY when the file
-    /// actually yielded thinker text and reconciliation produced entries —
-    /// otherwise the richer best-effort live transcript is kept. In every case
-    /// the record is marked reconciled, because re-running STT on the same audio
-    /// can't change the outcome; the caller only retries a NIL transcribe result
-    /// (recognition unavailable / file unreadable), never an empty one. A legacy
-    /// record whose untimed listener lines reconciliation can't preserve is left
-    /// untouched but still settled (keep-live-transcript is its final state).
-    @MainActor
-    func applyReconciledSegments(_ segments: [TranscriptSegment]) {
-        defer { transcriptIsReconciled = true }
-        guard canReconcileWithoutListenerLoss else { return }
-        guard !segments.isEmpty else { return }
-        let stored = TranscriptReconciler.reconcile(
-            segments: segments, turns: turnWindows, listenerLines: listenerLines
-        ).map {
-            StoredEntry(
-                speaker: $0.speaker.rawValue, text: $0.text, tier: $0.tier?.rawValue,
-                turn: $0.turn, startMs: $0.startMs, endMs: $0.endMs
+    static var stages: [MigrationStage] { [migrateV1toV2] }
+
+    /// The custom stage: after the schema transform (which adds the empty
+    /// relationship, makes `transcriptJSON` optional, defaults `state`, carries
+    /// `costUSD` across unchanged, and DROPS `transcriptIsReconciled`), decode
+    /// every record's legacy blob into ordered `SegmentRecord` rows and stamp
+    /// the record `complete`.
+    ///
+    /// It must be `.custom` rather than inferred because dropping
+    /// `transcriptIsReconciled` is a destructive change, and because the row
+    /// materialization has no inferred equivalent.
+    ///
+    /// TIMING FIDELITY, and its documented approximation: PR#37 wrote
+    /// `startMs`/`endMs` as WALL-clock ms from the session's `clockOrigin`,
+    /// whereas V2's `audioStart`/`audioEnd` are canonical FED-SAMPLES audio
+    /// seconds. The two agree except across an interruption, where the wall
+    /// clock keeps running and the audio clock does not. Carrying them across
+    /// is strictly better than zeroing them: the alternative loses working
+    /// replay on every existing session to avoid drift on the subset that was
+    /// interrupted.
+    static let migrateV1toV2 = MigrationStage.custom(
+        fromVersion: SessionSchemaV1.self,
+        toVersion: SessionSchemaV2.self,
+        willMigrate: nil,
+        didMigrate: { context in
+            let records = try context.fetch(
+                FetchDescriptor<SessionSchemaV2.SessionRecord>()
             )
+            for record in records {
+                record.state = SessionState.complete.rawValue
+                record.materializeLegacySegments(in: context)
+            }
+            try context.save()
         }
-        guard !stored.isEmpty, let json = try? JSONEncoder().encode(stored) else { return }
-        transcriptJSON = json
-        title = SessionRecord.deriveTitle(from: stored)
+    )
+}
+
+// ── Derived views (segments first, legacy blob as the guard-rail fallback) ──
+
+extension SessionSchemaV2.SessionRecord {
+    static let placeholderTitle = "Session in progress"
+
+    var sessionState: SessionState {
+        SessionState(rawValue: state) ?? .complete
+    }
+
+    /// The segment rows in CHRONOLOGICAL order — (audioStart, index), matching
+    /// TranscriptCore's storedEntries ordering. Append order (`index`) alone
+    /// can interleave wrongly: a finalize-split gives the pieces after the
+    /// first fresh indexes, so a listener segment appended mid-volatile would
+    /// sort between the split thinker sentences. Rows materialized from a blob
+    /// that carried no timings are all-zero and fall back to pure index order
+    /// through the tiebreak; rows from a PR#37-era blob carry real ranges and
+    /// sort correctly by `(audioStart, index)` — the same answer the tiebreak
+    /// was standing in for.
+    var orderedSegments: [SegmentRecord] {
+        segments.sorted { ($0.audioStart, $0.index) < ($1.audioStart, $1.index) }
+    }
+
+    /// The legacy V1 blob, decoded. Empty for V2-written records.
+    var legacyEntries: [StoredEntry] {
+        guard let transcriptJSON else { return [] }
+        return (try? JSONDecoder().decode([StoredEntry].self, from: transcriptJSON)) ?? []
+    }
+
+    /// The transcript as TranscriptCore segments: from the segment rows when
+    /// any exist, otherwise decoded lazily from the legacy blob — the guard
+    /// rail for records the migration stage never touched. That fallback goes
+    /// through `TranscriptCore.segments(from:)`, which maps the blob's
+    /// `startMs`/`endMs` exactly as `materializeLegacySegments` does, so a
+    /// record cannot gain or lose replay depending on which path reached it.
+    /// The read path deliberately does NOT insert rows (mutating a model from
+    /// a SwiftUI body read is asking for trouble); row materialization is the
+    /// migration stage's job, via `materializeLegacySegments(in:)`.
+    /// NOTE: the returned segments carry fresh, per-call `SegmentID`s — order
+    /// by position, never by `id`, when diffing.
+    var transcriptSegments: [TranscriptSegment] {
+        let ordered = orderedSegments
+        guard ordered.isEmpty else { return ordered.map(\.transcriptSegment) }
+        return TranscriptCore.segments(from: legacyEntries)
+    }
+
+    /// The transcript flattened to the storage/export DTO.
+    var entries: [StoredEntry] {
+        transcriptSegments.map(StoredEntry.init)
+    }
+
+    /// Whether replay affordances (tap-to-seek, follow-along highlight) have
+    /// real timings to work with (R3.3). Rows materialized from a blob that
+    /// carried no timings (base-era records) are zeroed, so those degrade to
+    /// the static view; PR#37-era records migrate with real ranges and keep
+    /// replay.
+    var hasTimings: Bool {
+        segments.contains { $0.audioStart != 0 || $0.audioEnd != 0 }
     }
 
     var coverage: CoverageResult? {
         guard let coverageJSON else { return nil }
         return try? JSONDecoder().decode(CoverageResult.self, from: coverageJSON)
+    }
+
+    /// True when the listener asked at least one question in this session.
+    var hasThreadPull: Bool {
+        entries.contains { $0.tier == Tier.question.rawValue }
+    }
+
+    /// Everything said, joined — for library search.
+    var searchableText: String {
+        entries.map(\.text).joined(separator: " ")
     }
 
     /// The thread-pull the thinker left with: the LAST question the listener
@@ -173,19 +356,10 @@ final class SessionRecord {
         }?.text
     }
 
-    /// Whether the thinker said anything after the open question — i.e. the
-    /// question got at least an attempt, rather than ending the session cold.
-    var openQuestionAnsweredByThinker: Bool {
-        let all = entries
-        guard let idx = all.lastIndex(where: {
-            $0.speaker == "listener" && $0.tier == Tier.question.rawValue
-        }) else { return false }
-        return all[(idx + 1)...].contains {
-            $0.speaker == "thinker" && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty
-        }
-    }
-
-    /// Title from the first ~8 words of the first thinker turn.
+    /// Title from the first ~8 words of the first thinker turn. The fallback
+    /// string should be unreachable in practice — the zero-speech rule deletes
+    /// sessions with no thinker segment — but any edge case still gets a
+    /// readable row.
     static func deriveTitle(from entries: [StoredEntry]) -> String {
         guard let first = entries.first(where: {
             $0.speaker == "thinker" && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty
@@ -195,41 +369,46 @@ final class SessionRecord {
         return words.count > 8 ? head + "…" : head
     }
 
+    /// The migration stage's materializer: decode the legacy blob into
+    /// `SegmentRecord` rows, index = array order. Idempotent — a record that
+    /// already has rows is left alone. The blob is kept as the
+    /// belt-and-suspenders original.
+    ///
+    /// THE TIMINGS ARE CARRIED THROUGH, and this is the function where that
+    /// actually matters: the migration stage does not go through
+    /// `TranscriptCore.segments(from:)` at all, so teaching `StoredEntry` to
+    /// decode `startMs`/`endMs` changes nothing observable without this edit.
+    /// Zeroing here would migrate every PR#37-era session replay-less,
+    /// permanently and with no error. Entries that carry no timings (base-era
+    /// blobs) still materialize zeroed, which is what keeps this a fix rather
+    /// than an invention of timings that were never recorded.
+    func materializeLegacySegments(in context: ModelContext) {
+        guard segments.isEmpty else { return }
+        for (position, entry) in legacyEntries.enumerated() {
+            let row = SegmentRecord(
+                speaker: entry.speaker,
+                text: entry.text,
+                tier: entry.tier,
+                turn: entry.turn,
+                audioStart: entry.startMs.map { Double($0) / 1000 } ?? 0,
+                audioEnd: entry.endMs.map { Double($0) / 1000 } ?? 0,
+                bargedIn: false,
+                index: position
+            )
+            context.insert(row)
+            row.session = self
+        }
+    }
+
     // ── export ──
 
-    /// Markdown export, shaped for a PKM vault (Obsidian-style): YAML
-    /// frontmatter for the machine-readable facts, `[mm:ss]` stamps on entries
-    /// when timing was captured, coverage when a check ran, and the open
-    /// question called out at the end — the line worth coming back for.
+    /// Markdown export: title, date, transcript, coverage when present.
     var markdown: String {
-        var lines: [String] = []
-
-        // Frontmatter — properties, not prose.
-        lines.append("---")
-        lines.append("title: \"\(Self.yamlEscaped(title))\"")
-        lines.append("date: \(startedAt.formatted(.iso8601))")
-        lines.append("duration: \"\(Self.clock(ms: Int(duration * 1000)))\"")
-        let criteria = criteriaText
-            .split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        if !criteria.isEmpty {
-            lines.append("criteria:")
-            for topic in criteria {
-                lines.append("  - \"\(Self.yamlEscaped(topic))\"")
-            }
-        }
-        if let openQuestion {
-            lines.append("open_question: \"\(Self.yamlEscaped(openQuestion))\"")
-        }
-        lines.append("---")
-        lines.append("")
-
-        lines.append("# \(title)")
+        var lines: [String] = ["# \(title)", ""]
+        lines.append(startedAt.formatted(date: .abbreviated, time: .shortened))
         lines.append("")
         for entry in entries where !entry.text.isEmpty {
-            let stamp = entry.startMs.map { "[\(Self.clock(ms: $0))] " } ?? ""
-            lines.append("\(stamp)\(Self.markdownLabel(for: entry)) \(entry.text)")
+            lines.append("\(Self.markdownLabel(for: entry)) \(entry.text)")
             lines.append("")
         }
         if let coverage {
@@ -247,25 +426,7 @@ final class SessionRecord {
             }
             lines.append("")
         }
-        if let openQuestion {
-            lines.append("## The question you left with")
-            lines.append("")
-            lines.append("> \(openQuestion)")
-            lines.append("")
-        }
         return lines.joined(separator: "\n")
-    }
-
-    /// `mm:ss` from ms; minutes are not capped, so a long session reads
-    /// naturally as e.g. `[75:12]`.
-    private static func clock(ms: Int) -> String {
-        String(format: "%02d:%02d", ms / 60_000, (ms / 1000) % 60)
-    }
-
-    /// Minimal escaping for double-quoted YAML scalars.
-    private static func yamlEscaped(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     private static func markdownLabel(for entry: StoredEntry) -> String {
@@ -275,5 +436,26 @@ final class SessionRecord {
         case Tier.reflection.rawValue: return "**Listener (reflection):**"
         default: return "**Listener:**"
         }
+    }
+}
+
+extension SessionSchemaV2.SegmentRecord {
+    /// Rehydrate as a TranscriptCore segment. The `SegmentID` is minted fresh
+    /// per call (engine identity is a live concern, not a stored one) — do not
+    /// use it as a stable diffing key. An unknown speaker string falls to
+    /// `thinker`, matching TranscriptCore's fail-safe reading.
+    var transcriptSegment: TranscriptSegment {
+        TranscriptSegment(
+            id: SegmentID(),
+            speaker: Speaker(rawValue: speaker) ?? .thinker,
+            text: text,
+            state: .final,
+            audioStart: audioStart,
+            audioEnd: audioEnd,
+            turn: turn,
+            tier: tier.flatMap(Tier.init(rawValue:)),
+            bargedIn: bargedIn,
+            index: index
+        )
     }
 }

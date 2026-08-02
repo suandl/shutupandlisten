@@ -94,11 +94,16 @@ actor PersistenceWriter: ModelActor {
     /// post-drain store snapshot — ground truth reconciled against what the
     /// run loop already wrote. Returns false when the zero-speech rule deleted
     /// the record (no finalized thinker segment → record + audio gone).
+    ///
+    /// `costUSD` is the session's model spend, or nil when any call went
+    /// unmetered — nil means "cost unknown", not "free", so it is written
+    /// through as-is rather than coerced to zero.
     func closeOut(
         duration: TimeInterval,
         audioFileName: String?,
         coverage: CoverageResult?,
         criteria: String,
+        costUSD: Double?,
         finalSegments: [TranscriptSegment]
     ) -> Bool {
         isClosed = true
@@ -120,6 +125,7 @@ actor PersistenceWriter: ModelActor {
         record.audioFileName = audioFileName
         record.criteriaText = criteria
         record.coverageJSON = coverage.flatMap { try? JSONEncoder().encode($0) }
+        record.costUSD = costUSD
         record.title = SessionRecord.deriveTitle(from: record.entries)
         save()
         return true

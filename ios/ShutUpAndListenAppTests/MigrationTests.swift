@@ -1,11 +1,26 @@
 // The V1 → V2 migration stage, against a real fixture store (plan Phase 4
 // test scenarios): a store written under SchemaV1 (whole-transcript
 // `transcriptJSON` blobs) reopened through SessionMigrationPlan must come out
-// with ordered SegmentRecord rows (index = array order, zeroed time ranges),
-// state `complete`, and the legacy blob kept. The lazy-materialize guard rail
-// (a V2 record that somehow still has only a blob) must render on read.
+// with ordered SegmentRecord rows (index = array order), state `complete`, and
+// the legacy blob kept. The lazy-materialize guard rail (a V2 record that
+// somehow still has only a blob) must render on read.
+//
+// This is THE DATA-SAFETY GATE of the transcript-core port (port plan §5.3,
+// §5.5). TWO inbound shapes are real after the port, and both are covered here:
+//
+//   base-era  (pre-PR#37)  no timings in the blob → zeroed ranges, no replay.
+//                          Asserted as a NEGATIVE, so the timing fix can never
+//                          become "invent timings that were never recorded".
+//   PR#37-era (current main) startMs/endMs in the blob → real ranges, replay.
+//
+// The PR#37 cases go through the REAL SessionMigrationPlan, not through
+// `TranscriptCore.segments(from:)` directly, and that is the entire point: the
+// migration stage runs `materializeLegacySegments(in:)`, which is where the
+// timings were being dropped. A test that asserts on `segments(from:)` passes
+// with the bug fully intact.
 //
 // NOTE: this target is not yet wired into the Xcode project — see README.md.
+// Until an operator does that (a Mac/Xcode GUI step), none of this runs.
 
 import SwiftData
 import TranscriptCore
@@ -28,18 +43,50 @@ final class MigrationTests: XCTestCase {
         }
     }
 
+    /// A base-era (pre-PR#37) blob: the four original keys, no timings. This
+    /// is what a device that never ran a PR#37 build has on disk.
     private func fixtureJSON() throws -> Data {
-        try JSONEncoder().encode([
+        try JSONEncoder().encode(baseEntries)
+    }
+
+    private var baseEntries: [StoredEntry] {
+        [
             StoredEntry(speaker: "thinker", text: "So the idea is a reading app.", tier: nil, turn: 1),
             StoredEntry(speaker: "listener", text: "mm", tier: "acknowledge", turn: 1),
             StoredEntry(speaker: "thinker", text: "It hides every number.", tier: nil, turn: 2),
             StoredEntry(speaker: "listener", text: "What replaces them?", tier: "question", turn: 2),
-        ])
+        ]
+    }
+
+    /// The SAME transcript, in the shape PR#37 actually wrote: every entry
+    /// carrying startMs/endMs.
+    private var pr37Entries: [StoredEntry] {
+        [
+            StoredEntry(speaker: "thinker", text: "So the idea is a reading app.", tier: nil,
+                        turn: 1, startMs: 1500, endMs: 4200),
+            StoredEntry(speaker: "listener", text: "mm", tier: "acknowledge",
+                        turn: 1, startMs: 4300, endMs: 4800),
+            StoredEntry(speaker: "thinker", text: "It hides every number.", tier: nil,
+                        turn: 2, startMs: 5000, endMs: 7250),
+            StoredEntry(speaker: "listener", text: "What replaces them?", tier: "question",
+                        turn: 2, startMs: 7400, endMs: 9100),
+        ]
     }
 
     /// Write one record into a V1-schema store at `storeURL`, then release the
     /// container so V2 can reopen the file.
-    private func writeV1Fixture() throws {
+    ///
+    /// Defaults to the base-era blob so the pre-existing cases keep asserting
+    /// exactly what they always asserted; the PR#37 cases pass their own
+    /// entries. The V1 MODEL is the PR#37 shape either way — that is §5.2's
+    /// point, and `testV1FixtureIsPR37Shape` pins it.
+    @discardableResult
+    private func writeV1Fixture(
+        entries: [StoredEntry]? = nil,
+        costUSD: Double? = nil,
+        transcriptIsReconciled: Bool = false
+    ) throws -> Data {
+        let blob = try JSONEncoder().encode(entries ?? baseEntries)
         let schema = Schema(versionedSchema: SessionSchemaV1.self)
         // SDK-CHECK: ModelConfiguration(schema:url:) — the url-pinned
         // configuration initializer.
@@ -50,12 +97,15 @@ final class MigrationTests: XCTestCase {
             startedAt: Date(timeIntervalSince1970: 1_700_000_000),
             duration: 61,
             title: "So the idea is a reading app.",
-            transcriptJSON: try fixtureJSON(),
-            criteriaText: "pricing"
+            transcriptJSON: blob,
+            criteriaText: "pricing",
+            costUSD: costUSD,
+            transcriptIsReconciled: transcriptIsReconciled
         )
         context.insert(record)
         try context.save()
         // `container` and `context` go out of scope here, releasing the file.
+        return blob
     }
 
     private func openV2() throws -> ModelContainer {
@@ -67,6 +117,129 @@ final class MigrationTests: XCTestCase {
             configurations: [config]
         )
     }
+
+    // ── §5.5 items 1–5: the port's data-safety set ──
+
+    /// V1 is declared at the PR#37 shape, not the base shape. The rewrite's own
+    /// V1 was a snapshot of the base — it had never seen PR#37 — and landing
+    /// that would point SwiftData's migration source at a shape matching no
+    /// device that ran a current-main build. Both PR#37 fields are
+    /// lightweight-inferrable from the true base (costUSD optional,
+    /// transcriptIsReconciled defaulted), so ONE V1 covers both shipped stores.
+    func testV1FixtureIsPR37Shape() throws {
+        try writeV1Fixture(costUSD: 0.0042, transcriptIsReconciled: true)
+
+        // Reopen as V1 and read the PR#37 fields back: if either were missing
+        // from the declaration this would not compile, and if the store did not
+        // round-trip them it would not pass.
+        let schema = Schema(versionedSchema: SessionSchemaV1.self)
+        let config = ModelConfiguration(schema: schema, url: storeURL)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+        let record = try XCTUnwrap(
+            context.fetch(FetchDescriptor<SessionSchemaV1.SessionRecord>()).first
+        )
+        XCTAssertEqual(try XCTUnwrap(record.costUSD), 0.0042, accuracy: 1e-9,
+                       "V1 carries PR#37's costUSD")
+        XCTAssertTrue(record.transcriptIsReconciled,
+                      "V1 carries PR#37's transcriptIsReconciled")
+    }
+
+    /// `costUSD` must survive into V2. The rewrite's V2 omitted it; dropping it
+    /// would silently void SessionDetailView's cost readout for every past
+    /// session.
+    func testCostUSDSurvivesV1ToV2() throws {
+        try writeV1Fixture(costUSD: 0.0137)
+        let context = ModelContext(try openV2())
+        let record = try XCTUnwrap(context.fetch(FetchDescriptor<SessionRecord>()).first)
+
+        XCTAssertEqual(try XCTUnwrap(record.costUSD), 0.0137, accuracy: 1e-9,
+                       "the cost readout survives the stage")
+    }
+
+    /// THE most valuable case in this file (§5.3 part 2). A PR#37-era blob,
+    /// seeded and reopened THROUGH SessionMigrationPlan, must materialize rows
+    /// with real ranges. Going through the real plan is the whole point: it is
+    /// the only thing that exercises `materializeLegacySegments(in:)`, which is
+    /// where the drop actually happened. Asserting on
+    /// `TranscriptCore.segments(from:)` instead would pass with the bug intact.
+    func testMigrationCarriesPR37Timings() throws {
+        try writeV1Fixture(entries: pr37Entries)
+        let context = ModelContext(try openV2())
+        let record = try XCTUnwrap(context.fetch(FetchDescriptor<SessionRecord>()).first)
+
+        let segments = record.orderedSegments
+        XCTAssertEqual(segments.count, 4)
+        XCTAssertEqual(segments.map(\.audioStart), [1.5, 4.3, 5.0, 7.4],
+                       "startMs → audioStart, ÷1000")
+        XCTAssertEqual(segments.map(\.audioEnd), [4.2, 4.8, 7.25, 9.1],
+                       "endMs → audioEnd, ÷1000")
+        XCTAssertTrue(record.hasTimings,
+                      "a PR#37-era session GAINS working replay through the port")
+        // Order is unchanged by the timings — real ranges sort to the same
+        // sequence the index tiebreak was standing in for.
+        XCTAssertEqual(segments.map(\.index), [0, 1, 2, 3])
+        XCTAssertEqual(segments.map(\.text), pr37Entries.map(\.text))
+    }
+
+    /// The migration stage and the lazy read-path fallback must agree: a record
+    /// must not gain or lose replay depending on which one reached it. The
+    /// stage goes through `materializeLegacySegments(in:)`; the fallback goes
+    /// through `TranscriptCore.segments(from:)`. Two functions, one contract.
+    @MainActor
+    func testMaterializedRowsAgreeWithLazyFallback() throws {
+        let blob = try writeV1Fixture(entries: pr37Entries)
+
+        // (a) through the real migration stage.
+        let migrated = try XCTUnwrap(
+            ModelContext(try openV2()).fetch(FetchDescriptor<SessionRecord>()).first
+        )
+        XCTAssertFalse(migrated.segments.isEmpty, "precondition: the stage materialized rows")
+        let migratedSegments = migrated.transcriptSegments
+
+        // (b) the same blob on a record the stage never touched.
+        let schema = Schema(versionedSchema: SessionSchemaV2.self)
+        let memory = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
+        )
+        let untouched = SessionRecord(
+            startedAt: .now, duration: 61, title: "t", state: .complete,
+            transcriptJSON: blob, criteriaText: ""
+        )
+        memory.mainContext.insert(untouched)
+        try memory.mainContext.save()
+        XCTAssertTrue(untouched.segments.isEmpty, "precondition: no rows — the fallback path")
+        let fallbackSegments = untouched.transcriptSegments
+
+        XCTAssertEqual(migratedSegments.map(\.audioStart), fallbackSegments.map(\.audioStart),
+                       "materializer and fallback must produce identical ranges")
+        XCTAssertEqual(migratedSegments.map(\.audioEnd), fallbackSegments.map(\.audioEnd))
+        XCTAssertEqual(migratedSegments.map(\.text), fallbackSegments.map(\.text))
+        XCTAssertEqual(migrated.hasTimings, hasTimings(fallbackSegments),
+                       "and must agree about whether replay is available at all")
+    }
+
+    /// The negative that keeps the timing fix honest: a base-era blob carried
+    /// no timings, so nothing may be invented for it. Zeroed ranges in,
+    /// zeroed ranges out, `hasTimings == false`, static detail view — exactly
+    /// as before the port.
+    func testBaseShapeYieldsZeroedRangesAndNoTimings() throws {
+        try writeV1Fixture(entries: baseEntries)
+        let context = ModelContext(try openV2())
+        let record = try XCTUnwrap(context.fetch(FetchDescriptor<SessionRecord>()).first)
+
+        let segments = record.orderedSegments
+        XCTAssertEqual(segments.count, 4)
+        XCTAssertTrue(
+            segments.allSatisfy { $0.audioStart == 0 && $0.audioEnd == 0 },
+            "no timings were ever recorded for these — none may be invented"
+        )
+        XCTAssertFalse(record.hasTimings, "degrades to the static view, as it always did")
+        XCTAssertEqual(segments.map(\.index), [0, 1, 2, 3], "order still comes from the index")
+    }
+
+    // ── §5.5 item 6: the pre-existing three, kept as they were ──
 
     func testMigrationMaterializesOrderedSegmentRows() throws {
         try writeV1Fixture()
