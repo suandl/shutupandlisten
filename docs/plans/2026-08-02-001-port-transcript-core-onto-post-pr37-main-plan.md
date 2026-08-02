@@ -1352,12 +1352,37 @@ check() {
   #    raw strings: a Release binary is stripped of local symbols, but Swift
   #    type names survive in metadata/reflection sections, so `strings` sees
   #    what `nm` no longer does. Either hit is a failure.
+  #
+  #    Dump ONCE to a file and grep the FILE. Never `grep -q` a live producer
+  #    here: `grep -q` exits at its first match and closes the pipe, the
+  #    `nm`/`strings` producer then dies of SIGPIPE (141), and `pipefail` —
+  #    load-bearing for the `tee` below — makes the whole pipeline nonzero. The
+  #    `if` would take the *else* branch on a real hit, leaving `fail` unset, and
+  #    B5 would print OK with the seam shipped. That is a fail-OPEN on precisely
+  #    the condition this gate exists to catch. A file has no producer to kill,
+  #    so the early exit is harmless. (Buffering into a shell variable does not
+  #    fix it: `printf '%s' "$SYMS" | grep -q` re-creates the same pipe and the
+  #    builtin takes the same EPIPE.)
+  SYMS=$(mktemp "${TMPDIR:-/tmp}/sual-b5-syms.XXXXXX") \
+    || { echo 'B5 FAILED: could not create the symbol-dump temp file' >&2; return 1; }
+  { nm -a "$BIN" 2>/dev/null; strings -a "$BIN" 2>/dev/null; } > "$SYMS"
+
+  # Both tools silent means the binary was not read at all — an unreadable
+  # binary is indistinguishable from a clean one by grep alone, so fail closed
+  # rather than reporting "no seam symbols found".
+  if [ ! -s "$SYMS" ]; then
+    echo "B5 FAILED: nm and strings both produced no output for $BIN" >&2
+    rm -f "$SYMS"
+    return 1
+  fi
+
   for sym in CaptureSeam CaptureURLProtocol CaptureAudioInjector; do
-    if { nm -a "$BIN" 2>/dev/null; strings -a "$BIN" 2>/dev/null; } | grep -q "$sym"; then
+    if grep -q "$sym" "$SYMS"; then
       echo "SECURITY: '$sym' found in the archived binary" >&2
       fail=1
     fi
   done
+  rm -f "$SYMS"
 
   [ "$fail" -eq 0 ] || { echo 'B5 FAILED: archive is not clean' >&2; return 1; }
   echo 'B5 OK — no capture fixture, no capture-seam symbols in the Release archive'
