@@ -51,7 +51,7 @@ import AVFoundation
 import Foundation
 import UIKit
 
-final class CaptureController {
+final class CaptureController: TTSPlaybackSink {
     /// Truthful capture state for the UI (R1.2). `resuming` means a resume was
     /// attempted but samples have not flowed yet; only flowing audio proves
     /// `running`.
@@ -107,6 +107,34 @@ final class CaptureController {
     /// reads it — hence the lock.
     private let converterLock = NSLock()
     private var converter: AVAudioConverter?
+    /// The format the current converter was built FROM. The mic path sets it
+    /// from the tap; the injection path compares against it so fixture buffers
+    /// in a different format rebuild the converter instead of being fed through
+    /// a mismatched one.
+    private var converterInputFormat: AVAudioFormat?
+
+    // ── TTS playback through THIS engine (see `TTSPlaybackSink`) ──
+    // Re-homed from AudioPipeline, which owned it before the port. The
+    // listener's voice must be rendered by the SAME voice-processing IO unit
+    // that captures the mic: that is what gives the AEC a correct echo
+    // reference so it cancels our own speech from the input, which is what the
+    // barge-in path assumes. Render it anywhere else and the mic re-hears the
+    // companion and reads it as thinker speech.
+    //
+    // Voice-processing the OUTPUT node is the documented duplex pattern, and it
+    // is also what stops the vpio unit render-faulting every cycle
+    // ("auou/vpio/appl, render err: -1").
+    //
+    // The node is recreated per engine build — see `attachTTSPlayer()`. Every
+    // rebuild path must call it, or TTS goes permanently silent after the first
+    // route change or media-services reset. CaptureController's rebuild
+    // lifecycle is richer than AudioPipeline's, so this is new code rather than
+    // a copy.
+    private var ttsPlayer = AVAudioPlayerNode()
+    /// The format TTS buffers must be in to schedule on the player node (the
+    /// engine mixer's format). `nil` until the engine is running —
+    /// `SpeechOutput.speak` already guards on it.
+    private(set) var ttsFormat: AVAudioFormat?
 
     // ── fed-samples clock (written on the audio thread, read anywhere) ──
     private let clockLock = NSLock()
@@ -118,6 +146,11 @@ final class CaptureController {
     /// Set by a resume attempt; the next buffer that flows clears it and
     /// promotes the state to `.running` — proof, not assumption.
     private var proveResumeOnNextBuffer = false
+    /// Set on the way INTO a pause; the next buffer that flows clears the VAD
+    /// window BEFORE evaluating itself. Mirrors `proveResumeOnNextBuffer`
+    /// deliberately — see `pause()` for why this is a flag and not a direct
+    /// write.
+    private var resetVADOnNextBuffer = false
 
     // ── VAD tuning + state (audio thread only; ported verbatim from AudioPipeline) ──
     /// Speech must exceed the noise floor by this margin to count as onset.
@@ -163,10 +196,18 @@ final class CaptureController {
     /// best-effort (`isRecording` tells the host whether it opened); capture
     /// itself failing throws. Returns the canonical buffer stream for the
     /// transcription engine (single consumer).
+    ///
+    /// `injecting` is the CI capture seam (design: in-app audio injection):
+    /// no live tap is installed — the simulator mic is silent and a tap would
+    /// only add a noise floor — and buffers arrive via `injectForCapture(_:)`
+    /// instead. The engine still starts, so the listener's TTS renders through
+    /// the AEC graph exactly as in production. Always `false` in shipped paths;
+    /// the caller's flag is compile-time `false` in Release.
     func start(
         canonicalFormat: AVAudioFormat,
         clockOrigin: TimeInterval,
-        recordingTo recordingURL: URL? = nil
+        recordingTo recordingURL: URL? = nil,
+        injecting: Bool = false
     ) throws -> AsyncStream<AVAudioPCMBuffer> {
         precondition(!running, "capture already running")
         // The VAD reads float32 or int16 samples; anything else would run the
@@ -184,6 +225,7 @@ final class CaptureController {
         anchorAudio = 0
         anchorWallMs = 0
         proveResumeOnNextBuffer = false
+        resetVADOnNextBuffer = false
         clockLock.unlock()
         // VAD state resets live HERE (not in stop): this runs before the tap
         // exists, so no audio-thread write can race them.
@@ -217,9 +259,15 @@ final class CaptureController {
             // AEC before engine.start(), failure SURFACED (R1.3): our own TTS
             // must never read as thinker speech, or barge-in detection lies.
             try engine.inputNode.setVoiceProcessingEnabled(true)
-            try installConverterAndTap()
+            try installConverterAndTap(installTap: !injecting)
+            // The TTS graph goes up BEFORE the engine starts, and after the
+            // input node's voice processing is enabled — the echo reference is
+            // only correct when both sides of the duplex unit are configured.
+            attachTTSPlayer()
             engine.prepare()
             try engine.start()
+            // The player must be running to accept and render scheduled buffers.
+            ttsPlayer.play()
         } catch {
             finishBuffers()
             stopRecording()
@@ -252,11 +300,14 @@ final class CaptureController {
         resumeRetryTimer?.invalidate()
         resumeRetryTimer = nil
         stopRecording() // safety net; the host normally stops recording first
+        ttsPlayer.stop()
+        ttsFormat = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         finishBuffers()
         converterLock.lock()
         converter = nil
+        converterInputFormat = nil
         converterLock.unlock()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         setState(.idle)
@@ -276,7 +327,12 @@ final class CaptureController {
 
     /// (Re)build the persistent converter for the CURRENT tap format and
     /// (re)install the tap. The canonical side never changes mid-session.
-    private func installConverterAndTap() throws {
+    ///
+    /// `installTap: false` is capture-injection mode: the converter is still
+    /// built (so the graph is complete and a later real buffer would convert),
+    /// but no mic tap is installed — `injectForCapture(_:)` supplies the
+    /// buffers and rebuilds the converter for the fixture's format.
+    private func installConverterAndTap(installTap: Bool = true) throws {
         guard let canonicalFormat else { throw CaptureError.notStarted }
         let input = engine.inputNode
         let tapFormat = input.outputFormat(forBus: 0)
@@ -285,11 +341,96 @@ final class CaptureController {
         }
         converterLock.lock()
         converter = newConverter
+        converterInputFormat = tapFormat
         converterLock.unlock()
+        guard installTap else { return }
         input.installTap(onBus: 0, bufferSize: 2048, format: tapFormat) { [weak self] buffer, _ in
             self?.process(buffer)
         }
     }
+
+    // ── TTS playback (TTSPlaybackSink) ──
+
+    /// Build a FRESH player node into the current engine and publish its
+    /// format. Called from `start()` and from every path that rebuilds the
+    /// engine or its graph. A fresh node each time is deliberate: reusing one
+    /// across an engine rebuild is what leaves TTS permanently silent after a
+    /// route change or a media-services reset.
+    private func attachTTSPlayer() {
+        // The documented duplex pattern — and it also stops the vpio unit
+        // render-faulting every cycle when only the input side is processed.
+        try? engine.outputNode.setVoiceProcessingEnabled(true)
+        if ttsPlayer.engine === engine { engine.detach(ttsPlayer) }
+        ttsPlayer = AVAudioPlayerNode()
+        engine.attach(ttsPlayer)
+        // Touching mainMixerNode also establishes the mixer→output connection
+        // whose format we read below.
+        let mixer = engine.mainMixerNode
+        let playbackFormat = mixer.outputFormat(forBus: 0)
+        engine.connect(ttsPlayer, to: mixer, format: playbackFormat)
+        ttsFormat = playbackFormat
+    }
+
+    /// Schedule one synthesized buffer for playback through the AEC engine.
+    /// `onComplete` fires on the main queue when this buffer finishes rendering
+    /// (used to detect the end of the whole clip on the last buffer).
+    ///
+    /// TTS never touches the canonical stream: the recording sink and the
+    /// analyzer see the mic tap, and the AEC removes the companion's voice from
+    /// it. The player node sits downstream of the tap point on purpose.
+    func playTTS(_ buffer: AVAudioPCMBuffer, onComplete: @escaping @Sendable () -> Void) {
+        guard running else { return }
+        if !ttsPlayer.isPlaying { ttsPlayer.play() }
+        // `.dataPlayedBack` fires when the buffer has actually finished
+        // rendering (not merely been consumed), so the clip-end signal is
+        // accurate.
+        ttsPlayer.scheduleBuffer(
+            buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack
+        ) { _ in
+            DispatchQueue.main.async(execute: onComplete)
+        }
+    }
+
+    /// Instant yield on barge-in: stop the player and flush anything queued.
+    /// The next `playTTS` restarts the player.
+    func stopTTS() {
+        ttsPlayer.stop()
+    }
+
+    #if DEBUG
+    /// Capture-only entry point (design: in-app audio injection). Feeds one
+    /// fixture buffer through the SAME canonical path the mic tap uses, so the
+    /// injected audio reaches the recording sink, the analyzer's stream and the
+    /// VAD — and advances the fed-samples clock exactly as live audio does.
+    ///
+    /// That last part is what makes injection honest under the transcript-core
+    /// rewrite: because the canonical timeline is fed-samples, injected fixture
+    /// audio produces real `audioStart`/`audioEnd` ranges and the UITest
+    /// exercises the replay path too. Under the old wall-clock stamping it
+    /// could not.
+    ///
+    /// There is deliberately ONE `process(_:)` implementation, exercised by
+    /// both the mic and the injector.
+    func injectForCapture(_ buffer: AVAudioPCMBuffer) {
+        guard running else { return }
+        // `start()` built the converter from the MIC's tap format; fixture
+        // buffers arrive in the file's. Rebuild on the first one (and on any
+        // change) rather than feeding a mismatched converter, which would
+        // either fail conversion or resample against the wrong input rate and
+        // silently skew every timing the run produces.
+        converterLock.lock()
+        let stale = converterInputFormat != buffer.format
+        converterLock.unlock()
+        if stale, let canonicalFormat,
+           let rebuilt = AVAudioConverter(from: buffer.format, to: canonicalFormat) {
+            converterLock.lock()
+            converter = rebuilt
+            converterInputFormat = buffer.format
+            converterLock.unlock()
+        }
+        process(buffer)
+    }
+    #endif
 
     // ── the fed-samples clock ──
 
@@ -399,10 +540,26 @@ final class CaptureController {
         let audioTime = anchorAudio
         let prove = proveResumeOnNextBuffer
         proveResumeOnNextBuffer = false
+        let resetVAD = resetVADOnNextBuffer
+        resetVADOnNextBuffer = false
         clockLock.unlock()
         if prove {
             // Samples are flowing again — NOW the resume is proven (R1.2).
             DispatchQueue.main.async { [weak self] in self?.setState(.running) }
+        }
+        if resetVAD {
+            // Clear the VAD window BEFORE this buffer is evaluated, so the
+            // first post-interruption buffer is judged on its own evidence.
+            // Written here, on the audio thread, which is the only writer of
+            // these fields — that is the whole point of the flag (see pause()).
+            //
+            // `noiseFloorDb` is deliberately NOT reset: it is usually the same
+            // room, and letting it re-converge is better than snapping back to
+            // -50. A genuine route change rebuilds the graph and resets it
+            // through `start()`'s path instead.
+            inSpeech = false
+            speechBufferRun = 0
+            lastVoiceMs = 0
         }
 
         // (a) the analyzer's stream (continuation read under the lock — the
@@ -578,11 +735,43 @@ final class CaptureController {
     /// A phone call, Siri, an alarm: the system stopped our audio. Paused is
     /// the truthful default until samples flow again; while no samples flow
     /// the fed-samples clock (and the recording) pause with us.
+    ///
+    /// The VAD window is cleared across the gap. AudioPipeline's `suspend()`
+    /// did this explicitly and said why: *"VAD state so a half-formed onset
+    /// doesn't survive the gap."* Without it the detector keeps `inSpeech`,
+    /// `speechBufferRun` and `lastVoiceMs` from before the interruption, so
+    /// post-resume either a half-formed onset completes against pre-gap
+    /// buffers, or an `inSpeech == true` carried across a five-minute phone
+    /// call fires a hangover-driven end-of-speech the instant audio returns.
+    /// Either way the first turn after an interruption is decided on stale
+    /// evidence.
+    ///
+    /// It is done as a FLAG rather than a direct write because those fields are
+    /// written from the audio thread. `start()` may write them lock-free only
+    /// because it runs before the tap exists; `pause()` cannot make that claim
+    /// — the tap is still installed and a buffer can be in flight. The flag
+    /// mirrors `proveResumeOnNextBuffer`, which solves this identical problem
+    /// for the clock, and keeps the audio thread the only writer.
     private func pause() {
         guard state == .running || state == .resuming else { return }
         engine.pause()
+        clockLock.lock()
+        resetVADOnNextBuffer = true
+        clockLock.unlock()
         setState(.paused)
         scheduleResumeRetry()
+    }
+
+    /// Whether a VAD reset is armed and has not yet been consumed by a buffer.
+    /// The observable half of `pause()`'s contract: after a pause this is true,
+    /// and it goes false only once a buffer has been evaluated against the
+    /// cleared window. Tests assert the ordering through it — a reset applied
+    /// AFTER the first post-resume buffer passes an `inSpeech`-only check and
+    /// still decides that turn on stale evidence.
+    var vadResetPending: Bool {
+        clockLock.lock()
+        defer { clockLock.unlock() }
+        return resetVADOnNextBuffer
     }
 
     private func attemptResume() {
@@ -594,6 +783,9 @@ final class CaptureController {
                 engine.prepare()
                 try engine.start()
             }
+            // The engine was paused/stopped under the player; it must be told
+            // to play again or the next clip is scheduled into silence.
+            ttsPlayer.play()
             // Not `.running` yet: the next flowing buffer proves it.
             clockLock.lock()
             proveResumeOnNextBuffer = true
@@ -631,6 +823,11 @@ final class CaptureController {
         engine.inputNode.removeTap(onBus: 0)
         do {
             try installConverterAndTap()
+            // The output route changed under the player too: the mixer's
+            // format can differ, so republish it and reconnect. Skipping this
+            // is the "silent companion after unplugging headphones" failure.
+            attachTTSPlayer()
+            ttsPlayer.play()
         } catch {
             onError?("The microphone route changed and could not be rebuilt: \(error.localizedDescription)")
             setState(.paused)
@@ -647,10 +844,14 @@ final class CaptureController {
         engine.inputNode.removeTap(onBus: 0)
         do {
             try installConverterAndTap()
+            // A configuration change is exactly when the mixer's format moves;
+            // rebuild the TTS branch against the new graph.
+            attachTTSPlayer()
             if !engine.isRunning {
                 engine.prepare()
                 try engine.start()
             }
+            ttsPlayer.play()
             clockLock.lock()
             proveResumeOnNextBuffer = true
             clockLock.unlock()
@@ -672,8 +873,13 @@ final class CaptureController {
             try configureSession()
             try engine.inputNode.setVoiceProcessingEnabled(true)
             try installConverterAndTap()
+            // A brand-new engine: the old player node belongs to an object that
+            // no longer exists. Without this re-attach the companion is
+            // permanently mute for the rest of the session.
+            attachTTSPlayer()
             engine.prepare()
             try engine.start()
+            ttsPlayer.play()
             clockLock.lock()
             proveResumeOnNextBuffer = true
             clockLock.unlock()
