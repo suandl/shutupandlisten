@@ -218,6 +218,16 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(migratedSegments.map(\.text), fallbackSegments.map(\.text))
         XCTAssertEqual(migrated.hasTimings, hasTimings(fallbackSegments),
                        "and must agree about whether replay is available at all")
+
+        // The property, not just the segments. `record.hasTimings` is what
+        // SessionDetailView gates tap-to-seek and highlighting on, so the two
+        // paths agreeing about their SEGMENTS is not enough: a `hasTimings`
+        // that reads only the stored rows returns false here, and this record
+        // renders static while holding the timings to drive replay.
+        XCTAssertTrue(untouched.hasTimings,
+                      "the fallback path keeps replay — timed segments, timed record")
+        XCTAssertEqual(untouched.hasTimings, migrated.hasTimings,
+                       "the property must not depend on which path reached the record")
     }
 
     /// The negative that keeps the timing fix honest: a base-era blob carried
@@ -285,6 +295,51 @@ final class MigrationTests: XCTestCase {
         XCTAssertTrue(record.hasThreadPull)
         XCTAssertTrue(record.searchableText.contains("hides every number"))
         XCTAssertTrue(record.markdown.contains("**Listener (thread-pull):** What replaces them?"))
+    }
+
+    /// SessionDetailView's open-question card reads `openQuestion` AND
+    /// `openQuestionAnsweredByThinker` — the check mark under the question. The
+    /// port dropped the second from the V2 extension while both call sites
+    /// stayed, which broke the app target's compile. Pin both polarities so the
+    /// pair cannot drift apart again.
+    @MainActor
+    func testOpenQuestionAnsweredByThinkerReadsEntriesAfterTheQuestion() throws {
+        let schema = Schema(versionedSchema: SessionSchemaV2.self)
+        let container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
+        )
+        func makeRecord(_ entries: [StoredEntry]) throws -> SessionRecord {
+            let record = SessionRecord(
+                startedAt: .now, duration: 61, title: "t", state: .complete,
+                transcriptJSON: try JSONEncoder().encode(entries), criteriaText: ""
+            )
+            container.mainContext.insert(record)
+            try container.mainContext.save()
+            return record
+        }
+
+        // The fixture ends ON the question: the thinker left with it open.
+        let unanswered = try makeRecord(baseEntries)
+        XCTAssertEqual(unanswered.openQuestion, "What replaces them?")
+        XCTAssertFalse(unanswered.openQuestionAnsweredByThinker,
+                       "nothing follows the last question — still open")
+
+        // A thinker turn after that question is the attempt.
+        let answered = try makeRecord(baseEntries + [
+            StoredEntry(speaker: "thinker", text: "Maybe a shape.", tier: nil, turn: 3),
+        ])
+        XCTAssertEqual(answered.openQuestion, "What replaces them?",
+                       "the card still shows the same question")
+        XCTAssertTrue(answered.openQuestionAnsweredByThinker,
+                      "picked it up before stopping")
+
+        // Silence dressed as speech is not an attempt.
+        let blank = try makeRecord(baseEntries + [
+            StoredEntry(speaker: "thinker", text: "   ", tier: nil, turn: 3),
+        ])
+        XCTAssertFalse(blank.openQuestionAnsweredByThinker,
+                       "a whitespace-only turn never answered anything")
     }
 
     /// The guard rail: a V2 record that still has ONLY the legacy blob (the

@@ -328,8 +328,23 @@ extension SessionSchemaV2.SessionRecord {
     /// carried no timings (base-era records) are zeroed, so those degrade to
     /// the static view; PR#37-era records migrate with real ranges and keep
     /// replay.
+    ///
+    /// Source selection mirrors `transcriptSegments` exactly — rows when any
+    /// exist, the legacy blob otherwise — because the two answer the same
+    /// question about the same transcript. Reading only the stored rows would
+    /// report "no timings" for a PR#37-era record the migration stage never
+    /// materialized, while the fallback hands the view timed segments: the
+    /// replay affordances would be withheld from a record that has the timings
+    /// to drive them.
+    ///
+    /// The row path stays a plain scan (no sort, no segment mapping); the
+    /// fallback decodes the blob, which is why SessionDetailView reads this
+    /// once per body rather than once per rendered line.
     var hasTimings: Bool {
-        segments.contains { $0.audioStart != 0 || $0.audioEnd != 0 }
+        guard segments.isEmpty else {
+            return segments.contains { $0.audioStart != 0 || $0.audioEnd != 0 }
+        }
+        return TranscriptCore.hasTimings(transcriptSegments)
     }
 
     var coverage: CoverageResult? {
@@ -354,6 +369,20 @@ extension SessionSchemaV2.SessionRecord {
         entries.last {
             $0.speaker == "listener" && $0.tier == Tier.question.rawValue
         }?.text
+    }
+
+    /// Whether the thinker said anything after the open question — i.e. the
+    /// question got at least an attempt, rather than ending the session cold.
+    /// Reads `entries`, the same source as `openQuestion`, so the card's check
+    /// mark always describes the question the card is showing.
+    var openQuestionAnsweredByThinker: Bool {
+        let all = entries
+        guard let idx = all.lastIndex(where: {
+            $0.speaker == "listener" && $0.tier == Tier.question.rawValue
+        }) else { return false }
+        return all[(idx + 1)...].contains {
+            $0.speaker == "thinker" && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty
+        }
     }
 
     /// Title from the first ~8 words of the first thinker turn. The fallback

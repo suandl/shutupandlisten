@@ -146,23 +146,32 @@ struct LibraryView: View {
 // ── thinker-only search text, memoized ──
 
 /// Joins each record's THINKER utterances for search, decoded once per record
-/// and cached. Keyed on the transcript's byte count as well as the id so a
-/// record finalized in place (checkpointed sessions keep their UUID) refreshes
+/// and cached. Keyed on a cheap freshness stamp as well as the id so a record
+/// finalized in place (checkpointed sessions keep their UUID) refreshes
 /// naturally. Reference type on purpose: reading it inside `body` never
 /// invalidates the view.
+///
+/// The stamp has to work for both storage shapes. A V2-written record keeps its
+/// transcript in segment rows and leaves `transcriptJSON` nil, so the old blob
+/// byte count is 0 for every live session and would pin the first cached
+/// answer forever; the row count moves as the transcript grows, which is the
+/// property the byte count was standing in for. Old records that still have
+/// only the blob (the lazy-materialize fallback) keep using its byte count.
 private final class ThinkerSearchIndex {
-    private var store: [UUID: (byteCount: Int, text: String)] = [:]
+    private var store: [UUID: (stamp: Int, text: String)] = [:]
 
     func thinkerText(for record: SessionRecord) -> String {
-        let byteCount = record.transcriptJSON.count
-        if let cached = store[record.id], cached.byteCount == byteCount {
+        let stamp = record.segments.isEmpty
+            ? (record.transcriptJSON?.count ?? 0)
+            : record.segments.count
+        if let cached = store[record.id], cached.stamp == stamp {
             return cached.text
         }
         let text = record.entries
             .filter { $0.speaker == "thinker" }
             .map(\.text)
             .joined(separator: " ")
-        store[record.id] = (byteCount, text)
+        store[record.id] = (stamp, text)
         return text
     }
 }

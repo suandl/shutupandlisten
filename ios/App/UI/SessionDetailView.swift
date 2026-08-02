@@ -34,7 +34,11 @@ struct SessionDetailView: View {
     var body: some View {
         let segments = record.transcriptSegments
         let hasTranscript = segments.contains { !$0.text.isEmpty }
-        let currentIndex = activeIndex(in: segments)
+        // Read once, off the segments this body is about to render, rather than
+        // per rendered line: `record.hasTimings` decodes the legacy blob on the
+        // fallback path, and asking it per line would decode once per line.
+        let hasTimings = TranscriptCore.hasTimings(segments)
+        let currentIndex = activeIndex(in: segments, hasTimings: hasTimings)
 
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
@@ -55,7 +59,11 @@ struct SessionDetailView: View {
                 }
 
                 if hasTranscript {
-                    transcript(segments: segments, currentIndex: currentIndex)
+                    transcript(
+                        segments: segments,
+                        currentIndex: currentIndex,
+                        hasTimings: hasTimings
+                    )
                 } else if audioURL != nil {
                     audioOnlyNote
                 } else {
@@ -207,13 +215,17 @@ struct SessionDetailView: View {
     // ── transcript ──
 
     @ViewBuilder
-    private func transcript(segments: [TranscriptSegment], currentIndex: Int?) -> some View {
+    private func transcript(
+        segments: [TranscriptSegment],
+        currentIndex: Int?,
+        hasTimings: Bool
+    ) -> some View {
         ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
             if !segment.text.isEmpty {
                 EntryRow(
                     segment: segment,
                     isCurrent: index == currentIndex,
-                    onSeek: seekAction(for: segment)
+                    onSeek: seekAction(for: segment, hasTimings: hasTimings)
                 )
             }
         }
@@ -222,11 +234,19 @@ struct SessionDetailView: View {
     /// Tap-to-seek, only when the record carries real timings and the audio
     /// opened. Records without them stay inert — no broken affordances.
     ///
+    /// `hasTimings` is passed in rather than read off the record per line: the
+    /// caller computed it from the very segments being rendered, which is both
+    /// cheaper and exactly the right question — the affordance must match the
+    /// transcript on screen, whichever source it came from.
+    ///
     /// Listener lines are excluded deliberately: their audio span is silence in
     /// the recording (the AEC removes the companion's voice from the mic), so
     /// seeking into one would read as broken playback.
-    private func seekAction(for segment: TranscriptSegment) -> (() -> Void)? {
-        guard record.hasTimings, segment.speaker == .thinker,
+    private func seekAction(
+        for segment: TranscriptSegment,
+        hasTimings: Bool
+    ) -> (() -> Void)? {
+        guard hasTimings, segment.speaker == .thinker,
               audioURL != nil, !playback.loadFailed
         else { return nil }
         let start = segment.audioStart
@@ -237,8 +257,8 @@ struct SessionDetailView: View {
     /// passed. `transcriptSegments` is in chronological order, so scan in
     /// order. Listener lines never highlight, for the same reason they never
     /// seek.
-    private func activeIndex(in segments: [TranscriptSegment]) -> Int? {
-        guard playback.isPlaying, record.hasTimings else { return nil }
+    private func activeIndex(in segments: [TranscriptSegment], hasTimings: Bool) -> Int? {
+        guard playback.isPlaying, hasTimings else { return nil }
         let now = playback.currentTime
         var current: Int?
         for (index, segment) in segments.enumerated() {
