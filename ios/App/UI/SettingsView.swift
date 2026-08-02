@@ -10,17 +10,24 @@
 // controller's plumbing is untouched. "sessionMode" / "justListen" are the
 // Wave-1b keys the session screen owns; this sheet only OFFERS a mode when a
 // preset suggests one, never sets it silently.
+//
+// The transcript feed (plan R4.3) is the one path by which transcript text can
+// leave the device continuously. It is OFF by default, HTTPS-only, and sends
+// finalized segments only — never the in-progress words. The privacy panel
+// below is written to stay true whether it is on or off.
 
 #if APPLE_SIGN_IN
 import AuthenticationServices
 #endif
 import SwiftUI
+import TranscriptCore
 import TurnEngine
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var accountStore: AccountStore
+    @EnvironmentObject private var controller: SessionController
 
     @State private var apiKey: String = KeychainStore.apiKey ?? ""
     @AppStorage("speakAcknowledgments") private var speakAcknowledgments = false
@@ -31,12 +38,19 @@ struct SettingsView: View {
     @AppStorage("hasOnboarded") private var hasOnboarded = false
     @AppStorage("developerUnlocked") private var developerUnlocked = false
     @AppStorage("showCostReadout") private var showCostReadout = false
+    // The transcript feed (same keys SessionController reads at session start).
+    @AppStorage("transcriptFeedEnabled") private var transcriptFeedEnabled = false
+    @AppStorage("transcriptFeedURL") private var transcriptFeedURL = ""
+    @AppStorage("transcriptFeedCadenceSeconds") private var transcriptFeedCadenceSeconds = 5
 
     #if APPLE_SIGN_IN
     @State private var signingIn = false
     @State private var signInError: String?
     #endif
     @State private var showKnobs = false
+    #if DEBUG
+    @State private var showLiveFeed = false
+    #endif
     @State private var versionTaps = 0
     /// A preset whose suggested mode differs from the current one — the
     /// pairing is OFFERED via an alert, never applied silently.
@@ -50,6 +64,7 @@ struct SettingsView: View {
                 accountSection
                 listeningSection
                 privacySection
+                transcriptFeedSection
                 aboutSection
                 if developerUnlocked {
                     developerSection
@@ -253,13 +268,18 @@ struct SettingsView: View {
             )
             privacyRow(
                 "waveform",
-                "Words are written down on-device when your device supports "
-                + "it; otherwise Apple's speech service handles dictation."
+                "Words are written down on-device, always — recognition never "
+                + "leaves this phone."
             )
             privacyRow(
                 "arrow.up.circle",
-                "Transcript text is sent only when the listener speaks up or "
-                + "you ask for a coverage check — never as a running stream."
+                transcriptFeedEnabled
+                    ? "Transcript text is sent when the listener speaks up, "
+                    + "when you ask for a coverage check, and — because you "
+                    + "turned the transcript feed on — continuously to the "
+                    + "address you set below."
+                    : "Transcript text is sent only when the listener speaks up or "
+                    + "you ask for a coverage check — never as a running stream."
             )
             privacyRow(
                 "externaldrive",
@@ -279,6 +299,41 @@ struct SettingsView: View {
         } icon: {
             Image(systemName: symbol)
                 .foregroundStyle(.tint)
+        }
+    }
+
+    // ── transcript feed (R4.3: the opt-in remote arm of the agent seam) ──
+
+    private var transcriptFeedSection: some View {
+        Section {
+            Toggle("Share live transcript", isOn: $transcriptFeedEnabled)
+            if transcriptFeedEnabled {
+                TextField("https://example.com/transcript", text: $transcriptFeedURL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Stepper(
+                    "Send every \(transcriptFeedCadenceSeconds) s",
+                    value: $transcriptFeedCadenceSeconds,
+                    in: 2 ... 30
+                )
+            }
+            #if DEBUG
+            if controller.isRunning, let feed = controller.agentFeed {
+                DisclosureGroup("Live feed", isExpanded: $showLiveFeed) {
+                    LiveFeedDebugView(feed: feed)
+                }
+            }
+            #endif
+        } header: {
+            Text("Transcript feed")
+        } footer: {
+            Text(
+                "Off by default — nothing leaves the device when off. When on, "
+                + "finalized transcript text (never the in-progress words) is "
+                + "sent in small batches to the HTTPS address above, from the "
+                + "next session on. Recognition itself always stays on-device."
+            )
         }
     }
 
@@ -379,3 +434,61 @@ struct SettingsView: View {
     }
     #endif
 }
+
+#if DEBUG
+/// Phase 5's verification aid: a plain AgentFeed subscriber that lists the
+/// last few transcript events with wall-clock stamps — the on-screen proof
+/// that an in-process consumer sees deltas within ~1 s of speech. DEBUG-only;
+/// it exists to prove the seam, not to ship.
+private struct LiveFeedDebugView: View {
+    let feed: AgentFeed
+
+    private struct Row: Identifiable {
+        let id: Int
+        let stamp: Date
+        let text: String
+    }
+
+    @State private var rows: [Row] = []
+    @State private var nextID = 0
+
+    var body: some View {
+        Group {
+            if rows.isEmpty {
+                Text("Waiting for events…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(rows) { row in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(row.stamp, format: .dateTime.hour().minute().second())
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        Text(row.text)
+                            .font(.caption)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+        .task {
+            // A fresh subscription per appearance: snapshot-then-deltas, like
+            // any other late subscriber. The task dies with the view.
+            for await event in await feed.subscribe() {
+                nextID += 1
+                rows.append(Row(id: nextID, stamp: Date(), text: describe(event)))
+                if rows.count > 6 { rows.removeFirst(rows.count - 6) }
+            }
+        }
+    }
+
+    private func describe(_ event: TranscriptEvent) -> String {
+        switch event {
+        case .segmentAdded(let s): return "+ \(s.speaker.rawValue): \(s.text)"
+        case .segmentRevised(let s): return "~ \(s.speaker.rawValue): \(s.text)"
+        case .segmentFinalized(let s): return "✓ \(s.speaker.rawValue): \(s.text)"
+        case .turnStarted(let turn, let t): return "turn \(turn) @ \(String(format: "%.1f", t)) s"
+        }
+    }
+}
+#endif

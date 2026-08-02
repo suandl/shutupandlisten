@@ -1,10 +1,23 @@
 // A saved session, opened to what mattered: the one question the listener
-// earned (when there was one), the audio, and a quiet transcript. Entries that
+// earned (when there was one), the audio, and a quiet transcript. Lines that
 // carry timing seek the recording when tapped; the current line highlights
 // softly while the audio plays.
+//
+// TRUE REPLAY (plan R3.3). The data source is `record.transcriptSegments` —
+// segment rows when the record has them, the legacy blob decoded lazily when
+// it does not — and the timeline is the canonical FED-SAMPLES audio clock
+// (`audioStart`/`audioEnd`, seconds), not the wall-clock ms the pre-port
+// records stored. Both paths agree by construction: the migration's row
+// materializer and TranscriptCore's lazy fallback map the legacy blob's
+// startMs/endMs identically, so a record cannot gain or lose replay depending
+// on which one reached it. Records whose blob carried NO timings (base-era)
+// rehydrate with zeroed ranges, `hasTimings` is false, and the view degrades
+// to exactly the old static presentation: no seek, no highlight, no broken
+// affordance.
 
 import AVFoundation
 import SwiftUI
+import TranscriptCore
 import TurnEngine
 
 struct SessionDetailView: View {
@@ -19,9 +32,9 @@ struct SessionDetailView: View {
     }
 
     var body: some View {
-        let entries = record.entries
-        let hasTranscript = entries.contains { !$0.text.isEmpty }
-        let currentIndex = activeIndex(in: entries)
+        let segments = record.transcriptSegments
+        let hasTranscript = segments.contains { !$0.text.isEmpty }
+        let currentIndex = activeIndex(in: segments)
 
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
@@ -42,7 +55,7 @@ struct SessionDetailView: View {
                 }
 
                 if hasTranscript {
-                    transcript(entries: entries, currentIndex: currentIndex)
+                    transcript(segments: segments, currentIndex: currentIndex)
                 } else if audioURL != nil {
                     audioOnlyNote
                 } else {
@@ -194,36 +207,43 @@ struct SessionDetailView: View {
     // ── transcript ──
 
     @ViewBuilder
-    private func transcript(entries: [StoredEntry], currentIndex: Int?) -> some View {
-        ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
-            if !entry.text.isEmpty {
+    private func transcript(segments: [TranscriptSegment], currentIndex: Int?) -> some View {
+        ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
+            if !segment.text.isEmpty {
                 EntryRow(
-                    entry: entry,
+                    segment: segment,
                     isCurrent: index == currentIndex,
-                    onSeek: seekAction(for: entry)
+                    onSeek: seekAction(for: segment)
                 )
             }
         }
     }
 
-    /// Tap-to-seek, only when the entry carries timing and the audio opened.
-    /// Old records without timestamps stay inert — no broken affordances.
-    private func seekAction(for entry: StoredEntry) -> (() -> Void)? {
-        guard let startMs = entry.startMs, audioURL != nil, !playback.loadFailed else {
-            return nil
-        }
-        return { playback.play(from: Double(startMs) / 1000) }
+    /// Tap-to-seek, only when the record carries real timings and the audio
+    /// opened. Records without them stay inert — no broken affordances.
+    ///
+    /// Listener lines are excluded deliberately: their audio span is silence in
+    /// the recording (the AEC removes the companion's voice from the mic), so
+    /// seeking into one would read as broken playback.
+    private func seekAction(for segment: TranscriptSegment) -> (() -> Void)? {
+        guard record.hasTimings, segment.speaker == .thinker,
+              audioURL != nil, !playback.loadFailed
+        else { return nil }
+        let start = segment.audioStart
+        return { playback.play(from: start) }
     }
 
-    /// The entry currently sounding: the last one whose start the playhead has
-    /// passed. `startMs` is monotonic across the session, so scan in order.
-    private func activeIndex(in entries: [StoredEntry]) -> Int? {
-        guard playback.isPlaying else { return nil }
-        let ms = Int(playback.currentTime * 1000)
+    /// The line currently sounding: the last one whose start the playhead has
+    /// passed. `transcriptSegments` is in chronological order, so scan in
+    /// order. Listener lines never highlight, for the same reason they never
+    /// seek.
+    private func activeIndex(in segments: [TranscriptSegment]) -> Int? {
+        guard playback.isPlaying, record.hasTimings else { return nil }
+        let now = playback.currentTime
         var current: Int?
-        for (index, entry) in entries.enumerated() {
-            guard let start = entry.startMs else { continue }
-            if start <= ms { current = index } else { break }
+        for (index, segment) in segments.enumerated() {
+            guard segment.speaker == .thinker else { continue }
+            if segment.audioStart <= now { current = index } else { break }
         }
         return current
     }
@@ -300,7 +320,7 @@ private enum Clock {
 // small tag — no tier jargon. Timestamps sit faint on the leading edge.
 
 private struct EntryRow: View {
-    let entry: StoredEntry
+    let segment: TranscriptSegment
     let isCurrent: Bool
     let onSeek: (() -> Void)?
 
@@ -316,13 +336,15 @@ private struct EntryRow: View {
 
     private var rowContent: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            if let start = entry.startMs {
-                Text("[\(Clock.text(ms: start))]")
+            // A zero range is this schema's encoding of "no timing recorded",
+            // so the stamp is shown only when there is a real one to show.
+            if segment.audioStart != 0 || segment.audioEnd != 0 {
+                Text("[\(Clock.text(ms: Int((segment.audioStart * 1000).rounded())))]")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
-            if entry.speaker == "thinker" {
-                Text(entry.text)
+            if segment.speaker == .thinker {
+                Text(segment.text)
                     .font(.body)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -330,9 +352,9 @@ private struct EntryRow: View {
                     Text("listener")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(Color.sulAccent.opacity(0.8))
-                    Text(entry.text)
+                    Text(segment.text)
                         .font(
-                            entry.tier == Tier.question.rawValue
+                            segment.tier == .question
                                 ? .system(.body, design: .serif).italic()
                                 : .callout.italic()
                         )

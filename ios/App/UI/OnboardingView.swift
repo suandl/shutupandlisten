@@ -1,8 +1,16 @@
-// First launch: three pages that sell the promise, not the mechanics —
+// First launch: four pages that sell the promise, not the mechanics —
 // (1) finish a thought, (2) the silence contract shown live by the
-// self-running patience demo, (3) one honest sentence and the mic + speech
-// permission ask. No account page: sign-in happens contextually, the first
-// time the listener's question actually needs the model.
+// self-running patience demo, (3) the on-device speech model, downloaded here
+// with visible progress so the first session never stalls on it (plan R2.6),
+// and (4) one honest sentence and the mic permission ask. No account page:
+// sign-in happens contextually, the first time the listener's question
+// actually needs the model.
+//
+// Page 3 is where the two histories meet: main's flow had no model step
+// because SFSpeechRecognizer needed no asset, and the transcript-core rewrite
+// added one because SpeechAnalyzer's locale model IS an AssetInventory
+// download. It sits second-to-last so the flow still ENDS on the start
+// button.
 
 import AVFoundation
 import SwiftUI
@@ -11,12 +19,22 @@ struct OnboardingView: View {
     @AppStorage("hasOnboarded") private var hasOnboarded = false
     @State private var page = 0
     @State private var requestingPermissions = false
+    @State private var assetPhase: AssetPhase = .checking
+
+    private enum AssetPhase: Equatable {
+        case checking
+        case downloading(Double)
+        case ready
+        case unsupported
+        case failed(String)
+    }
 
     var body: some View {
         TabView(selection: $page) {
             promise.tag(0)
             silenceContract.tag(1)
-            permissions.tag(2)
+            dictationModel.tag(2)
+            permissions.tag(3)
         }
         .tabViewStyle(.page)
         .indexViewStyle(.page(backgroundDisplayMode: .always))
@@ -93,9 +111,9 @@ struct OnboardingView: View {
                 .font(.title2.bold())
             Text(
                 """
-                It uses the microphone to listen and speech recognition to \
-                write down what you say — on this phone whenever your device \
-                supports it.
+                It uses the microphone to listen. Your words are written \
+                down on this phone, always — the recording and the transcript \
+                never leave it.
                 """
             )
             .foregroundStyle(.secondary)
@@ -126,16 +144,122 @@ struct OnboardingView: View {
         .padding(.horizontal, 32)
     }
 
-    /// Ask for both permissions, then get out of the way. A denial is not a
-    /// dead end here — the session screen re-checks on the first mic tap.
+    /// Ask for the mic, then get out of the way. A denial is not a dead end
+    /// here — the session screen re-checks on the first mic tap.
+    ///
+    /// MIC ONLY. `SpeechAnalyzer`'s on-device recognition has no
+    /// speech-authorization gate, so the legacy
+    /// `SFSpeechRecognizer.requestAuthorization` path is gone — along with the
+    /// `NSSpeechRecognitionUsageDescription` Info.plist key it required.
+    /// Requesting it here without that key would terminate the app.
     private func requestPermissions() {
         requestingPermissions = true
         Task {
             _ = await AVAudioApplication.requestRecordPermission()
-            _ = await SpeechTranscriber.requestAuthorization()
             requestingPermissions = false
             hasOnboarded = true
         }
+    }
+
+    // ── page 3: the on-device speech model ──
+
+    private var dictationModel: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Image(systemName: "waveform.badge.mic")
+                .font(.system(size: 44))
+                .foregroundStyle(.tint)
+            Text("Dictation stays on your phone")
+                .font(.title2.bold())
+            Text(
+                """
+                Your words are transcribed entirely on this device — nothing \
+                you say leaves it. The speech model for your language \
+                downloads once, then works offline.
+                """
+            )
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+
+            assetStatus
+
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, 32)
+        .task { await ensureAssets() }
+    }
+
+    @ViewBuilder
+    private var assetStatus: some View {
+        switch assetPhase {
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Checking for the model…")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        case .downloading(let fraction):
+            VStack(spacing: 8) {
+                ProgressView(value: fraction)
+                    .frame(maxWidth: 220)
+                Text("Downloading the speech model…")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        case .ready:
+            Label("Ready — transcription works offline.", systemImage: "checkmark.circle.fill")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.green)
+        case .unsupported:
+            Text(
+                "On-device transcription isn't available for your language "
+                    + "yet, so sessions can't be transcribed on this device."
+            )
+            .font(.footnote)
+            .foregroundStyle(.red)
+            .multilineTextAlignment(.center)
+        case .failed(let message):
+            VStack(spacing: 8) {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                Button("Try again") {
+                    Task { await ensureAssets() }
+                }
+                .font(.footnote.weight(.medium))
+            }
+        }
+    }
+
+    /// Best-effort: a failure here is never a dead end — `startSession`
+    /// re-verifies the model at every session start and can fetch it then.
+    private func ensureAssets() async {
+        let locale = Locale.current
+        switch await AssetEnsure.status(for: locale) {
+        case .installed:
+            assetPhase = .ready
+        case .unsupported:
+            assetPhase = .unsupported
+            return
+        case .needsDownload:
+            assetPhase = .downloading(0)
+            do {
+                try await AssetEnsure.ensure(for: locale) { fraction in
+                    Task { @MainActor in assetPhase = .downloading(fraction) }
+                }
+                assetPhase = .ready
+            } catch {
+                assetPhase = .failed(
+                    "The download didn't finish — check your connection. "
+                        + "You can also retry from the first session."
+                )
+                return
+            }
+        }
+        await AssetEnsure.releaseStaleReservations(keeping: locale)
     }
 }
 

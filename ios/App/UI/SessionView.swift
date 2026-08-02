@@ -38,7 +38,10 @@ struct SessionView: View {
 
     // A spoken listener line lands as a light haptic (no card — the line itself
     // lives inline in the transcript). Tracked by id so the cue fires once.
-    @State private var lastSpokenID: UUID?
+    // `TranscriptEntry.id` is a `SegmentID` after the transcript-core port —
+    // stable across volatile revisions, where the old per-append UUID was not,
+    // so a refining line no longer re-fires the cue.
+    @State private var lastSpokenID: SegmentID?
     @State private var questionHaptic = 0
 
     // First-session coaching: shown once, the first time the machine
@@ -59,6 +62,10 @@ struct SessionView: View {
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
+                if controller.isRunning,
+                   controller.captureState == .paused || controller.captureState == .resuming {
+                    captureStateBanner
+                }
                 Spacer(minLength: 0)
                 stage
                 Spacer(minLength: 0)
@@ -195,6 +202,30 @@ struct SessionView: View {
             .frame(minHeight: 64, alignment: .top)
         }
         .padding(.horizontal, 24)
+    }
+
+    // ── truthful capture state (R1.2: paused is shown, not papered over) ──
+    //
+    // The port deliberately drops main's old "finish honestly rather than
+    // pretend to listen to a dead mic" auto-stop on a non-resumable
+    // interruption. CaptureController retries with backoff and reports `.paused`
+    // truthfully instead, so the session survives a phone call rather than
+    // ending itself — and this banner is what makes that honest to the user.
+    private var captureStateBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: controller.captureState == .paused
+                ? "pause.circle" : "arrow.clockwise.circle")
+                .foregroundStyle(.orange)
+            Text(controller.captureState == .paused
+                ? "Listening is paused — another app has the microphone. "
+                    + "It resumes on its own when the audio frees up."
+                : "Resuming the microphone…")
+                .font(.footnote)
+            Spacer()
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.1))
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     private var ringPhase: PatienceRing.Phase {
@@ -540,8 +571,11 @@ private struct TranscriptSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .onChange(of: controller.coverageResult) { _, result in
-                if result != nil { showCoverage = true }
+            // Keyed off the completed-check COUNT, not the result value: a
+            // repeat check returning the identical result would never change
+            // `coverageResult`, and the sheet has to reopen anyway.
+            .onChange(of: controller.coverageCheckCount) { _, _ in
+                if controller.coverageResult != nil { showCoverage = true }
             }
             .sheet(isPresented: $showCoverage) { CoverageView() }
         }
