@@ -3,7 +3,7 @@
 # pipeline. Runs identically on a developer Mac and the GitHub macOS runner.
 #
 #   1. build-for-testing (shared scheme)
-#   2. boot iPhone 16 Pro simulator
+#   2. boot iPhone 17 Pro simulator
 #   3. per appearance (light, then dark): record video (light only), run the
 #      UITest — which drives the REAL pipeline from the bundled fixture .wav
 #      in-app (design: in-app audio injection); no host audio device involved
@@ -17,7 +17,14 @@ set -euo pipefail
 
 # ── config (overridable via env) ──
 SCHEME="ShutUpAndListen"
-SIM_NAME="${CAPTURE_SIM:-iPhone 16 Pro}"
+# The default tracks whatever the CI runner image actually pre-creates. The
+# macos-26 image ships no iPhone 16 family device except the 16e, so the old
+# "iPhone 16 Pro" default missed the lookup below and fell through to
+# `simctl create` against a device type Xcode 26 may no longer carry. "iPhone
+# 17 Pro" is pre-created on every iOS runtime on that image (26.2/26.4/26.5),
+# so the lookup hits and no device gets created. Override with CAPTURE_SIM on
+# a developer Mac with a different set of simulators installed.
+SIM_NAME="${CAPTURE_SIM:-iPhone 17 Pro}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"          # ios/
 PROJECT="$ROOT/ShutUpAndListen.xcodeproj"
