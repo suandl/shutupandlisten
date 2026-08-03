@@ -3,6 +3,12 @@
 // session" — simply dismisses back to the mic that is already waiting
 // underneath. Search matches the title and what YOU said; the listener's few
 // words never pollute results.
+//
+// The query filters out `recording`-state records (plan R3.2): after the
+// transcript-core port the live session's record exists from session START, so
+// without the filter the running session would appear as a library row
+// mid-capture. Sessions closed by launch recovery instead of a graceful stop —
+// and recordings adopted by the orphan sweep — wear a subtle "Recovered" badge.
 
 import SwiftData
 import SwiftUI
@@ -11,7 +17,11 @@ struct LibraryView: View {
     @EnvironmentObject private var controller: SessionController
     @EnvironmentObject private var accountStore: AccountStore
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SessionRecord.startedAt, order: .reverse)
+    @Query(
+        filter: #Predicate<SessionRecord> { $0.state != "recording" },
+        sort: \SessionRecord.startedAt,
+        order: .reverse
+    )
     private var records: [SessionRecord]
 
     @Environment(\.dismiss) private var dismiss
@@ -81,7 +91,9 @@ struct LibraryView: View {
         for index in offsets {
             let record = filtered[index]
             if let fileName = record.audioFileName {
-                RecordingStorage.delete(fileName: fileName)
+                // Both incarnations (.caf/.m4a share the stem), so a stray
+                // crash-safe original can never linger past its record.
+                RecordingStorage.deleteBoth(stem: RecordingStorage.stem(of: fileName))
             }
             modelContext.delete(record)
         }
@@ -134,23 +146,32 @@ struct LibraryView: View {
 // ── thinker-only search text, memoized ──
 
 /// Joins each record's THINKER utterances for search, decoded once per record
-/// and cached. Keyed on the transcript's byte count as well as the id so a
-/// record finalized in place (checkpointed sessions keep their UUID) refreshes
+/// and cached. Keyed on a cheap freshness stamp as well as the id so a record
+/// finalized in place (checkpointed sessions keep their UUID) refreshes
 /// naturally. Reference type on purpose: reading it inside `body` never
 /// invalidates the view.
+///
+/// The stamp has to work for both storage shapes. A V2-written record keeps its
+/// transcript in segment rows and leaves `transcriptJSON` nil, so the old blob
+/// byte count is 0 for every live session and would pin the first cached
+/// answer forever; the row count moves as the transcript grows, which is the
+/// property the byte count was standing in for. Old records that still have
+/// only the blob (the lazy-materialize fallback) keep using its byte count.
 private final class ThinkerSearchIndex {
-    private var store: [UUID: (byteCount: Int, text: String)] = [:]
+    private var store: [UUID: (stamp: Int, text: String)] = [:]
 
     func thinkerText(for record: SessionRecord) -> String {
-        let byteCount = record.transcriptJSON.count
-        if let cached = store[record.id], cached.byteCount == byteCount {
+        let stamp = record.segments.isEmpty
+            ? (record.transcriptJSON?.count ?? 0)
+            : record.segments.count
+        if let cached = store[record.id], cached.stamp == stamp {
             return cached.text
         }
         let text = record.entries
             .filter { $0.speaker == "thinker" }
             .map(\.text)
             .joined(separator: " ")
-        store[record.id] = (byteCount, text)
+        store[record.id] = (stamp, text)
         return text
     }
 }
@@ -185,6 +206,17 @@ private struct RecordRow: View {
             if isAudioOnly {
                 Text("·")
                 Text("audio only")
+            }
+            if record.sessionState == .recovered {
+                // Closed by launch recovery, or adopted by the orphan sweep,
+                // rather than by a graceful stop (R3.2).
+                Text("Recovered")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.orange.opacity(0.12), in: Capsule())
+                    .accessibilityLabel("Recovered after an interrupted session")
             }
         }
         .font(.caption)

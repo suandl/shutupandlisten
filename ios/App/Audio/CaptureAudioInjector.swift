@@ -1,7 +1,7 @@
 // The CI-only file-drive loop (design: in-app audio injection). Reads the
 // bundled fixture .wav, slices it into fixed-size float32 buffers per the pure
 // FileInjectionPlan (TurnEngine), and paces them — in real time — into a sink
-// wired to AudioPipeline.injectForCapture. That drives the WHOLE downstream
+// wired to CaptureController.injectForCapture. That drives the WHOLE downstream
 // chain (VAD → turn-end → gate → analyst) from real speech, with no mic and no
 // virtual audio device. DEBUG-only: `#if DEBUG`-guarded and excluded from the
 // app target's Release build phase, so it never ships in a Release binary

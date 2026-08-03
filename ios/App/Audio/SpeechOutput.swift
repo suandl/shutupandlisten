@@ -23,8 +23,17 @@
 import Foundation
 
 /// The engine our synthesized speech is rendered through — the same
-/// voice-processing graph that captures the mic (`AudioPipeline`). Class-bound
-/// so `SpeechOutput` can hold it weakly.
+/// voice-processing graph that captures the mic (`CaptureController`).
+/// Class-bound so `SpeechOutput` can hold it weakly.
+///
+/// Completion is derived from the player node's buffer callbacks plus the
+/// zero-length end marker (`reportFinishedIfDone`), NOT from the synthesizer's
+/// own delegate. That is deliberate: `stop()` suppresses completion for a cut
+/// clip, and the host's barge-in and interruption paths close the floor
+/// themselves (`lastFloorReleaseMs` + `closeOpenListener`). Adding a
+/// `didCancel → onFinished` bridge here would feed a spurious `.tick` after
+/// every barge-in. The invariant it was protecting is asserted instead by
+/// `TTSSinkTests/testOnFinishedFiresOncePerClipAndNeverAfterStop`.
 protocol TTSPlaybackSink: AnyObject {
     /// The format buffers must be in to schedule. `nil` until the engine runs.
     var ttsFormat: AVAudioFormat? { get }
