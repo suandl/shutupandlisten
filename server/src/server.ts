@@ -15,6 +15,13 @@ import {
   coverageUserMessage,
   parseCoverageResult,
 } from "./coverage-contract.ts";
+import type { SystemTextBlock } from "./analyst-contract.ts";
+import {
+  ANALYST_SCHEMA,
+  ANALYST_VOLATILE_INSTRUCTION,
+  analystSystemBlocks,
+  parseAnalystResult,
+} from "./analyst-contract.ts";
 
 export const MODEL = "claude-opus-4-8";
 
@@ -31,6 +38,11 @@ const MAX_AUTH_BODY_BYTES = 64 * KB;
 // Coverage body cap: transcript cap plus headroom for JSON escaping + criteria.
 const MAX_COVERAGE_BODY_BYTES = 280 * KB;
 const COVERAGE_MAX_TOKENS = 2048;
+// Analyst body cap: transcript-only, so the same transcript cap plus JSON-
+// escaping headroom. Server-side max_tokens mirrors Analyst.buildRequest's
+// default — the client never dictates it for this structured endpoint.
+const MAX_ANALYST_BODY_BYTES = 280 * KB;
+const ANALYST_MAX_TOKENS = 512;
 
 export type ErrorType =
   | "invalid_request"
@@ -51,7 +63,9 @@ export interface AnthropicLike {
     create(params: {
       model: string;
       max_tokens: number;
-      system?: string;
+      // A plain string (listener/coverage) OR a block array carrying a
+      // cache_control breakpoint (analyst) — the Messages API accepts both.
+      system?: string | SystemTextBlock[];
       messages: Array<{ role: "user" | "assistant"; content: string }>;
       output_config?: { format: { type: "json_schema"; schema: Record<string, unknown> } };
     }): Promise<AnthropicMessageLike>;
@@ -202,6 +216,21 @@ function validateCoverageRequest(body: Record<string, unknown>): CoverageRequest
   return { transcript, criteria: criteria as string[] };
 }
 
+interface AnalystRequestBody {
+  transcript: string;
+}
+
+function validateAnalystRequest(body: Record<string, unknown>): AnalystRequestBody {
+  const { transcript } = body;
+  if (typeof transcript !== "string") throw invalid("transcript must be a string");
+  if (Buffer.byteLength(transcript, "utf8") > MAX_TRANSCRIPT_BYTES) {
+    throw invalid(`transcript exceeds ${MAX_TRANSCRIPT_BYTES} bytes`);
+  }
+  // No minimum: an empty transcript is a valid cold-start cycle (the analyst
+  // returns an empty candidate list). Unlike coverage there is no criteria list.
+  return { transcript };
+}
+
 function firstTextBlock(response: AnthropicMessageLike): string {
   for (const block of response.content) {
     if (block.type === "text" && typeof block.text === "string") return block.text;
@@ -317,6 +346,36 @@ export function createServer(deps: ServerDeps): http.Server {
     sendJson(res, 200, result);
   }
 
+  async function handleAnalyst(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const userId = await requireAuth(req);
+    const body = parseJsonBody(await readBody(req, MAX_ANALYST_BODY_BYTES));
+    const request = validateAnalystRequest(body);
+    const day = await checkQuota(userId);
+    const response = await callAnthropic({
+      model: MODEL,
+      max_tokens: ANALYST_MAX_TOKENS,
+      // The server rebuilds the cache-friendly block layout from the transcript
+      // text (analystSystemBlocks); the client never sends pre-built blocks.
+      system: analystSystemBlocks(request.transcript),
+      messages: [{ role: "user", content: ANALYST_VOLATILE_INSTRUCTION }],
+      output_config: { format: { type: "json_schema", schema: ANALYST_SCHEMA } },
+    });
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(firstTextBlock(response));
+    } catch (err) {
+      console.error("analyst: upstream returned non-JSON text block:", err);
+      throw new ApiError(502, "upstream_error", "upstream model returned an invalid result");
+    }
+    const result = parseAnalystResult(parsed);
+    if (result === null) {
+      console.error("analyst: upstream JSON failed schema re-validation:", parsed);
+      throw new ApiError(502, "upstream_error", "upstream model returned an invalid result");
+    }
+    await store.increment(userId, day);
+    sendJson(res, 200, result);
+  }
+
   async function handleMe(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const userId = await requireAuth(req);
     const modelCallsToday = await store.getCount(userId, utcDay(clock()));
@@ -336,6 +395,8 @@ export function createServer(deps: ServerDeps): http.Server {
         return handleListener(req, res);
       case "POST /v1/coverage":
         return handleCoverage(req, res);
+      case "POST /v1/analyst":
+        return handleAnalyst(req, res);
       case "GET /v1/me":
         return handleMe(req, res);
       default:
