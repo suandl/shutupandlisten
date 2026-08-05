@@ -6,20 +6,16 @@
 // Two further responsibilities live here after the transcript-core port
 // (docs/plans/2026-08-01-001-feat-ios-transcript-core-rewrite-plan.md, R3):
 //
-// 1. The ModelContainer is built EXPLICITLY with the versioned-schema
-//    migration plan (SchemaV1 → SchemaV2, custom stage). The convenience
-//    `.modelContainer(for:)` modifier cannot carry a migration plan, and the
-//    failure mode of keeping it here is silent: SwiftData would attempt a
-//    lightweight migration into V2 on its own, the custom stage would never
-//    run, `materializeLegacySegments` would never be called, no SegmentRecord
-//    rows would exist, and every migrated record would limp along on the lazy
-//    read-path fallback. Nothing errors. This is the single
-//    highest-consequence line in the file.
+// 1. The ModelContainer is built EXPLICITLY at SchemaV2, with INFERRED
+//    migration and deliberately no `migrationPlan:` — see `openContainer` for
+//    why the staged plan cannot open a shipped store, and what carries the
+//    V1 → V2 data work instead.
 // 2. Launch recovery: records a crash left in `recording` state are closed as
 //    `recovered` (CAF remuxed and adopted; zero-speech deleted). It runs on a
 //    background task at init — the library's query filters `recording`-state
 //    rows, so nothing half-open is visible while recovery works; recovered
-//    sessions appear when it saves.
+//    sessions appear when it saves. The legacy backfill runs FIRST on that
+//    same task: it is the data half of the V1 → V2 migration.
 
 import SwiftData
 import SwiftUI
@@ -43,20 +39,12 @@ struct ShutUpAndListenApp: App {
         CaptureSeam.installIfNeeded()
         #endif
 
-        let schema = Schema(versionedSchema: SessionSchemaV2.self)
-        do {
-            container = try ModelContainer(
-                for: schema,
-                migrationPlan: SessionMigrationPlan.self,
-                configurations: [ModelConfiguration(schema: schema)]
-            )
-        } catch {
-            // Same behavior as the old `.modelContainer(for:)` modifier when
-            // the store cannot open: there is no app without the library.
-            fatalError("Could not open the session library: \(error)")
-        }
+        container = Self.openContainer()
         let container = self.container
         Task.detached(priority: .utility) {
+            // Ordered before recovery so a legacy record is whole — segment
+            // rows materialized — by the time anything reads one.
+            PersistenceWriter.materializeLegacyRecords(container: container)
             PersistenceWriter.recoverIncompleteSessions(container: container)
             // Session starts only AFTER recovery: it closes every
             // `recording`-state record, so a session that raced it would have
@@ -66,6 +54,59 @@ struct ShutUpAndListenApp: App {
             // The orphan sweep waits on the same latch, for a different reason
             // (see SessionRecovery).
             await RecoveryGate.shared.markDone()
+        }
+    }
+
+    /// Open the session library at SchemaV2 with INFERRED (lightweight)
+    /// migration — deliberately without a `migrationPlan:`.
+    ///
+    /// A staged plan cannot open the store this app actually shipped, and this
+    /// is MEASURED, not reasoned: passing `migrationPlan:` a store created the
+    /// base-era way throws `SwiftDataError.loadIssueModelContainer` from the
+    /// `ModelContainer` initializer, so the container never loads. Reproduced
+    /// on an iOS 26 device by
+    /// `MigrationTests.testShippedUnversionedStoreUpgradesToV2`; every older
+    /// case in that file writes a VERSIONED fixture and passes either way,
+    /// which is exactly why this went unnoticed.
+    ///
+    /// The mechanism: the base-era app used
+    /// `.modelContainer(for: SessionRecord.self)` (a3437ce), an UNVERSIONED
+    /// schema, so no device carries a version identifier SwiftData's migration
+    /// manager can name among the plan's `schemas` — and it must name one
+    /// before any stage runs. (An earlier session recorded the underlying error
+    /// as NSCocoaErrorDomain 134504, "Cannot use staged migration with an
+    /// unknown model version"; the observed failure surfaces as SwiftData's
+    /// wrapper, which does not expose that code, so treat 134504 as the likely
+    /// cause rather than a verified one.)
+    ///
+    /// Since the catch below is `fatalError`, this is a launch crash for every
+    /// upgrading user — and invisible to a fresh install, which creates a new
+    /// store at V2 and migrates nothing.
+    ///
+    /// Inference has no such requirement — it maps what is on disk onto V2
+    /// without naming it — and every V1 → V2 change is within lightweight
+    /// migration's reach: a new entity (`SegmentRecord`), a new relationship,
+    /// `transcriptJSON` widened to optional, `transcriptIsReconciled` removed,
+    /// and `state` added with the declaration default "complete" (which is what
+    /// keeps a migrated record out of launch recovery's `recording` fetch).
+    ///
+    /// That leaves only the DATA work the custom stage used to do, which
+    /// `PersistenceWriter.materializeLegacyRecords` now does at launch:
+    /// idempotent, testable without a store fixture, and reaching records a
+    /// stage would have missed. It calls the same `materializeLegacySegments`,
+    /// so PR#37 blob timings are carried across exactly as before.
+    private static func openContainer() -> ModelContainer {
+        let schema = Schema(versionedSchema: SessionSchemaV2.self)
+        do {
+            return try ModelContainer(
+                for: schema,
+                configurations: [ModelConfiguration(schema: schema)]
+            )
+        } catch {
+            // Crash rather than move the store aside: a library that cannot be
+            // read is still the user's, and a silent wipe is the one
+            // unrecoverable outcome.
+            fatalError("Could not open the session library: \(error)")
         }
     }
 

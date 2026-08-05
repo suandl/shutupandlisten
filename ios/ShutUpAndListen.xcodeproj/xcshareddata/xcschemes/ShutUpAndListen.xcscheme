@@ -35,6 +35,17 @@
             parallelizable = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "5A0000000000000000000022"
+               BuildableName = "ShutUpAndListenAppTests.xctest"
+               BlueprintName = "ShutUpAndListenAppTests"
+               ReferencedContainer = "container:ShutUpAndListen.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "E5D86AE83018222400F7A642"
                BuildableName = "ShutUpAndListenUITests.xctest"
                BlueprintName = "ShutUpAndListenUITests"
