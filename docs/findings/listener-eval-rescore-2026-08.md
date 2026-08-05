@@ -25,7 +25,8 @@ the on-device (ollama) family (§1, §7).
 1. **B3 ("never summarizes back") is *not* cleanly prompt-bound.** This run shows
    a **model** effect (gpt-4o 4.13 vs haiku-4-5 3.25) that is *larger* than the
    prompt effect (v0 4.00 vs hardened 3.38). B3 is imperfect on every
-   configuration — the dealbreaker still fires in 6 of 16 cells (score ≤ 3) — and
+   configuration — the dealbreaker still fires (grader-fail in 6 of 16 cells; 8 of
+   16 score ≤ 3) — and
    the stronger general model scored *better* on it, not worse.
 2. **The shipped hardened prompt (`chatgpt.md`) is *worse* than the untouched v0
    baseline (`claude.md`) on B3 (3.38 vs 4.00) and probing (3.50 vs 5.00),** and
@@ -218,7 +219,7 @@ wrong way.** New column: **3.69 mean, 10/16**.
 - **B3 is nowhere solved.** The best subgroup is claude×gpt-4o at 4.25, and even
   it contains a 2 (essay-thesis: *"repeated listener turns open by playing back
   the thinker's prior point before asking the next question"*). Across the matrix
-  the dealbreaker fires (score ≤ 3) in **6 of 16 cells**.
+  the grader fails B3 in **6 of 16 cells** (10/16 pass), and 8 of 16 cells score ≤ 3.
 
 ### Q2 · B4 "rare and brief" — is it real?
 
@@ -256,7 +257,7 @@ not reproduced on this surface.**
 
 **Verdict: yes, and it says restraint is uniformly poor and prompt/model-invariant.**
 Pre-fix, the column was 0/16 by construction and told you nothing. Post-fix it is
-1.94/0-of-16 and tightly clustered: 14 cells at 2, one at 1, one at 1 — no cell
+1.94/0-of-16 and tightly clustered: 15 cells at 2 and one at 1 — no cell
 above 2, on either prompt or either model. The listeners interject with questions
 through the dictation and settle into an interview cadence in every configuration
 (see the restraint reasons, uniformly "multiple mid-dictation questions above the
@@ -330,7 +331,7 @@ npm test                        # 47 tests: 45 pass / 0 fail / 2 skipped
 # console: "Running 16 test cases (up to 4 at a time)…"  → filter verified: 16 cells, no ollama
 
 # Canonical column math (mean / pass-rate / N/A handling):
-node .github/scripts/summarize-eval.js <results.json>
+node ../.github/scripts/summarize-eval.js <results.json>
 ```
 
 The provider-filter regex matches promptfoo's provider **label**
