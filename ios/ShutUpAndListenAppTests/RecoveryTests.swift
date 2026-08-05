@@ -168,12 +168,18 @@ final class RecoveryTests: XCTestCase {
         await fulfillment(of: [sweepRan], timeout: 5)
         _ = await sweep.value
 
+        // Count inside the hop, not outside it: `MainActor.run` returns its
+        // value across an actor boundary, so returning the rows themselves asks
+        // for `[SessionRecord]: Sendable` — a conformance SwiftData marks
+        // unavailable, exactly to stop model objects escaping their context.
+        // The assertion only ever wanted the count.
         let matching = try await MainActor.run {
             try container.mainContext.fetch(FetchDescriptor<SessionRecord>())
                 .filter { $0.audioFileName == claimed }
+                .count
         }
         XCTAssertEqual(
-            matching.count, 1,
+            matching, 1,
             "the sweep ran before the gate and adopted a duplicate for already-claimed audio"
         )
     }
