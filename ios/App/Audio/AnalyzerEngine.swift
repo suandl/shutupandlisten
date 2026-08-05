@@ -68,8 +68,11 @@ final class SpeechAnalyzerTranscriptionEngine: TranscriptionEngine {
 
     let events: AsyncStream<EngineEvent>
     private let eventContinuation: AsyncStream<EngineEvent>.Continuation
-    /// Non-fatal engine failures, delivered on the main queue.
-    var onError: ((String) -> Void)?
+    /// Non-fatal engine failures, delivered on the main actor. Marking the
+    /// callback `@MainActor` makes the closure value Sendable, so the failure
+    /// paths below can hand it (plus the message) across the main-actor hop
+    /// without capturing non-Sendable `self` in a `@Sendable` closure.
+    var onError: (@MainActor (String) -> Void)?
 
     private let locale: Locale
     private var analyzer: SpeechAnalyzer?
@@ -204,9 +207,8 @@ final class SpeechAnalyzerTranscriptionEngine: TranscriptionEngine {
             resultsTask?.cancel()
             eventContinuation.finish()
             let message = error.localizedDescription
-            DispatchQueue.main.async { [weak self] in
-                self?.onError?("Finishing transcription failed: \(message)")
-            }
+            let onError = self.onError
+            await MainActor.run { onError?("Finishing transcription failed: \(message)") }
         }
         await resultsTask?.value // (3) — ends when transcriber.results ends
         resultsTask = nil
@@ -229,9 +231,8 @@ final class SpeechAnalyzerTranscriptionEngine: TranscriptionEngine {
             // its own error) should not stack a spurious second message.
             if !Task.isCancelled {
                 let message = error.localizedDescription
-                DispatchQueue.main.async { [weak self] in
-                    self?.onError?("Transcription failed: \(message)")
-                }
+                let onError = self.onError
+                await MainActor.run { onError?("Transcription failed: \(message)") }
             }
         }
         eventContinuation.finish()
