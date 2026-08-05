@@ -4,6 +4,11 @@ import type { AddressInfo } from "node:net";
 import { MemoryStore } from "./store.ts";
 import type { AnthropicLike, AnthropicMessageLike, ServerDeps } from "./server.ts";
 import { MODEL, createServer } from "./server.ts";
+import type { SystemTextBlock } from "./analyst-contract.ts";
+import {
+  ANALYST_TRANSCRIPT_CHUNK_SIZE,
+  ANALYST_VOLATILE_INSTRUCTION,
+} from "./analyst-contract.ts";
 
 // ---------------------------------------------------------------- harness
 
@@ -408,7 +413,9 @@ test("coverage happy path: schema round-trip", async (t) => {
 
   const call = h.anthropic.calls[0]!;
   assert.equal(call.model, MODEL);
-  assert.ok(call.system!.startsWith("You are a completeness checker"));
+  // Coverage sends a plain-string system (analyst is the block-array case).
+  assert.equal(typeof call.system, "string");
+  assert.ok((call.system as string).startsWith("You are a completeness checker"));
   assert.deepEqual(call.output_config, {
     format: {
       type: "json_schema",
@@ -469,6 +476,202 @@ test("coverage: refusal maps to 502 with the contract message", async (t) => {
   });
   assert.equal(status, 502);
   assert.equal(body.error.message, "the model declined this request");
+});
+
+// ---------------------------------------------------------------- analyst
+
+const ANALYST_RESULT = {
+  candidates: [
+    {
+      text: "You named two mechanisms — which one is doing the real work?",
+      register: "question",
+      anchor: "two mechanisms",
+    },
+    {
+      text: "The tension you drew between speed and trust is the actual subject.",
+      register: "reflection",
+      anchor: "speed and trust",
+    },
+  ],
+};
+
+/** Narrow a recorded call's `system` to the analyst block array. */
+function analystSystem(call: CreateParams): SystemTextBlock[] {
+  assert.ok(Array.isArray(call.system), "analyst sends a system block array, not a string");
+  return call.system as SystemTextBlock[];
+}
+
+/** The single cache breakpoint's index — asserts there is exactly one. */
+function breakpointIndex(blocks: SystemTextBlock[]): number {
+  const idxs = blocks.flatMap((b, i) => (b.cache_control !== undefined ? [i] : []));
+  assert.equal(idxs.length, 1, "exactly one cache breakpoint");
+  return idxs[0]!;
+}
+
+test("analyst happy path: schema round-trip", async (t) => {
+  const h = await startServer(t, {
+    anthropic: makeFakeAnthropic(async () => textResponse(JSON.stringify(ANALYST_RESULT))),
+  });
+  const token = await h.sessionTokenFor("apple:sub-1");
+  const { status, body } = await h.authedPost("/v1/analyst", token, {
+    transcript: "I keep circling the pricing question and whether it gates trust.",
+  });
+  assert.equal(status, 200);
+  assert.deepEqual(body, ANALYST_RESULT);
+
+  const call = h.anthropic.calls[0]!;
+  assert.equal(call.model, MODEL);
+  assert.equal(call.max_tokens, 512);
+  assert.deepEqual(call.output_config, {
+    format: {
+      type: "json_schema",
+      schema: (await import("./analyst-contract.ts")).ANALYST_SCHEMA,
+    },
+  });
+  // Exactly one user turn: the volatile "produce candidates now" instruction.
+  assert.deepEqual(call.messages, [{ role: "user", content: ANALYST_VOLATILE_INSTRUCTION }]);
+  // The system field is the analyst block array; the instructions lead it and a
+  // short transcript puts the breakpoint on that first block.
+  const blocks = analystSystem(call);
+  assert.ok(blocks[0]!.text.startsWith("You maintain a running understanding"));
+  assert.equal(breakpointIndex(blocks), 0, "short transcript ⇒ breakpoint on the instructions block");
+  assert.equal(blocks.at(-1)!.cache_control, undefined, "the growing tail is never cached");
+  assert.ok(blocks.at(-1)!.text.includes(ANALYST_VOLATILE_INSTRUCTION));
+});
+
+// THE acceptance bar: prove the prompt cache can actually hit as the transcript
+// grows. Two cycles on a growing transcript must emit a byte-identical frozen
+// prefix, with the breakpoint on the last frozen chunk — that byte-identity is
+// the only thing that lets a cycle read the prefix back instead of re-writing it.
+test("analyst: a growing transcript keeps the frozen prefix byte-identical (cache contract)", async (t) => {
+  const h = await startServer(t, {
+    dailyLimit: 10,
+    anthropic: makeFakeAnthropic(async () => textResponse(JSON.stringify({ candidates: [] }))),
+  });
+  const token = await h.sessionTokenFor("apple:sub-1");
+
+  const CHUNK = ANALYST_TRANSCRIPT_CHUNK_SIZE;
+  // Cycle 1: two full chunks + a partial remainder.
+  const t1 = "a".repeat(2 * CHUNK + 1500);
+  // Cycle 2: the SAME transcript, appended to — enough to complete a third chunk.
+  const t2 = t1 + "b".repeat(3000);
+
+  assert.equal((await h.authedPost("/v1/analyst", token, { transcript: t1 })).status, 200);
+  assert.equal((await h.authedPost("/v1/analyst", token, { transcript: t2 })).status, 200);
+
+  const sys1 = analystSystem(h.anthropic.calls[0]!);
+  const sys2 = analystSystem(h.anthropic.calls[1]!);
+  const bp1 = breakpointIndex(sys1);
+  const bp2 = breakpointIndex(sys2);
+
+  // Layout is [header, chunk0, chunk1, (chunk2), remainder+volatile]:
+  //   cycle 1 → header + 2 chunks + remainder = 4 blocks, breakpoint on index 2
+  //   cycle 2 → header + 3 chunks + remainder = 5 blocks, breakpoint on index 3
+  assert.equal(sys1.length, 4);
+  assert.equal(sys2.length, 5);
+  assert.equal(sys2.length, sys1.length + 1, "grew by exactly one frozen chunk");
+
+  // The breakpoint sits on the LAST FROZEN CHUNK — the block just before the
+  // uncached remainder — in both cycles.
+  assert.equal(bp1, sys1.length - 2);
+  assert.equal(bp2, sys2.length - 2);
+
+  // THE CACHE INVARIANT: every block in cycle 1's frozen prefix (header through
+  // its breakpoint) is byte-identical in cycle 2.
+  for (let i = 0; i <= bp1; i++) {
+    assert.equal(sys2[i]!.text, sys1[i]!.text, `frozen block ${i} must be byte-identical`);
+  }
+
+  // Each frozen chunk is exactly the chunk size; the remainder is never cached.
+  for (let i = 1; i <= bp2; i++) {
+    assert.equal(Array.from(sys2[i]!.text).length, CHUNK, `block ${i} is a full chunk`);
+  }
+  assert.equal(sys2.at(-1)!.cache_control, undefined, "the remainder is never cached");
+  assert.ok(sys2.at(-1)!.text.includes(ANALYST_VOLATILE_INSTRUCTION));
+});
+
+test("analyst: an empty transcript is a valid cold-start cycle", async (t) => {
+  const h = await startServer(t, {
+    anthropic: makeFakeAnthropic(async () => textResponse(JSON.stringify({ candidates: [] }))),
+  });
+  const token = await h.sessionTokenFor("apple:sub-1");
+  const { status, body } = await h.authedPost("/v1/analyst", token, { transcript: "" });
+  assert.equal(status, 200);
+  assert.deepEqual(body, { candidates: [] });
+  const blocks = analystSystem(h.anthropic.calls[0]!);
+  // No frozen chunk yet: instructions block carries the breakpoint, and the
+  // placeholder body lives in the uncached tail.
+  assert.equal(breakpointIndex(blocks), 0);
+  assert.ok(blocks.at(-1)!.text.includes("(nothing transcribed yet)"));
+});
+
+test("analyst: model output failing re-validation is 502", async (t) => {
+  for (const bad of [
+    "not json at all",
+    JSON.stringify({ candidates: "nope" }),
+    JSON.stringify({ candidates: [{ text: "x", register: "praise", anchor: "y" }] }),
+    JSON.stringify({ candidates: [{ text: "x", register: "question" }] }),
+  ]) {
+    const h = await startServer(t, {
+      anthropic: makeFakeAnthropic(async () => textResponse(bad)),
+    });
+    const token = await h.sessionTokenFor("apple:sub-1");
+    const { status, body } = await h.authedPost("/v1/analyst", token, { transcript: "hello" });
+    assert.equal(status, 502, `bad payload: ${bad.slice(0, 40)}`);
+    assertErrorEnvelope(body, "upstream_error");
+  }
+});
+
+test("analyst: refusal maps to 502 with the contract message", async (t) => {
+  const h = await startServer(t, {
+    anthropic: makeFakeAnthropic(async () => ({ stop_reason: "refusal", content: [] })),
+  });
+  const token = await h.sessionTokenFor("apple:sub-1");
+  const { status, body } = await h.authedPost("/v1/analyst", token, { transcript: "hello" });
+  assert.equal(status, 502);
+  assert.equal(body.error.message, "the model declined this request");
+});
+
+test("analyst: requires auth", async (t) => {
+  const h = await startServer(t);
+  const { status, body } = await h.fetchJson("/v1/analyst", {
+    method: "POST",
+    body: JSON.stringify({ transcript: "hello" }),
+  });
+  assert.equal(status, 401);
+  assertErrorEnvelope(body, "unauthorized");
+});
+
+test("analyst: invalid transcript rejects with 400 invalid_request", async (t) => {
+  const h = await startServer(t);
+  const token = await h.sessionTokenFor("apple:sub-1");
+  const cases: Record<string, unknown>[] = [
+    {}, // missing transcript
+    { transcript: 42 }, // non-string
+    { transcript: "x".repeat(200 * 1024 + 1) }, // over the 200 KB transcript cap
+  ];
+  for (const [i, c] of cases.entries()) {
+    const { status, body } = await h.authedPost("/v1/analyst", token, c);
+    assert.equal(status, 400, `case ${i}`);
+    assertErrorEnvelope(body, "invalid_request");
+  }
+  // None reached the upstream.
+  assert.equal(h.anthropic.calls.length, 0);
+});
+
+test("metering: successful analyst calls also consume quota", async (t) => {
+  const h = await startServer(t, {
+    dailyLimit: 1,
+    anthropic: makeFakeAnthropic(async () => textResponse(JSON.stringify({ candidates: [] }))),
+  });
+  const token = await h.sessionTokenFor("apple:sub-1");
+  const first = await h.authedPost("/v1/analyst", token, { transcript: "hello" });
+  assert.equal(first.status, 200);
+  const me = await h.fetchJson("/v1/me", { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(me.body.usage.modelCallsToday, 1);
+  const second = await h.authedPost("/v1/analyst", token, { transcript: "hello" });
+  assert.equal(second.status, 429);
+  assertErrorEnvelope(second.body, "quota_exceeded");
 });
 
 // ---------------------------------------------------------------- misc

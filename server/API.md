@@ -92,6 +92,41 @@ Response `200` — exactly `CoverageResult`:
 }
 ```
 
+### POST /v1/analyst
+
+One ambient-analyst cycle: the whole transcript in, a small ranked pool of
+candidate interjections out. The server owns the analyst system prompt and the
+structured-outputs JSON schema (mirrors `TurnEngine/AnalystPrompt.swift` — schema
+is the contract, keep in sync), so the response body IS an `AnalystResult`.
+
+Request:
+```json
+{ "transcript": "string" }
+```
+
+Cap: transcript ≤ 200 KB. An empty transcript is valid — a cold-start cycle
+returns an empty candidate list.
+
+The transcript is re-sent every cycle, so the server lays it out for the prompt
+cache: an append-only sequence of `system` blocks split at fixed 4000-character
+boundaries, with the cache breakpoint on the last frozen chunk. Blocks before
+that boundary stay byte-identical as the transcript grows, so each cycle reads
+them back instead of re-writing them. This layout is built **server-side** from
+the transcript text (the chunking is deterministic); the client sends only the
+transcript and never chooses `cache_control`.
+
+Response `200` — exactly `AnalystResult`:
+```json
+{
+  "candidates": [
+    { "text": "string", "register": "reflection", "anchor": "string" }
+  ]
+}
+```
+
+`register` is `"reflection"` | `"question"`. `candidates` may be empty — a cold
+pool is a valid, correct state.
+
 ### GET /v1/me
 
 Response `200`:
@@ -101,10 +136,10 @@ Response `200`:
 
 ## Metering
 
-One counter per user per UTC day, incremented on each successful `/v1/listener`
-and `/v1/coverage` call. At the limit (`DAILY_MODEL_CALL_LIMIT`, default 200):
-`429 quota_exceeded`. Not a pricing mechanism — an abuse cap; pricing comes
-later.
+One counter per user per UTC day, incremented on each successful `/v1/listener`,
+`/v1/coverage`, and `/v1/analyst` call. At the limit (`DAILY_MODEL_CALL_LIMIT`,
+default 200): `429 quota_exceeded`. Not a pricing mechanism — an abuse cap;
+pricing comes later.
 
 ## Upstream failures
 

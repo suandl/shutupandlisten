@@ -67,6 +67,31 @@ public final class ProxyClient: ListenerService, @unchecked Sendable {
         }
     }
 
+    /// One analyst cycle via the proxy. The server owns the analyst system
+    /// prompt, the structured-outputs schema, AND the transcript's cache-block
+    /// layout (all kept in sync with TurnEngine/AnalystPrompt.swift), so the
+    /// client sends only the transcript text and the response body IS an
+    /// AnalystResult. Overrides the empty-pool default in ListenerService so
+    /// proxy users get a live candidate pool instead of a cold one.
+    ///
+    /// `AnalystRequest.systemBlocks` (the pre-built, cache-flagged block
+    /// sequence) is the BYOK path's concern; over the proxy the server rebuilds
+    /// that layout from the transcript, so we forward `request.transcript` and
+    /// let the server do the chunking. The proxy surfaces no token usage (as with
+    /// the respondWithUsage default), so the reply carries `usage: nil`.
+    public func analyze(_ request: AnalystRequest) async throws -> AnalystReply {
+        let body: [String: Any] = [
+            "transcript": request.transcript,
+        ]
+        let data = try await post("v1/analyst", body: body)
+        do {
+            let result = try JSONDecoder().decode(AnalystResult.self, from: data)
+            return AnalystReply(result: result, usage: nil)
+        } catch {
+            throw ProxyError.decoding(String(describing: error))
+        }
+    }
+
     private func post(_ path: String, body: [String: Any]) async throws -> Data {
         try await ProxyWire.post(
             config.baseURL.appendingPathComponent(path),

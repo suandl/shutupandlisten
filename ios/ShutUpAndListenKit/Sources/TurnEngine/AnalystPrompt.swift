@@ -81,15 +81,23 @@ public struct AnalystRequest: Sendable {
     public let systemBlocks: [SystemBlock]
     public let messages: [ListenerChatMessage]
     public let maxTokens: Int
+    /// The raw transcript this request was built from. The BYOK path ignores it
+    /// (it sends the pre-built `systemBlocks`); the proxy path forwards it so the
+    /// server rebuilds the identical cache-friendly block layout on its side —
+    /// see server/API.md `POST /v1/analyst`. Defaulted so existing constructions
+    /// keep compiling.
+    public let transcript: String
 
     public init(
         systemBlocks: [SystemBlock],
         messages: [ListenerChatMessage],
-        maxTokens: Int
+        maxTokens: Int,
+        transcript: String = ""
     ) {
         self.systemBlocks = systemBlocks
         self.messages = messages
         self.maxTokens = maxTokens
+        self.transcript = transcript
     }
 }
 
@@ -184,7 +192,8 @@ public enum Analyst {
         return AnalystRequest(
             systemBlocks: blocks,
             messages: [ListenerChatMessage(role: .user, content: volatileInstruction)],
-            maxTokens: maxTokens
+            maxTokens: maxTokens,
+            transcript: transcript
         )
     }
 }
