@@ -14,7 +14,7 @@
 // Both halves matter, so both are asserted: exactly once per clip, and never
 // after `stop()`.
 //
-// NOTE: this target is not yet wired into the Xcode project — see README.md.
+// Runs in the ShutUpAndListenAppTests unit-test bundle (simulator or device).
 
 import AVFoundation
 import XCTest

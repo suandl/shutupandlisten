@@ -6,7 +6,7 @@
 // as `recovered` — dropping an unreadable audio reference but never the
 // transcript.
 //
-// NOTE: this target is not yet wired into the Xcode project — see README.md.
+// Runs in the ShutUpAndListenAppTests unit-test bundle (simulator or device).
 
 import SwiftData
 import TranscriptCore

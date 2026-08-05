@@ -31,8 +31,7 @@
 // than its fields, and why every other case here can pass while the upgrade a
 // real user performs fails.
 //
-// NOTE: this target is not yet wired into the Xcode project — see README.md.
-// Until an operator does that (a Mac/Xcode GUI step), none of this runs.
+// Runs in the ShutUpAndListenAppTests unit-test bundle (simulator or device).
 
 import SwiftData
 import TranscriptCore
@@ -204,8 +203,9 @@ final class MigrationTests: XCTestCase {
 
     /// The backfill and the lazy read-path fallback must agree: a record
     /// must not gain or lose replay depending on which one reached it. The
-    /// stage goes through `materializeLegacySegments(in:)`; the fallback goes
-    /// through `TranscriptCore.segments(from:)`. Two functions, one contract.
+    /// backfill goes through `materializeLegacySegments(in:)`; the fallback
+    /// goes through `TranscriptCore.segments(from:)`. Two functions, one
+    /// contract.
     @MainActor
     func testMaterializedRowsAgreeWithLazyFallback() throws {
         let blob = try writeV1Fixture(entries: pr37Entries)
@@ -217,7 +217,7 @@ final class MigrationTests: XCTestCase {
         XCTAssertFalse(migrated.segments.isEmpty, "precondition: the backfill materialized rows")
         let migratedSegments = migrated.transcriptSegments
 
-        // (b) the same blob on a record the stage never touched.
+        // (b) the same blob on a record the backfill never touched.
         let schema = Schema(versionedSchema: SessionSchemaV2.self)
         let memory = try ModelContainer(
             for: schema,

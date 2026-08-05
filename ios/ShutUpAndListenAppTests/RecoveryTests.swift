@@ -7,7 +7,7 @@
 // forward, but a device that ran a pre-port build can already be in it, since
 // those builds only referenced the recording once the first checkpoint ran.
 //
-// NOTE: this target is not yet wired into the Xcode project — see README.md.
+// Runs in the ShutUpAndListenAppTests unit-test bundle (simulator or device).
 
 import AVFoundation
 import SwiftData
