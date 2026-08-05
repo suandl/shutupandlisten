@@ -19,6 +19,12 @@
 // timings were being dropped. A test that asserts on `segments(from:)` passes
 // with the bug fully intact.
 //
+// Both inbound shapes above are written through a VERSIONED V1 schema, which
+// no shipped store ever was — see `testShippedUnversionedStoreUpgradesToV2` at
+// the foot of this file for the case that covers a store's provenance rather
+// than its fields, and why every other case here can pass while the upgrade a
+// real user performs fails.
+//
 // NOTE: this target is not yet wired into the Xcode project — see README.md.
 // Until an operator does that (a Mac/Xcode GUI step), none of this runs.
 
@@ -374,5 +380,114 @@ final class MigrationTests: XCTestCase {
         XCTAssertFalse(record.hasTimings)
         XCTAssertTrue(record.segments.isEmpty, "the read path must not insert rows")
         XCTAssertTrue(record.hasThreadPull)
+    }
+
+    // ── The shipped store's PROVENANCE, not just its shape ──
+
+    /// Every case above writes its fixture through
+    /// `Schema(versionedSchema: SessionSchemaV1.self)`, which stamps the store
+    /// with V1's version identifier. NO SHIPPED STORE WAS EVER CREATED THAT
+    /// WAY. The base-era app opened its library with the convenience modifier
+    /// (`.modelContainer(for: SessionRecord.self)`, a3437ce) — an UNVERSIONED
+    /// schema — so every device that ran a pre-port build has a store carrying
+    /// no version identifier the migration manager can name.
+    ///
+    /// `testV1FixtureIsPR37Shape` pins the fixture's FIELDS to the shipped
+    /// shape and is right to; this pins the thing it does not cover, which is
+    /// how the store was created. The distinction is invisible to every other
+    /// test here and is precisely why they can all pass while the real upgrade
+    /// fails: SwiftData's `DefaultMigrationManager` must identify the store's
+    /// model version among the plan's `schemas` before running any stage, and
+    /// an unversioned store gives it nothing to match — NSCocoaErrorDomain
+    /// 134504, "Cannot use staged migration with an unknown model version".
+    ///
+    /// So this is the only case in the file that exercises the upgrade a real
+    /// user performs: a store created the way the app shipped, reopened the way
+    /// the app reopens it.
+    func testShippedUnversionedStoreUpgradesToV2() throws {
+        try writeShippedUnversionedFixture()
+
+        let container = try openV2()
+        let context = ModelContext(container)
+        let record = try XCTUnwrap(
+            context.fetch(FetchDescriptor<SessionRecord>()).first,
+            "the shipped record must survive the upgrade"
+        )
+
+        XCTAssertEqual(
+            record.state, SessionState.complete.rawValue,
+            "every pre-port record is a finished session"
+        )
+        XCTAssertEqual(
+            record.transcriptSegments.map(\.text),
+            baseEntries.map(\.text),
+            "no line of transcript may be lost upgrading a shipped store"
+        )
+    }
+
+    /// Write one record the way the SHIPPED app did: an unversioned schema, via
+    /// the model type alone. `ShippedBaseSchema.SessionRecord` is nested only to
+    /// avoid colliding with the app's `SessionRecord` typealias in this file —
+    /// SwiftData names the entity from the CLASS name, so the store this
+    /// produces is byte-identical to a real base-era one.
+    private func writeShippedUnversionedFixture() throws {
+        // SDK-CHECK: ModelConfiguration(url:) — no `schema:`, matching the
+        // convenience modifier's unversioned container.
+        let config = ModelConfiguration(url: storeURL)
+        let container = try ModelContainer(
+            for: ShippedBaseSchema.SessionRecord.self,
+            configurations: config
+        )
+        let context = ModelContext(container)
+        context.insert(
+            ShippedBaseSchema.SessionRecord(
+                startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                duration: 61,
+                title: "So the idea is a reading app.",
+                transcriptJSON: try fixtureJSON(),
+                criteriaText: "pricing"
+            )
+        )
+        try context.save()
+        // Container and context go out of scope here, releasing the file.
+    }
+}
+
+/// The base-era (pre-PR#37) `SessionRecord`, reproduced verbatim from a3437ce
+/// so a test can create a store with the provenance a shipped one has. Nested
+/// in an enum purely for name isolation; the entity name SwiftData records is
+/// `SessionRecord`, exactly as on a real device.
+enum ShippedBaseSchema {
+    @Model
+    final class SessionRecord {
+        var id: UUID
+        var startedAt: Date
+        var duration: TimeInterval
+        var title: String
+        /// JSON-encoded `[StoredEntry]`. NON-optional at the base shape.
+        var transcriptJSON: Data
+        var criteriaText: String
+        var coverageJSON: Data?
+        var audioFileName: String?
+
+        init(
+            id: UUID = UUID(),
+            startedAt: Date,
+            duration: TimeInterval,
+            title: String,
+            transcriptJSON: Data,
+            criteriaText: String,
+            coverageJSON: Data? = nil,
+            audioFileName: String? = nil
+        ) {
+            self.id = id
+            self.startedAt = startedAt
+            self.duration = duration
+            self.title = title
+            self.transcriptJSON = transcriptJSON
+            self.criteriaText = criteriaText
+            self.coverageJSON = coverageJSON
+            self.audioFileName = audioFileName
+        }
     }
 }
