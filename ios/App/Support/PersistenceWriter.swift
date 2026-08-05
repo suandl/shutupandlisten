@@ -131,6 +131,37 @@ actor PersistenceWriter: ModelActor {
         return true
     }
 
+    // ── legacy backfill (the data half of V1 → V2) ──
+
+    /// Materialize `SegmentRecord` rows for every record still carrying only
+    /// the legacy `transcriptJSON` blob.
+    ///
+    /// This is the DATA half of the V1 → V2 migration. The app reaches V2 by
+    /// inferred migration, which transforms the SHAPE and nothing else
+    /// (`ShutUpAndListenApp.openContainer` records why there is no staged plan
+    /// to do it), so the row materialization the custom stage used to perform
+    /// happens here instead — through the same `materializeLegacySegments`, so
+    /// PR#37 blob timings are preserved rather than zeroed.
+    ///
+    /// Idempotent, and cheap enough to run at every launch: records that
+    /// already have rows are skipped, and a V2-written record has no blob, so
+    /// once a library is migrated this matches nothing. Runs on its own
+    /// throwaway context, before recovery, so no reader sees a half-built
+    /// record.
+    static func materializeLegacyRecords(container: ModelContainer) {
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<SessionRecord>(
+            predicate: #Predicate<SessionRecord> { $0.transcriptJSON != nil }
+        )
+        guard let records = try? context.fetch(descriptor) else { return }
+        let pending = records.filter { $0.segments.isEmpty }
+        guard !pending.isEmpty else { return }
+        for record in pending {
+            record.materializeLegacySegments(in: context)
+        }
+        try? context.save()
+    }
+
     // ── launch recovery ──
 
     /// Close every record a crash left in `recording` state (R3.2). Runs on

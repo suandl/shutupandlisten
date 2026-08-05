@@ -1,9 +1,15 @@
-// The V1 → V2 migration stage, against a real fixture store (plan Phase 4
-// test scenarios): a store written under SchemaV1 (whole-transcript
-// `transcriptJSON` blobs) reopened through SessionMigrationPlan must come out
+// The V1 → V2 migration, against a real fixture store (plan Phase 4 test
+// scenarios): a store written under SchemaV1 (whole-transcript
+// `transcriptJSON` blobs), reopened the way the app reopens it, must come out
 // with ordered SegmentRecord rows (index = array order), state `complete`, and
 // the legacy blob kept. The lazy-materialize guard rail (a V2 record that
 // somehow still has only a blob) must render on read.
+//
+// The app reaches V2 in TWO halves — inferred migration for the SHAPE, then
+// `PersistenceWriter.materializeLegacyRecords` for the DATA — because a staged
+// plan cannot open a shipped store at all (see the foot of this file). Cases
+// that need rows therefore go through `migrateFixture()`, which runs both in
+// the order the app runs them.
 //
 // This is THE DATA-SAFETY GATE of the transcript-core port (port plan §5.3,
 // §5.5). TWO inbound shapes are real after the port, and both are covered here:
@@ -13,11 +19,11 @@
 //                          become "invent timings that were never recorded".
 //   PR#37-era (current main) startMs/endMs in the blob → real ranges, replay.
 //
-// The PR#37 cases go through the REAL SessionMigrationPlan, not through
+// The PR#37 cases go through the REAL migration path, not through
 // `TranscriptCore.segments(from:)` directly, and that is the entire point: the
-// migration stage runs `materializeLegacySegments(in:)`, which is where the
-// timings were being dropped. A test that asserts on `segments(from:)` passes
-// with the bug fully intact.
+// backfill runs `materializeLegacySegments(in:)`, which is where the timings
+// were being dropped. A test that asserts on `segments(from:)` passes with the
+// bug fully intact.
 //
 // Both inbound shapes above are written through a VERSIONED V1 schema, which
 // no shipped store ever was — see `testShippedUnversionedStoreUpgradesToV2` at
@@ -114,14 +120,22 @@ final class MigrationTests: XCTestCase {
         return blob
     }
 
+    /// Exactly how the app opens the library (`openContainer`), minus the
+    /// pinned URL: inferred migration, no plan.
     private func openV2() throws -> ModelContainer {
         let schema = Schema(versionedSchema: SessionSchemaV2.self)
         let config = ModelConfiguration(schema: schema, url: storeURL)
-        return try ModelContainer(
-            for: schema,
-            migrationPlan: SessionMigrationPlan.self,
-            configurations: [config]
-        )
+        return try ModelContainer(for: schema, configurations: [config])
+    }
+
+    /// The app's whole launch sequence over a legacy store: open, then backfill.
+    /// The cases below go through this rather than `openV2` alone, because the
+    /// row materialization that used to happen inside the migration stage is
+    /// now the backfill's job.
+    private func migrateFixture() throws -> ModelContainer {
+        let container = try openV2()
+        PersistenceWriter.materializeLegacyRecords(container: container)
+        return container
     }
 
     // ── §5.5 items 1–5: the port's data-safety set ──
@@ -160,18 +174,18 @@ final class MigrationTests: XCTestCase {
         let record = try XCTUnwrap(context.fetch(FetchDescriptor<SessionRecord>()).first)
 
         XCTAssertEqual(try XCTUnwrap(record.costUSD), 0.0137, accuracy: 1e-9,
-                       "the cost readout survives the stage")
+                       "the cost readout survives the shape transform")
     }
 
     /// THE most valuable case in this file (§5.3 part 2). A PR#37-era blob,
-    /// seeded and reopened THROUGH SessionMigrationPlan, must materialize rows
-    /// with real ranges. Going through the real plan is the whole point: it is
+    /// seeded and taken through the REAL launch sequence, must materialize rows
+    /// with real ranges. Going through that sequence is the whole point: it is
     /// the only thing that exercises `materializeLegacySegments(in:)`, which is
     /// where the drop actually happened. Asserting on
     /// `TranscriptCore.segments(from:)` instead would pass with the bug intact.
     func testMigrationCarriesPR37Timings() throws {
         try writeV1Fixture(entries: pr37Entries)
-        let context = ModelContext(try openV2())
+        let context = ModelContext(try migrateFixture())
         let record = try XCTUnwrap(context.fetch(FetchDescriptor<SessionRecord>()).first)
 
         let segments = record.orderedSegments
@@ -188,7 +202,7 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(segments.map(\.text), pr37Entries.map(\.text))
     }
 
-    /// The migration stage and the lazy read-path fallback must agree: a record
+    /// The backfill and the lazy read-path fallback must agree: a record
     /// must not gain or lose replay depending on which one reached it. The
     /// stage goes through `materializeLegacySegments(in:)`; the fallback goes
     /// through `TranscriptCore.segments(from:)`. Two functions, one contract.
@@ -196,11 +210,11 @@ final class MigrationTests: XCTestCase {
     func testMaterializedRowsAgreeWithLazyFallback() throws {
         let blob = try writeV1Fixture(entries: pr37Entries)
 
-        // (a) through the real migration stage.
+        // (a) through the real launch sequence.
         let migrated = try XCTUnwrap(
-            ModelContext(try openV2()).fetch(FetchDescriptor<SessionRecord>()).first
+            ModelContext(try migrateFixture()).fetch(FetchDescriptor<SessionRecord>()).first
         )
-        XCTAssertFalse(migrated.segments.isEmpty, "precondition: the stage materialized rows")
+        XCTAssertFalse(migrated.segments.isEmpty, "precondition: the backfill materialized rows")
         let migratedSegments = migrated.transcriptSegments
 
         // (b) the same blob on a record the stage never touched.
@@ -242,7 +256,7 @@ final class MigrationTests: XCTestCase {
     /// as before the port.
     func testBaseShapeYieldsZeroedRangesAndNoTimings() throws {
         try writeV1Fixture(entries: baseEntries)
-        let context = ModelContext(try openV2())
+        let context = ModelContext(try migrateFixture())
         let record = try XCTUnwrap(context.fetch(FetchDescriptor<SessionRecord>()).first)
 
         let segments = record.orderedSegments
@@ -259,7 +273,7 @@ final class MigrationTests: XCTestCase {
 
     func testMigrationMaterializesOrderedSegmentRows() throws {
         try writeV1Fixture()
-        let container = try openV2()
+        let container = try migrateFixture()
         let context = ModelContext(container)
 
         let records = try context.fetch(FetchDescriptor<SessionRecord>())
@@ -294,7 +308,7 @@ final class MigrationTests: XCTestCase {
 
     func testMigratedRecordDerivedViewsComeFromSegments() throws {
         try writeV1Fixture()
-        let container = try openV2()
+        let container = try migrateFixture()
         let context = ModelContext(container)
         let record = try XCTUnwrap(context.fetch(FetchDescriptor<SessionRecord>()).first)
 
@@ -407,7 +421,7 @@ final class MigrationTests: XCTestCase {
     func testShippedUnversionedStoreUpgradesToV2() throws {
         try writeShippedUnversionedFixture()
 
-        let container = try openV2()
+        let container = try migrateFixture()
         let context = ModelContext(container)
         let record = try XCTUnwrap(
             context.fetch(FetchDescriptor<SessionRecord>()).first,
@@ -422,6 +436,42 @@ final class MigrationTests: XCTestCase {
             record.transcriptSegments.map(\.text),
             baseEntries.map(\.text),
             "no line of transcript may be lost upgrading a shipped store"
+        )
+    }
+
+    /// The backfill is no longer a one-shot migration stage — it runs at EVERY
+    /// launch — so a second pass over an already-migrated store must not
+    /// duplicate rows.
+    func testBackfillIsIdempotent() throws {
+        try writeV1Fixture()
+        let container = try migrateFixture()
+        PersistenceWriter.materializeLegacyRecords(container: container)
+
+        let context = ModelContext(container)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SegmentRecord>()).count, 4)
+        let record = try XCTUnwrap(context.fetch(FetchDescriptor<SessionRecord>()).first)
+        XCTAssertEqual(record.segments.count, 4)
+    }
+
+    /// The SHAPE half alone. Inference must carry a V1 record across with its
+    /// blob intact and pick up `state`'s declaration default — which is what
+    /// keeps a migrated record out of launch recovery's `recording` fetch. No
+    /// rows yet: those are the backfill's job, and until it runs the guard rail
+    /// is what renders the transcript.
+    func testInferredMigrationTransformsShapeWithoutTheBackfill() throws {
+        try writeV1Fixture()
+        let context = ModelContext(try openV2())
+        let record = try XCTUnwrap(context.fetch(FetchDescriptor<SessionRecord>()).first)
+
+        XCTAssertEqual(
+            record.state, SessionState.complete.rawValue,
+            "every V1 record is a finished session"
+        )
+        XCTAssertNotNil(record.transcriptJSON, "legacy blob is kept, not dropped")
+        XCTAssertTrue(record.segments.isEmpty, "rows are the backfill's job")
+        XCTAssertTrue(
+            record.hasThreadPull,
+            "the guard rail renders the blob before the backfill reaches it"
         )
     }
 

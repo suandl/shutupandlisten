@@ -25,15 +25,28 @@
 // (cascade-deleted with the record), and is closed as `complete` at stop — or
 // `recovered` by launch recovery after a crash (R3.1/R3.2).
 //
-// Migration is NOT lightweight-as-in-inferred, for two reasons that both
-// require a custom stage: `transcriptIsReconciled` is DROPPED at V2 (a
-// destructive change — reconciliation itself is deleted, so the flag has no
-// meaning), and each old record's `transcriptJSON` must be decoded into
-// `SegmentRecord` rows. The blob is KEPT as a legacy optional field, and the
-// derived views fall back to decoding it on read whenever a record has no
-// segment rows — the plan's lazy-materialize guard rail for any record the
-// stage missed. The two paths MUST agree: a record must not gain or lose
-// replay depending on which one reached it.
+// Migration runs in two halves, and NEITHER is a staged migration plan — that
+// plan is gone, because SwiftData's staged migration manager cannot open the
+// store this app shipped (it has to NAME the store's model version, and the
+// base-era container was unversioned); `ShutUpAndListenApp.openContainer`
+// records the finding in full. The halves that replace it:
+//
+// 1. SHAPE — inferred (lightweight) migration, which needs no version name.
+//    Every V1 → V2 change is within its reach: a new entity, a new
+//    relationship, `transcriptJSON` widened to optional, `transcriptIsReconciled`
+//    REMOVED (attribute deletion is lightweight-migratable; reconciliation
+//    itself is deleted, so the flag has no meaning), and `state` added with the
+//    declaration default.
+// 2. DATA — `PersistenceWriter.materializeLegacyRecords`, at launch: decode
+//    each old record's `transcriptJSON` into `SegmentRecord` rows via
+//    `materializeLegacySegments(in:)` below. Idempotent, so it is safe on every
+//    launch and covers any record an earlier pass missed.
+//
+// The blob is KEPT as a legacy optional field, and the derived views fall back
+// to decoding it on read whenever a record has no segment rows — the plan's
+// lazy-materialize guard rail, and now also the safety net for a record the
+// backfill has not reached yet. The two paths MUST agree: a record must not
+// gain or lose replay depending on which one reached it.
 //
 // `costUSD` is carried INTO V2. The rewrite's V2 omitted it; dropping it would
 // silently void the cost readout for every past session.
@@ -229,49 +242,10 @@ enum SessionSchemaV2: VersionedSchema {
 typealias SessionRecord = SessionSchemaV2.SessionRecord
 typealias SegmentRecord = SessionSchemaV2.SegmentRecord
 
-// ── Migration plan ──
-
-enum SessionMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] {
-        [SessionSchemaV1.self, SessionSchemaV2.self]
-    }
-
-    static var stages: [MigrationStage] { [migrateV1toV2] }
-
-    /// The custom stage: after the schema transform (which adds the empty
-    /// relationship, makes `transcriptJSON` optional, defaults `state`, carries
-    /// `costUSD` across unchanged, and DROPS `transcriptIsReconciled`), decode
-    /// every record's legacy blob into ordered `SegmentRecord` rows and stamp
-    /// the record `complete`.
-    ///
-    /// It must be `.custom` rather than inferred because dropping
-    /// `transcriptIsReconciled` is a destructive change, and because the row
-    /// materialization has no inferred equivalent.
-    ///
-    /// TIMING FIDELITY, and its documented approximation: PR#37 wrote
-    /// `startMs`/`endMs` as WALL-clock ms from the session's `clockOrigin`,
-    /// whereas V2's `audioStart`/`audioEnd` are canonical FED-SAMPLES audio
-    /// seconds. The two agree except across an interruption, where the wall
-    /// clock keeps running and the audio clock does not. Carrying them across
-    /// is strictly better than zeroing them: the alternative loses working
-    /// replay on every existing session to avoid drift on the subset that was
-    /// interrupted.
-    static let migrateV1toV2 = MigrationStage.custom(
-        fromVersion: SessionSchemaV1.self,
-        toVersion: SessionSchemaV2.self,
-        willMigrate: nil,
-        didMigrate: { context in
-            let records = try context.fetch(
-                FetchDescriptor<SessionSchemaV2.SessionRecord>()
-            )
-            for record in records {
-                record.state = SessionState.complete.rawValue
-                record.materializeLegacySegments(in: context)
-            }
-            try context.save()
-        }
-    )
-}
+// NOTE: there is no `SchemaMigrationPlan` here by design — see the header and
+// `ShutUpAndListenApp.openContainer`. SessionSchemaV1 stays even though nothing
+// migrates *through* it now: it is the written record of the shipped shape, and
+// MigrationTests needs it to write a real V1 store to migrate from.
 
 // ── Derived views (segments first, legacy blob as the guard-rail fallback) ──
 
@@ -398,19 +372,29 @@ extension SessionSchemaV2.SessionRecord {
         return words.count > 8 ? head + "…" : head
     }
 
-    /// The migration stage's materializer: decode the legacy blob into
+    /// The legacy backfill's materializer (`PersistenceWriter
+    /// .materializeLegacyRecords`, at launch): decode the legacy blob into
     /// `SegmentRecord` rows, index = array order. Idempotent — a record that
     /// already has rows is left alone. The blob is kept as the
     /// belt-and-suspenders original.
     ///
     /// THE TIMINGS ARE CARRIED THROUGH, and this is the function where that
-    /// actually matters: the migration stage does not go through
+    /// actually matters: the backfill does not go through
     /// `TranscriptCore.segments(from:)` at all, so teaching `StoredEntry` to
     /// decode `startMs`/`endMs` changes nothing observable without this edit.
     /// Zeroing here would migrate every PR#37-era session replay-less,
     /// permanently and with no error. Entries that carry no timings (base-era
     /// blobs) still materialize zeroed, which is what keeps this a fix rather
     /// than an invention of timings that were never recorded.
+    ///
+    /// TIMING FIDELITY, and its documented approximation: PR#37 wrote
+    /// `startMs`/`endMs` as WALL-clock ms from the session's `clockOrigin`,
+    /// whereas V2's `audioStart`/`audioEnd` are canonical FED-SAMPLES audio
+    /// seconds. The two agree except across an interruption, where the wall
+    /// clock keeps running and the audio clock does not. Carrying them across
+    /// is strictly better than zeroing them: the alternative loses working
+    /// replay on every existing session to avoid drift on the subset that was
+    /// interrupted.
     func materializeLegacySegments(in context: ModelContext) {
         guard segments.isEmpty else { return }
         for (position, entry) in legacyEntries.enumerated() {
