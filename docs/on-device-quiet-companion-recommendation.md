@@ -157,10 +157,13 @@ prompts and both frontier models.**
 **The models are choosing to speak; the harness is not forcing them to.** This is
 the load-bearing fact:
 
-- The harness **supports silence.** `promptfoo/providers/multi-turn.js` keeps
-  empty (silent) listener turns in the recorded transcript and drops them *only*
-  from what it sends to the API (that file, lines 276–278 and 340–355) — a silent
-  turn is a legitimate, representable move.
+- The harness **supports silence.** In `promptfoo/providers/multi-turn.js`, an
+  empty (silent) listener turn is preserved in the raw transcript array (line 242)
+  but dropped from *both* the API payload sent to the next turn (line 346) *and*
+  the scored transcript the judges read (line 282) — deliberately, so that the
+  restraint judge "reads the sparse listener presence as silence" (lines 276–278).
+  A silent turn is a legitimate, representable move: the harness scores silence as
+  the *absence* of a listener line; it does not force a reply.
 - The **v0 prompt explicitly orders it**: *"reply with nothing at all — an empty
   response"* during dictation (quoted in su-lou.16 §4 Q2).
 - **Yet across ~80 listener turns (16 cells × 5), not one turn was silent** (§4
@@ -233,11 +236,14 @@ evidence a substantive reply is invited* (docs/findings/on-device-text-quality.m
 §5, §7; `promptfoo/providers/reduced-role.js`).
 
 **This is exactly what the iOS build ships.** su-uzy9 (the iOS-native line) builds
-a **pool-first gate** (SessionController), an **AnalystCadence reducer**, and a
-**ranked, transcript-anchored, freshness-expiring CandidatePool** — the model is
-"asked (and free to decline) before it ever speaks," and the *"Just listen"*
-toggle *"deterministically caps every uninvited turn at a quiet acknowledgment —
-no model call can slip through"* (docs/ios-product-evaluation.md; su-uzy9).
+a **pool-first gate** (`SessionController`), an **AnalystCadence reducer**, and a
+**ranked, transcript-anchored, freshness-expiring CandidatePool** — all three in
+su-uzy9's merged iOS code (`ios/App/SessionController.swift`,
+`ios/ShutUpAndListenKit/Sources/TurnEngine/{AnalystCadence,CandidatePool}.swift`),
+not in the eval doc below. The behaviour those pieces deliver is the point: the
+model is "asked (and free to decline) before it ever speaks," and the *"Just
+listen"* toggle *"deterministically caps every uninvited turn at a quiet
+acknowledgment — no model call can slip through"* (docs/ios-product-evaluation.md).
 
 **It is untested in the favourable direction.** The gate is the **one mechanism on
 the table that could deliver B1 (hold silence through the unfinished thought) and
@@ -265,8 +271,9 @@ Smaller than F1–F3, but they shape *how* to build, so state them:
   penalises (§4 Q1, §5). **Do not port that clause verbatim into the iOS Analyst
   prompt.**
 - **B4's "brief" half is not reproduced on the frontier surface.** The shipped
-  hardened prompt is the *briefest* configuration measured — **11–27 words/turn,
-  ~70 tokens** (su-lou.16 §3e, §4 Q2). The operator's verbose-reply / "hit the
+  hardened prompt is the *briefest* configuration measured — **11–27 words/turn**;
+  even the longest configuration (v0) runs only up to ~53 words/turn, **~70 tokens
+  — nowhere near a token cap** (su-lou.16 §3e, §4 Q2). The operator's verbose-reply / "hit the
   token cap" observation is recorded as belonging to a **different substrate** (the
   browser/on-device listener), and this frontier eval **cannot corroborate it**
   (su-lou.16 §4 Q2, §7). Provenance note: that observation is referenced as an
@@ -304,10 +311,12 @@ none is buried:
    (`promptfoo/promptfooconfig.yaml`). There is **no judge for B5 (specific over
    generic) or B6 (feels real, not robotic)**; probing-depth touches B5's
    territory but is not a B5 verdict. Two bar items are unmeasured.
-6. **U7's outcome is not in hand.** su-uzy9 is in flight (open; its PR #37 is
-   OPEN / mergeStateStatus=BLOCKED), so the gate F3 rests on is a **design, not yet
-   a measurement** — and the iOS branch has not run on a device or simulator
-   (docs/ios-product-evaluation.md).
+6. **U7's outcome is not in hand.** su-uzy9's PR #37 line has **landed** (merged
+   2026-08-02, commit `ad11247`); the epic itself stays **open and idle by
+   design**, awaiting an MVP iOS build for the operator's next feedback round
+   (su-uzy9). So the gate F3 rests on is **built and merged but not yet measured
+   against the bar** — a **design, not yet a measurement** — and the iOS branch has
+   still not run on a device or simulator (docs/ios-product-evaluation.md).
 
 ---
 
