@@ -60,18 +60,28 @@ struct ShutUpAndListenApp: App {
     /// Open the session library at SchemaV2 with INFERRED (lightweight)
     /// migration — deliberately without a `migrationPlan:`.
     ///
-    /// A staged plan cannot open the store this app actually shipped. The
-    /// base-era app used `.modelContainer(for: SessionRecord.self)` (a3437ce),
-    /// an UNVERSIONED schema, so no device carries a version identifier that
-    /// SwiftData's `DefaultMigrationManager` can name among the plan's
-    /// `schemas` — and it must name one before any stage runs, failing the open
-    /// outright with NSCocoaErrorDomain 134504, "Cannot use staged migration
-    /// with an unknown model version". Since the catch below is `fatalError`,
-    /// that is a launch crash for every upgrading user, and invisible to a
-    /// fresh install (a new store is created at V2, migrating nothing).
-    /// `MigrationTests.testShippedUnversionedStoreUpgradesToV2` is the case
-    /// that reproduces it; every older case there writes a VERSIONED fixture
-    /// and so passes either way.
+    /// A staged plan cannot open the store this app actually shipped, and this
+    /// is MEASURED, not reasoned: passing `migrationPlan:` a store created the
+    /// base-era way throws `SwiftDataError.loadIssueModelContainer` from the
+    /// `ModelContainer` initializer, so the container never loads. Reproduced
+    /// on an iOS 26 device by
+    /// `MigrationTests.testShippedUnversionedStoreUpgradesToV2`; every older
+    /// case in that file writes a VERSIONED fixture and passes either way,
+    /// which is exactly why this went unnoticed.
+    ///
+    /// The mechanism: the base-era app used
+    /// `.modelContainer(for: SessionRecord.self)` (a3437ce), an UNVERSIONED
+    /// schema, so no device carries a version identifier SwiftData's migration
+    /// manager can name among the plan's `schemas` — and it must name one
+    /// before any stage runs. (An earlier session recorded the underlying error
+    /// as NSCocoaErrorDomain 134504, "Cannot use staged migration with an
+    /// unknown model version"; the observed failure surfaces as SwiftData's
+    /// wrapper, which does not expose that code, so treat 134504 as the likely
+    /// cause rather than a verified one.)
+    ///
+    /// Since the catch below is `fatalError`, this is a launch crash for every
+    /// upgrading user — and invisible to a fresh install, which creates a new
+    /// store at V2 and migrates nothing.
     ///
     /// Inference has no such requirement — it maps what is on disk onto V2
     /// without naming it — and every V1 → V2 change is within lightweight

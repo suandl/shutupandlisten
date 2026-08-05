@@ -410,10 +410,14 @@ final class MigrationTests: XCTestCase {
     /// shape and is right to; this pins the thing it does not cover, which is
     /// how the store was created. The distinction is invisible to every other
     /// test here and is precisely why they can all pass while the real upgrade
-    /// fails: SwiftData's `DefaultMigrationManager` must identify the store's
-    /// model version among the plan's `schemas` before running any stage, and
-    /// an unversioned store gives it nothing to match — NSCocoaErrorDomain
-    /// 134504, "Cannot use staged migration with an unknown model version".
+    /// fails: SwiftData's migration manager must identify the store's model
+    /// version among the plan's `schemas` before running any stage, and an
+    /// unversioned store gives it nothing to match.
+    ///
+    /// MEASURED, on an iOS 26 device: against the staged plan this threw
+    /// `SwiftDataError.loadIssueModelContainer` out of the `ModelContainer`
+    /// initializer — the container never loaded, which in the app is a
+    /// `fatalError` at launch. Under inferred migration it passes.
     ///
     /// So this is the only case in the file that exercises the upgrade a real
     /// user performs: a store created the way the app shipped, reopened the way
