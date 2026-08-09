@@ -31,8 +31,8 @@ capture checks are their own subject.
 stages a gate host can run.** The operator is not the integration test.
 
 The evidence this exists for: at `1d36c86` the `web/` `node --test` suite was
-green — 25/25 — while a real browser degraded three of five pipeline stages to
-their labelled fallback (denoise→passthrough, smart-turn→heuristic,
+green — 18 test files — while a real browser degraded three of five pipeline
+stages to their labelled fallback (denoise→passthrough, smart-turn→heuristic,
 TTS→stub, `su-lou.8`). Nothing but the operator caught it, because nothing in
 CI ever loaded a real backend. A stage that degrades quietly is the failure
 class this strategy targets.
@@ -123,6 +123,11 @@ Named, so a coverage boundary is never mistaken for coverage.
   by an operator.
 - **full-loop end-to-end liveness** across all five stages — out of headless
   reach.
+
+Smart-turn is *not* on this list, though the plan's R12 deferred it alongside
+denoise as an AudioWorklet stage: its model turned out to be headless-reachable
+without an audio device, so it is guarded above. The plan's enumeration is the
+historical assumption; this list is the live boundary.
 
 **GitHub Actions** remains a further tier for cheap or occasional checks,
 minutes permitting. Tier 2 already lives there; the heavy paths (the ~2.7 GB
