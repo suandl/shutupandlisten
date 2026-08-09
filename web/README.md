@@ -521,13 +521,21 @@ the *machine's* state as a code regression, identically on a branch and on `main
 keep it honest. The gate now grants its own budgets rather than inheriting the
 app's, which are deliberately tight because a live UI must never block on a model
 download (`src/probe-budgets.ts`, sized ~10× the uncontended measurements in
-`docs/findings/reply-latency-baseline.md`). And a degrade that *still* spends its
-whole budget is classified **infra** — `WORKS-CHECK INFRA (budget exhausted): …`,
-exit 2, "re-run on an idle machine" — never exit 100. A run that finds both a real
-regression and an unjudgeable stage exits 100 and names each, so a stage nobody
-could judge never reads like one that passed. The outer watchdogs are derived from
-those budgets so a stage's own deadline always fires first: a wedged stage names
-itself instead of dying as an unclassifiable "the probe run did not complete".
+`docs/findings/reply-latency-baseline.md`). And a half that *still* spends its
+whole budget and degrades is classified **infra** — `WORKS-CHECK INFRA (budget
+exhausted): …`, exit 2, "re-run on an idle machine" — never exit 100. A run that
+finds both a real regression and an unjudgeable stage exits 100 and names each, so
+a stage nobody could judge never reads like one that passed. The outer watchdogs
+are derived from those budgets so a stage's own deadline always fires first: a
+wedged stage names itself instead of dying as an unclassifiable "the probe run did
+not complete".
+
+Per *half*, and only on an actual degrade, is the whole rule. A timed-out load
+speaks for its entire stage — every assertion after it is measuring the stub the
+timeout produced — but a load that merely ran long and still came back **real**
+excuses nothing: the stage stayed judgeable, so an empty transcript or a degraded
+synthesis under it is exit 100 as usual. Downgrading those too would be the same
+lie pointing the other way, retrying forever over output that is genuinely broken.
 
 Prereqs: `npm run provision:stt` + `provision:tts` + `provision:smart-turn` +
 `provision:llm`, and a Playwright browser

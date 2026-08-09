@@ -529,6 +529,111 @@ test('a listener load out of budget is INFRA, but a 404 rung in the same run is 
   assert.match(summary, /NOT JUDGED \(budget exhausted\): listener /);
 });
 
+// ── a SLOW load does not excuse a BROKEN smoke-run (su-8xkb) ─────────────────
+//
+// The load-side downgrade collapses a whole stage, so it has to be gated on the
+// load having actually degraded — not merely on it having been slow. `spentMs >=
+// budgetMs` alone does not prove a timeout: the probe's clock starts before the
+// adapter arms its own timer, so a REAL backend can cross the line and still hand
+// back a working stage. When it does, the stage stayed judgeable, and a smoke-run
+// that produced nothing usable is a genuine regression. Excusing it by the load's
+// clock is su-ucww's lie pointing the other way — the gate would exit 2 and retry
+// forever over output that is actually broken.
+//
+// One per stage, because the wrapper is applied identically at all four.
+
+test('a real STT load that merely ran LONG does not launder an empty transcript', () => {
+  const verdict = evaluateReport(
+    healthyReport({
+      stt: {
+        loadMode: 'moonshine',
+        loadMs: spent(STT_BUDGETS.initMs),
+        smoke: { mode: 'moonshine', text: '', ms: 150 },
+      },
+    }),
+  );
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+  assert.deepEqual(failedStages(verdict), ['stt']);
+  assert.equal(verdict.failures.length, 1);
+  assert.equal(verdict.failures[0].kind ?? 'regression', 'regression');
+  assert.match(verdict.failures[0].reason, /transcript is empty/);
+  assert.match(summarizeVerdict(verdict), /^WORKS-CHECK REGRESSION: stt /);
+});
+
+test('a real TTS load that merely ran LONG does not launder a degraded synthesis', () => {
+  const verdict = evaluateReport(
+    healthyReport({
+      tts: {
+        loadMode: 'wasm',
+        loadMs: spent(TTS_BUDGETS.initMs),
+        smoke: { mode: 'stub', samples: 12000, sampleRate: 16000, rms: 0.08, ms: 40 },
+      },
+    }),
+  );
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+  assert.equal(verdict.failures.length, 1);
+  assert.match(verdict.failures[0].reason, /smoke-run degraded/);
+});
+
+test('a real EOU load that merely ran LONG does not launder a heuristic verdict', () => {
+  const verdict = evaluateReport(
+    healthyReport({
+      smartTurn: {
+        loadMode: 'model',
+        loadMs: spent(SMART_TURN_BUDGETS.initMs),
+        smoke: { mode: 'heuristic', completionProb: 0.83, ms: 1 },
+      },
+    }),
+  );
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+  assert.equal(verdict.failures.length, 1);
+  assert.match(verdict.failures[0].reason, /smoke-run degraded/);
+});
+
+test('a real listener load that merely ran LONG does not launder a degenerate reply', () => {
+  // su-lou.9's `"!!!!!!!!!!!!"` — a live webgpu backend with no `shader-f16`. It is
+  // broken whatever the load's clock did, and the 420s budget is exactly the one a
+  // contended box crosses on this stage.
+  const verdict = evaluateReport(
+    healthyReport({
+      listener: loadedListener({
+        loadMode: 'webgpu',
+        dtype: 'q4f16',
+        loadMs: spent(LISTENER_BUDGETS.initMs),
+        smoke: { mode: 'webgpu', text: '!!!!!!!!!!!!', ms: 29000 },
+      }),
+    }),
+  );
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+  assert.equal(verdict.failures.length, 1);
+  assert.match(verdict.failures[0].reason, /not language/);
+});
+
+test('a prompt load regression and a timed-out smoke-run stay TWO findings, one per half', () => {
+  // The collapse is what makes a timed-out load speak for its whole stage; without
+  // one, each half keeps its own attribution. su-lou.8's 3ms stubbed voice is a
+  // verdict about the code, and the synthesis that then ran out of budget is not —
+  // reporting only one of those would drop a real finding or invent a fake one.
+  const verdict = evaluateReport(
+    healthyReport({
+      tts: {
+        loadMode: 'stub',
+        loadMs: 900,
+        diagnostics: ['[tts] voice unavailable: no model loaded — using the placeholder tone'],
+        smoke: { mode: 'stub', samples: 12000, sampleRate: 16000, rms: 0.08, ms: spent(TTS_BUDGETS.callMs) },
+      },
+    }),
+  );
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+  assert.deepEqual(
+    verdict.failures.map((f) => f.kind ?? 'regression'),
+    ['regression', 'infra'],
+  );
+  const summary = summarizeVerdict(verdict);
+  assert.match(summary, /^WORKS-CHECK REGRESSION: tts .*no model loaded/);
+  assert.match(summary, /NOT JUDGED \(budget exhausted\): tts /);
+});
+
 test('isDegenerateText separates noise from short real replies', () => {
   for (const bad of ['', '   ', '!!!!!!!!!!!!', '............', 'aaaaaaaa', '1111', null, undefined]) {
     assert.equal(isDegenerateText(bad), true, `expected degenerate: ${JSON.stringify(bad)}`);

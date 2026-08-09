@@ -28,8 +28,15 @@
 // on a branch and on origin/main (STT init at 15001ms vs 15006ms, both pinned to
 // the same budget), which is the tell: a run that cannot discriminate is not a
 // verdict. The probe now reports what each half was ALLOWED next to what it SPENT
-// (src/probe-budgets.ts), and a degrade that consumed its whole budget is
+// (src/probe-budgets.ts), and a HALF that spent its whole budget and degraded is
 // classified `infra` — the check saying "I could not tell", never "the code broke".
+//
+// Per HALF is load-bearing, not a detail: a load that ran long and still came back
+// REAL leaves the stage perfectly judgeable, so a smoke-run that then produced
+// nothing usable is still a regression. Excusing it by the load's clock would be
+// the same lie pointing the other way — a broken backend retried forever as a
+// flake — which is why the downgrade below is gated on the load having actually
+// degraded, not merely on it having been slow.
 
 export const EXIT_PASS = 0;
 export const EXIT_REGRESSION = 100;
@@ -122,11 +129,8 @@ function spentWholeBudget(spentMs, budgetMs) {
  *   - it never downgrades without evidence. Absent budgets, or a half that finished
  *     inside its budget, come back untouched and stay regressions.
  *
- * Applied to a stage's LOAD half it collapses the whole stage, which is the point:
- * once the load times out, every later assertion is measuring the labelled stub the
- * timeout produced. Left as separate findings, STT's instant stub smoke-run would
- * read as a regression and pin the run back to exit 100 — the exact false verdict
- * this is removing.
+ * It re-attributes ONE half's own findings; which findings belong to which half,
+ * and when a timed-out load speaks for the whole stage, is stageFailures' job.
  *
  * @param {Failure[]} failures @param {Stage} stage @param {string} what
  * @param {unknown} spentMs @param {unknown} budgetMs @param {string} diag
@@ -143,6 +147,45 @@ function budgetAware(failures, stage, what, spentMs, budgetMs, diag = '') {
         `budget exhaustion on a contended machine, not a verdict about the code${diag}`,
     },
   ];
+}
+
+/**
+ * Fold a stage's two halves — the LOAD assertions and the per-call SMOKE
+ * assertions — into the run's findings, under each half's own budget.
+ *
+ * The whole rule lives here rather than at the four call sites, because the two
+ * halves are NOT symmetric and the asymmetry is easy to get backwards:
+ *
+ *   - A load that timed out speaks for the WHOLE stage. Every later assertion is
+ *     measuring the labelled stub that timeout produced, so they are one fact, not
+ *     one finding per assertion it broke — STT's instant stub transcribe would
+ *     otherwise read as a regression and pin the run back to exit 100, the exact
+ *     false verdict su-ucww removes. Hence: collapse, and drop the smoke findings.
+ *
+ *   - A load that merely ran LONG collapses nothing. `spentMs >= budgetMs` is the
+ *     evidence a load DEGRADED on its deadline, not evidence on its own: the probe's
+ *     clock starts before the adapter arms its timer, so a real backend can cross
+ *     the line and still hand back a working stage. When it does, the stage stayed
+ *     judgeable, and a smoke-run that then produced nothing usable is a genuine
+ *     regression — one the load's clock must not launder into a retryable flake
+ *     (a real STT loaded at budget+1ms with an empty transcript is exit 100, not 2).
+ *
+ * So the collapse is gated on the load half having actually FAILED. With no load
+ * finding there is nothing to collapse and nothing that explains the smoke half,
+ * and each half is left under its own budget.
+ *
+ * @param {Stage} stage
+ * @param {{ load: Failure[], smoke: Failure[], loadWhat: string, smokeWhat: string,
+ *           loadMs: unknown, smokeMs: unknown, budgets: unknown, diag?: string }} halves
+ * @returns {Failure[]}
+ */
+function stageFailures(stage, halves) {
+  const { load, smoke, loadWhat, smokeWhat, loadMs, smokeMs, budgets, diag = '' } = halves;
+  const initMs = budgets?.initMs;
+  if (load.length > 0 && spentWholeBudget(loadMs, initMs)) {
+    return budgetAware(load, stage, loadWhat, loadMs, initMs, diag);
+  }
+  return [...load, ...budgetAware(smoke, stage, smokeWhat, smokeMs, budgets?.callMs, diag)];
 }
 
 /**
@@ -164,9 +207,9 @@ export function evaluateReport(report) {
     failures.push({ stage: 'stt', reason: `probe error: ${stt.error}` });
   } else {
     /** @type {Failure[]} */
-    const staged = [];
+    const load = [];
     if (!REAL_STT_MODES.has(stt.loadMode)) {
-      staged.push({ stage: 'stt', reason: `loaded mode '${stt.loadMode}' is not a real STT backend (R2)` });
+      load.push({ stage: 'stt', reason: `loaded mode '${stt.loadMode}' is not a real STT backend (R2)` });
     }
     /** @type {Failure[]} */
     const smoke = [];
@@ -177,8 +220,17 @@ export function evaluateReport(report) {
     } else if (typeof stt.smoke.text !== 'string' || stt.smoke.text.trim() === '') {
       smoke.push({ stage: 'stt', reason: 'smoke-run transcript is empty on the speech fixture (R4)' });
     }
-    staged.push(...budgetAware(smoke, 'stt', 'the transcription smoke-run', stt.smoke?.ms, stt.budgets?.callMs));
-    failures.push(...budgetAware(staged, 'stt', 'the STT adapter load', stt.loadMs, stt.budgets?.initMs));
+    failures.push(
+      ...stageFailures('stt', {
+        load,
+        smoke,
+        loadWhat: 'the STT adapter load',
+        smokeWhat: 'the transcription smoke-run',
+        loadMs: stt.loadMs,
+        smokeMs: stt.smoke?.ms,
+        budgets: stt.budgets,
+      }),
+    );
   }
 
   if (!tts || typeof tts !== 'object') {
@@ -191,9 +243,9 @@ export function evaluateReport(report) {
     // root cause without anyone re-running with a debugger.
     const diag = Array.isArray(tts.diagnostics) && tts.diagnostics.length > 0 ? ` — ${tts.diagnostics.join(' | ')}` : '';
     /** @type {Failure[]} */
-    const staged = [];
+    const load = [];
     if (tts.loadMode !== REAL_TTS_MODE) {
-      staged.push({ stage: 'tts', reason: `loaded mode '${tts.loadMode}' is not the real wasm backend (R3)${diag}` });
+      load.push({ stage: 'tts', reason: `loaded mode '${tts.loadMode}' is not the real wasm backend (R3)${diag}` });
     }
     /** @type {Failure[]} */
     const smoke = [];
@@ -212,8 +264,18 @@ export function evaluateReport(report) {
     } else if (!(tts.smoke.rms > 0)) {
       smoke.push({ stage: 'tts', reason: 'smoke-run audio is all-zero silence (R4)' });
     }
-    staged.push(...budgetAware(smoke, 'tts', 'the synthesis smoke-run', tts.smoke?.ms, tts.budgets?.callMs, diag));
-    failures.push(...budgetAware(staged, 'tts', 'the TTS adapter load', tts.loadMs, tts.budgets?.initMs, diag));
+    failures.push(
+      ...stageFailures('tts', {
+        load,
+        smoke,
+        loadWhat: 'the TTS adapter load',
+        smokeWhat: 'the synthesis smoke-run',
+        loadMs: tts.loadMs,
+        smokeMs: tts.smoke?.ms,
+        budgets: tts.budgets,
+        diag,
+      }),
+    );
   }
 
   const smartTurn = report?.smartTurn;
@@ -227,9 +289,9 @@ export function evaluateReport(report) {
     const diag =
       Array.isArray(smartTurn.diagnostics) && smartTurn.diagnostics.length > 0 ? ` — ${smartTurn.diagnostics.join(' | ')}` : '';
     /** @type {Failure[]} */
-    const staged = [];
+    const load = [];
     if (smartTurn.loadMode !== REAL_SMART_TURN_MODE) {
-      staged.push({
+      load.push({
         stage: 'smart-turn',
         reason: `loaded mode '${smartTurn.loadMode}' is not the real EOU classifier (R2)${diag}`,
       });
@@ -258,13 +320,19 @@ export function evaluateReport(report) {
         reason: `smoke-run returned no usable probability (completionProb=${smartTurn.smoke.completionProb}) (R4)`,
       });
     }
-    // The COLD verdict's own time, which is the one the budget bounded — the warm
-    // runs after it are the occupancy measurement's, reported and never gated.
-    staged.push(
-      ...budgetAware(smoke, 'smart-turn', 'the EOU smoke-run', smartTurn.smoke?.ms, smartTurn.budgets?.callMs, diag),
-    );
     failures.push(
-      ...budgetAware(staged, 'smart-turn', 'the EOU adapter load', smartTurn.loadMs, smartTurn.budgets?.initMs, diag),
+      ...stageFailures('smart-turn', {
+        load,
+        smoke,
+        loadWhat: 'the EOU adapter load',
+        smokeWhat: 'the EOU smoke-run',
+        loadMs: smartTurn.loadMs,
+        // The COLD verdict's own time, which is the one the budget bounded — the warm
+        // runs after it are the occupancy measurement's, reported and never gated.
+        smokeMs: smartTurn.smoke?.ms,
+        budgets: smartTurn.budgets,
+        diag,
+      }),
     );
   }
 
@@ -353,9 +421,9 @@ function evaluateListener(listener, failures) {
   // fact about what the deploy SERVES, true whatever the clock did, and a load that
   // happens to time out in the same run must not launder it into a retryable flake.
   /** @type {Failure[]} */
-  const staged = [];
+  const load = [];
   if (!REAL_LISTENER_MODES.has(listener.loadMode)) {
-    staged.push({ stage: 'listener', reason: `loaded mode '${listener.loadMode}' is not a real LLM backend (R2)${diag}` });
+    load.push({ stage: 'listener', reason: `loaded mode '${listener.loadMode}' is not a real LLM backend (R2)${diag}` });
   }
   /** @type {Failure[]} */
   const smoke = [];
@@ -369,11 +437,17 @@ function evaluateListener(listener, failures) {
       reason: `smoke-run reply is not language: ${JSON.stringify(String(listener.smoke.text ?? '').slice(0, 40))} (R4)${diag}`,
     });
   }
-  staged.push(
-    ...budgetAware(smoke, 'listener', 'the reply smoke-run', listener.smoke?.ms, listener.budgets?.callMs, diag),
-  );
   failures.push(
-    ...budgetAware(staged, 'listener', 'the listener model load', listener.loadMs, listener.budgets?.initMs, diag),
+    ...stageFailures('listener', {
+      load,
+      smoke,
+      loadWhat: 'the listener model load',
+      smokeWhat: 'the reply smoke-run',
+      loadMs: listener.loadMs,
+      smokeMs: listener.smoke?.ms,
+      budgets: listener.budgets,
+      diag,
+    }),
   );
 }
 
