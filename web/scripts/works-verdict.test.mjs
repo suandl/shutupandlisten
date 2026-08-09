@@ -13,11 +13,27 @@
 //   6. the smart-turn EOU stage (su-lou.10.1) is held to the same rules: the
 //      `heuristic` fallback — which is what EVERY session ran before a model was
 //      provisioned — must never green the gate
+//   7. a stage that ran out of TIME rather than out of backend is INFRA, not a
+//      regression (su-ucww) — and the guards that keep that downgrade honest
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { EXIT_PASS, EXIT_REGRESSION, evaluateReport, exitCodeFor, isDegenerateText, summarizeVerdict } from './works-verdict.mjs';
+import {
+  LISTENER_BUDGETS,
+  SMART_TURN_BUDGETS,
+  STT_BUDGETS,
+  TTS_BUDGETS,
+} from '../src/probe-budgets.ts';
+import {
+  EXIT_INFRA,
+  EXIT_PASS,
+  EXIT_REGRESSION,
+  evaluateReport,
+  exitCodeFor,
+  isDegenerateText,
+  summarizeVerdict,
+} from './works-verdict.mjs';
 
 /** Both listener rungs served, as a provisioned deploy answers: a small GRAPH file
  *  per rung plus the external `_data` sibling that holds the actual weights. */
@@ -30,7 +46,10 @@ function servedWeights() {
   ];
 }
 
-/** A fully-healthy report; tests override fields per scenario. */
+/** A fully-healthy report; tests override fields per scenario. The budgets are the
+ *  REAL ones the probe grants, not invented numbers: the timeout rules compare
+ *  elapsed against them, so a fixture carrying anything else would test a gate
+ *  nobody runs — and a budget shrunk below these healthy timings SHOULD fail here. */
 function healthyReport(overrides = {}) {
   return {
     version: 1,
@@ -38,6 +57,7 @@ function healthyReport(overrides = {}) {
       loadMode: 'moonshine',
       loadMs: 4200,
       smoke: { mode: 'moonshine', text: 'the works check confirms', ms: 180 },
+      budgets: STT_BUDGETS,
       error: null,
       ...(overrides.stt ?? {}),
     },
@@ -46,6 +66,7 @@ function healthyReport(overrides = {}) {
       loadMs: 6100,
       diagnostics: [],
       smoke: { mode: 'wasm', samples: 47000, sampleRate: 16000, rms: 0.114, ms: 5300 },
+      budgets: TTS_BUDGETS,
       error: null,
       ...(overrides.tts ?? {}),
     },
@@ -54,6 +75,7 @@ function healthyReport(overrides = {}) {
       loadMs: 900,
       diagnostics: [],
       smoke: { mode: 'model', completionProb: 0.7434, ms: 60, warmMs: 55 },
+      budgets: SMART_TURN_BUDGETS,
       error: null,
       ...(overrides.smartTurn ?? {}),
     },
@@ -67,6 +89,7 @@ function healthyReport(overrides = {}) {
       smoke: null,
       assets: servedWeights(),
       loaded: false,
+      budgets: LISTENER_BUDGETS,
       error: null,
       ...(overrides.listener ?? {}),
     },
@@ -83,10 +106,16 @@ function loadedListener(overrides = {}) {
     smoke: { mode: 'wasm', text: 'That sounds exhausting. What keeps pulling you back to it?', ms: 9000 },
     assets: servedWeights(),
     loaded: true,
+    budgets: LISTENER_BUDGETS,
     error: null,
     ...overrides,
   };
 }
+
+/** The shape an adapter leaves behind when it runs out of time: it spent its whole
+ *  budget and handed back the labelled fallback. `over` is the overshoot past the
+ *  deadline — the observed runs were 1-18ms past (su-ucww). */
+const spent = (budgetMs, over = 1) => budgetMs + over;
 
 const failedStages = (verdict) => [...new Set(verdict.failures.map((f) => f.stage))];
 
@@ -350,6 +379,154 @@ test('the su-lou.9 false-green — real backend, non-empty, but not language —
   assert.equal(verdict.pass, false);
   assert.deepEqual(failedStages(verdict), ['listener']);
   assert.match(verdict.failures[0].reason, /not language/);
+});
+
+// ── budget exhaustion is INFRA, not a regression (su-ucww) ────────────────────
+
+test('an STT load that spends its whole budget is INFRA, and collapses to one finding', () => {
+  // The observed shape: init blew the budget, the adapter degraded exactly as
+  // designed, and the instant stub transcribe that followed is a CONSEQUENCE of
+  // that — not a second, separate finding, and certainly not a regression that
+  // would pin the run back to exit 100.
+  const verdict = evaluateReport(
+    healthyReport({
+      stt: {
+        loadMode: 'stub',
+        loadMs: spent(STT_BUDGETS.initMs),
+        smoke: { mode: 'stub', text: '⟨speech 2.4s — STT model not loaded⟩', ms: 1 },
+      },
+    }),
+  );
+  assert.equal(verdict.pass, false);
+  assert.equal(verdict.failures.length, 1, 'the timeout is ONE fact, not one finding per assertion it broke');
+  assert.equal(verdict.failures[0].stage, 'stt');
+  assert.equal(verdict.failures[0].kind, 'infra');
+  assert.equal(exitCodeFor(verdict), EXIT_INFRA);
+  const summary = summarizeVerdict(verdict);
+  assert.match(summary, /^WORKS-CHECK INFRA \(budget exhausted\): stt /);
+  assert.match(summary, new RegExp(`${STT_BUDGETS.initMs}ms`), 'the line must name the budget that ran out');
+  assert.match(summary, /re-run on an idle machine/);
+  assert.doesNotMatch(summary, /REGRESSION/);
+});
+
+test('a TTS smoke-run that spends its whole budget is INFRA even though the load was real', () => {
+  // The other half of the observed pair: `tts load=wasm smoke=stub (30018ms)`. The
+  // voice loaded fine; synthesis just never finished inside its budget.
+  const verdict = evaluateReport(
+    healthyReport({
+      tts: { smoke: { mode: 'stub', samples: 12000, sampleRate: 16000, rms: 0.08, ms: spent(TTS_BUDGETS.callMs, 18) } },
+    }),
+  );
+  assert.equal(verdict.pass, false);
+  assert.deepEqual(failedStages(verdict), ['tts']);
+  assert.equal(verdict.failures[0].kind, 'infra');
+  assert.equal(exitCodeFor(verdict), EXIT_INFRA);
+  assert.match(summarizeVerdict(verdict), /^WORKS-CHECK INFRA \(budget exhausted\): tts /);
+});
+
+test('the su-ucww run — STT load and TTS synthesis both out of budget — is exit 2, not 100', () => {
+  // Byte-identical on the branch and on origin/main is what proved this was the
+  // machine talking. A gate that answers 100 to both discriminates nothing.
+  const verdict = evaluateReport(
+    healthyReport({
+      stt: {
+        loadMode: 'stub',
+        loadMs: spent(STT_BUDGETS.initMs),
+        smoke: { mode: 'stub', text: '⟨speech 2.4s — STT model not loaded⟩', ms: 1 },
+      },
+      tts: { smoke: { mode: 'stub', samples: 12000, sampleRate: 16000, rms: 0.08, ms: spent(TTS_BUDGETS.callMs, 18) } },
+    }),
+  );
+  assert.equal(exitCodeFor(verdict), EXIT_INFRA);
+  assert.deepEqual(failedStages(verdict).sort(), ['stt', 'tts']);
+  assert.ok(verdict.failures.every((f) => f.kind === 'infra'));
+});
+
+test('a real regression alongside an unjudgeable stage still exits 100 — and says which was which', () => {
+  const verdict = evaluateReport(
+    healthyReport({
+      // Out of time: no verdict available for this stage.
+      stt: {
+        loadMode: 'stub',
+        loadMs: spent(STT_BUDGETS.initMs),
+        smoke: { mode: 'stub', text: '⟨speech 2.4s — STT model not loaded⟩', ms: 1 },
+      },
+      // Out of backend, promptly: a genuine finding, and the run's verdict.
+      smartTurn: {
+        loadMode: 'heuristic',
+        diagnostics: ['[smart-turn] model failed to load (404) — using the duration heuristic'],
+        smoke: { mode: 'heuristic', completionProb: 0.83, ms: 1 },
+      },
+    }),
+  );
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+  const summary = summarizeVerdict(verdict);
+  assert.match(summary, /^WORKS-CHECK REGRESSION: smart-turn /);
+  // The stage nobody could judge must not read as a stage that passed.
+  assert.match(summary, /NOT JUDGED \(budget exhausted\): stt /);
+});
+
+test('a degrade well inside its budget stays a REGRESSION — the downgrade needs evidence', () => {
+  // su-lou.8's stubbed voice failed in 3ms. Nothing about that is a slow machine,
+  // and a rule that excused it would have deleted the gate.
+  const verdict = evaluateReport(
+    healthyReport({
+      tts: {
+        loadMode: 'stub',
+        loadMs: 900,
+        diagnostics: ['[tts] voice unavailable: no model loaded — using the placeholder tone'],
+        smoke: { mode: 'stub', samples: 12000, sampleRate: 16000, rms: 0.08, ms: 3 },
+      },
+    }),
+  );
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+  assert.ok(verdict.failures.every((f) => (f.kind ?? 'regression') === 'regression'));
+});
+
+test('a report that carries no budgets fails LOUD — an old probe must not silence the gate', () => {
+  // Fail-closed default: a probe too old to report what it was granted (or a
+  // malformed one) cannot evidence exhaustion, so nothing is downgraded.
+  const stt = { loadMode: 'stub', loadMs: 15001, smoke: { mode: 'stub', text: 'x', ms: 1 }, error: null };
+  const verdict = evaluateReport({ ...healthyReport(), stt });
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+  assert.match(summarizeVerdict(verdict), /^WORKS-CHECK REGRESSION: stt /);
+});
+
+test('a slow but HEALTHY half is still a pass — the rule never invents a failure', () => {
+  // The guard on the downgrade: it re-labels findings, it does not create them. A
+  // half that somehow spent its whole budget and still returned a real backend has
+  // nothing wrong with it, and must not become an infra flake.
+  const verdict = evaluateReport(
+    healthyReport({
+      stt: { loadMs: spent(STT_BUDGETS.initMs), smoke: { mode: 'moonshine', text: 'still real', ms: spent(STT_BUDGETS.callMs) } },
+    }),
+  );
+  assert.equal(verdict.pass, true);
+  assert.equal(exitCodeFor(verdict), EXIT_PASS);
+});
+
+test('a listener load out of budget is INFRA, but a 404 rung in the same run is still a regression', () => {
+  // Asset findings are facts about what the deploy SERVES — true whatever the clock
+  // did. A slow load in the same run must not launder a 404 into a retryable flake.
+  const assets = servedWeights();
+  assets[0] = { ...assets[0], status: 404, contentType: 'text/plain' };
+  const verdict = evaluateReport(
+    healthyReport({
+      listener: loadedListener({
+        assets,
+        loadMode: 'stub',
+        dtype: null,
+        loadMs: spent(LISTENER_BUDGETS.initMs),
+        smoke: { mode: 'stub', text: '⟨listener: reflection — LLM not loaded⟩', ms: 1 },
+      }),
+    }),
+  );
+  assert.equal(exitCodeFor(verdict), EXIT_REGRESSION);
+  const kinds = verdict.failures.map((f) => f.kind ?? 'regression');
+  assert.deepEqual(kinds, ['regression', 'infra'], 'the 404 stands; the timed-out load collapses to one infra finding');
+  const summary = summarizeVerdict(verdict);
+  assert.match(summary, /^WORKS-CHECK REGRESSION: listener .*HTTP 404/);
+  assert.match(summary, /NOT JUDGED \(budget exhausted\): listener /);
 });
 
 test('isDegenerateText separates noise from short real replies', () => {

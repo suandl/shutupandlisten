@@ -16,9 +16,20 @@
 //   100 → REAL regression — a stage is live but reports a stub/degraded backend or
 //         empty output; the summary names the stage(s)
 //   2   → infra-flake — the check itself could not run to a verdict (build,
-//         server, browser, fixture, provisioning); retryable, not a code verdict
+//         server, browser, fixture, provisioning, or a stage that ran out of TIME
+//         rather than out of backend — see below); retryable, not a code verdict
 // Any other code (an uncaught crash's 1, a signal death) also reads as infra —
 // only 0 and 100 are ever a verdict about the code under check.
+//
+// BUDGET EXHAUSTION IS INFRA, NOT A REGRESSION (su-ucww). Every adapter degrades to
+// its labelled fallback when a budget runs out, and a degraded fallback is exactly
+// what a broken backend looks like from here — so on a loaded box this module used
+// to report the machine's state as a verdict about the code. It did it identically
+// on a branch and on origin/main (STT init at 15001ms vs 15006ms, both pinned to
+// the same budget), which is the tell: a run that cannot discriminate is not a
+// verdict. The probe now reports what each half was ALLOWED next to what it SPENT
+// (src/probe-budgets.ts), and a degrade that consumed its whole budget is
+// classified `infra` — the check saying "I could not tell", never "the code broke".
 
 export const EXIT_PASS = 0;
 export const EXIT_REGRESSION = 100;
@@ -66,9 +77,73 @@ export function isDegenerateText(text) {
 }
 
 /**
- * @typedef {{ stage: 'stt' | 'tts' | 'smart-turn' | 'listener', reason: string }} Failure
+ * @typedef {'stt' | 'tts' | 'smart-turn' | 'listener'} Stage
+ * @typedef {{ stage: Stage, reason: string, kind?: 'regression' | 'infra' }} Failure
  * @typedef {{ pass: boolean, failures: Failure[], scope: string }} Verdict
  */
+
+/** A failure with no `kind` is a code regression. The default is the LOUD one on
+ *  purpose: only the rules that can positively evidence budget exhaustion are
+ *  allowed to downgrade a finding, so an unrecognised report shape — including one
+ *  from a probe too old to report its budgets — still exits 100. */
+const kindOf = (failure) => failure?.kind ?? 'regression';
+
+/**
+ * Did this half spend the whole budget the gate granted it?
+ *
+ * No fudge factor, and none is needed: the probe's clock starts strictly BEFORE the
+ * adapter arms its own timer, so a half that timed out always reads at or past its
+ * budget (the observed 15001ms against a 15000ms budget). A tolerance would only
+ * buy the chance to excuse a genuinely fast degrade that landed near the boundary.
+ *
+ * Absent or nonsensical numbers answer NO — a report that cannot evidence
+ * exhaustion does not get the benefit of the doubt.
+ */
+function spentWholeBudget(spentMs, budgetMs) {
+  return (
+    typeof budgetMs === 'number' &&
+    Number.isFinite(budgetMs) &&
+    budgetMs > 0 &&
+    typeof spentMs === 'number' &&
+    Number.isFinite(spentMs) &&
+    spentMs >= budgetMs
+  );
+}
+
+/**
+ * Re-attribute a half's failures when that half ran out of TIME rather than out of
+ * backend: the several R2/R4 findings a timeout produces all describe the same one
+ * fact, so they collapse into a single `infra` failure that names the budget.
+ *
+ * Two properties make this safe to apply widely:
+ *   - it never INVENTS a failure. An empty list stays empty, so a slow-but-healthy
+ *     half — one that spent its budget and still returned a real backend — remains
+ *     a pass rather than becoming an infra flake.
+ *   - it never downgrades without evidence. Absent budgets, or a half that finished
+ *     inside its budget, come back untouched and stay regressions.
+ *
+ * Applied to a stage's LOAD half it collapses the whole stage, which is the point:
+ * once the load times out, every later assertion is measuring the labelled stub the
+ * timeout produced. Left as separate findings, STT's instant stub smoke-run would
+ * read as a regression and pin the run back to exit 100 — the exact false verdict
+ * this is removing.
+ *
+ * @param {Failure[]} failures @param {Stage} stage @param {string} what
+ * @param {unknown} spentMs @param {unknown} budgetMs @param {string} diag
+ * @returns {Failure[]}
+ */
+function budgetAware(failures, stage, what, spentMs, budgetMs, diag = '') {
+  if (failures.length === 0 || !spentWholeBudget(spentMs, budgetMs)) return failures;
+  return [
+    {
+      stage,
+      kind: 'infra',
+      reason:
+        `${what} spent the whole ${budgetMs}ms the gate allowed (${spentMs}ms) and degraded — ` +
+        `budget exhaustion on a contended machine, not a verdict about the code${diag}`,
+    },
+  ];
+}
 
 /**
  * Classify a probe report. Defensive against a malformed/partial report (a probe
@@ -88,18 +163,22 @@ export function evaluateReport(report) {
   } else if (stt.error) {
     failures.push({ stage: 'stt', reason: `probe error: ${stt.error}` });
   } else {
+    /** @type {Failure[]} */
+    const staged = [];
     if (!REAL_STT_MODES.has(stt.loadMode)) {
-      failures.push({ stage: 'stt', reason: `loaded mode '${stt.loadMode}' is not a real STT backend (R2)` });
+      staged.push({ stage: 'stt', reason: `loaded mode '${stt.loadMode}' is not a real STT backend (R2)` });
     }
+    /** @type {Failure[]} */
+    const smoke = [];
     if (!stt.smoke) {
-      failures.push({ stage: 'stt', reason: 'smoke-run never produced a transcription result' });
-    } else {
-      if (!REAL_STT_MODES.has(stt.smoke.mode)) {
-        failures.push({ stage: 'stt', reason: `smoke-run degraded to '${stt.smoke.mode}' (R4)` });
-      } else if (typeof stt.smoke.text !== 'string' || stt.smoke.text.trim() === '') {
-        failures.push({ stage: 'stt', reason: 'smoke-run transcript is empty on the speech fixture (R4)' });
-      }
+      smoke.push({ stage: 'stt', reason: 'smoke-run never produced a transcription result' });
+    } else if (!REAL_STT_MODES.has(stt.smoke.mode)) {
+      smoke.push({ stage: 'stt', reason: `smoke-run degraded to '${stt.smoke.mode}' (R4)` });
+    } else if (typeof stt.smoke.text !== 'string' || stt.smoke.text.trim() === '') {
+      smoke.push({ stage: 'stt', reason: 'smoke-run transcript is empty on the speech fixture (R4)' });
     }
+    staged.push(...budgetAware(smoke, 'stt', 'the transcription smoke-run', stt.smoke?.ms, stt.budgets?.callMs));
+    failures.push(...budgetAware(staged, 'stt', 'the STT adapter load', stt.loadMs, stt.budgets?.initMs));
   }
 
   if (!tts || typeof tts !== 'object') {
@@ -111,24 +190,30 @@ export function evaluateReport(report) {
     // diagnosability fix) — fold them in so the gate's one-line verdict names the
     // root cause without anyone re-running with a debugger.
     const diag = Array.isArray(tts.diagnostics) && tts.diagnostics.length > 0 ? ` — ${tts.diagnostics.join(' | ')}` : '';
+    /** @type {Failure[]} */
+    const staged = [];
     if (tts.loadMode !== REAL_TTS_MODE) {
-      failures.push({ stage: 'tts', reason: `loaded mode '${tts.loadMode}' is not the real wasm backend (R3)${diag}` });
+      staged.push({ stage: 'tts', reason: `loaded mode '${tts.loadMode}' is not the real wasm backend (R3)${diag}` });
     }
+    /** @type {Failure[]} */
+    const smoke = [];
     if (!tts.smoke) {
-      failures.push({ stage: 'tts', reason: 'smoke-run never produced a synthesis result' });
-    } else {
-      if (tts.smoke.mode !== REAL_TTS_MODE) {
-        // The load can go green while synthesis still degrades per call — the
-        // spike proved this exact false-green (partial mms-tts fix loads, then
-        // falls to the placeholder tone), which is why the smoke-run is asserted
-        // separately from the load mode.
-        failures.push({ stage: 'tts', reason: `smoke-run degraded to '${tts.smoke.mode}' (R4)${diag}` });
-      } else if (!(tts.smoke.samples > 0) || !(tts.smoke.sampleRate > 0)) {
-        failures.push({ stage: 'tts', reason: `smoke-run returned no audio (samples=${tts.smoke.samples}, rate=${tts.smoke.sampleRate}) (R4)` });
-      } else if (!(tts.smoke.rms > 0)) {
-        failures.push({ stage: 'tts', reason: 'smoke-run audio is all-zero silence (R4)' });
-      }
+      smoke.push({ stage: 'tts', reason: 'smoke-run never produced a synthesis result' });
+    } else if (tts.smoke.mode !== REAL_TTS_MODE) {
+      // The load can go green while synthesis still degrades per call — the
+      // spike proved this exact false-green (partial mms-tts fix loads, then
+      // falls to the placeholder tone), which is why the smoke-run is asserted
+      // separately from the load mode. su-ucww is the same shape from the other
+      // side: a synthesis that degraded because it ran out of budget, which the
+      // wrapper below re-attributes to the machine rather than to the voice.
+      smoke.push({ stage: 'tts', reason: `smoke-run degraded to '${tts.smoke.mode}' (R4)${diag}` });
+    } else if (!(tts.smoke.samples > 0) || !(tts.smoke.sampleRate > 0)) {
+      smoke.push({ stage: 'tts', reason: `smoke-run returned no audio (samples=${tts.smoke.samples}, rate=${tts.smoke.sampleRate}) (R4)` });
+    } else if (!(tts.smoke.rms > 0)) {
+      smoke.push({ stage: 'tts', reason: 'smoke-run audio is all-zero silence (R4)' });
     }
+    staged.push(...budgetAware(smoke, 'tts', 'the synthesis smoke-run', tts.smoke?.ms, tts.budgets?.callMs, diag));
+    failures.push(...budgetAware(staged, 'tts', 'the TTS adapter load', tts.loadMs, tts.budgets?.initMs, diag));
   }
 
   const smartTurn = report?.smartTurn;
@@ -141,20 +226,24 @@ export function evaluateReport(report) {
     // 404s" and "the model loaded but scores nothing" are told apart at a glance.
     const diag =
       Array.isArray(smartTurn.diagnostics) && smartTurn.diagnostics.length > 0 ? ` — ${smartTurn.diagnostics.join(' | ')}` : '';
+    /** @type {Failure[]} */
+    const staged = [];
     if (smartTurn.loadMode !== REAL_SMART_TURN_MODE) {
-      failures.push({
+      staged.push({
         stage: 'smart-turn',
         reason: `loaded mode '${smartTurn.loadMode}' is not the real EOU classifier (R2)${diag}`,
       });
     }
+    /** @type {Failure[]} */
+    const smoke = [];
     if (!smartTurn.smoke) {
-      failures.push({ stage: 'smart-turn', reason: 'smoke-run never produced a verdict' });
+      smoke.push({ stage: 'smart-turn', reason: 'smoke-run never produced a verdict' });
     } else if (smartTurn.smoke.mode !== REAL_SMART_TURN_MODE) {
       // The load can go green while the per-call path degrades — the same false-green
       // the TTS stage proved is real, and the likelier failure here: a front-end or
       // shape mismatch throws inside predict() and the adapter answers with the
       // heuristic while `.mode` still says model.
-      failures.push({ stage: 'smart-turn', reason: `smoke-run degraded to '${smartTurn.smoke.mode}' (R4)${diag}` });
+      smoke.push({ stage: 'smart-turn', reason: `smoke-run degraded to '${smartTurn.smoke.mode}' (R4)${diag}` });
     } else if (
       typeof smartTurn.smoke.completionProb !== 'number' ||
       !Number.isFinite(smartTurn.smoke.completionProb) ||
@@ -164,11 +253,19 @@ export function evaluateReport(report) {
       // Liveness, not accuracy: WHICH verdict is right is a feel-test question. A
       // NaN or out-of-range score, though, means the output mapping is broken —
       // a model whose probability is nonsense is not a working stage.
-      failures.push({
+      smoke.push({
         stage: 'smart-turn',
         reason: `smoke-run returned no usable probability (completionProb=${smartTurn.smoke.completionProb}) (R4)`,
       });
     }
+    // The COLD verdict's own time, which is the one the budget bounded — the warm
+    // runs after it are the occupancy measurement's, reported and never gated.
+    staged.push(
+      ...budgetAware(smoke, 'smart-turn', 'the EOU smoke-run', smartTurn.smoke?.ms, smartTurn.budgets?.callMs, diag),
+    );
+    failures.push(
+      ...budgetAware(staged, 'smart-turn', 'the EOU adapter load', smartTurn.loadMs, smartTurn.budgets?.initMs, diag),
+    );
   }
 
   evaluateListener(report?.listener, failures);
@@ -251,41 +348,77 @@ function evaluateListener(listener, failures) {
   // The adapter's onDiagnostic lines name WHY the listener degraded — the su-lou.9
   // diagnosability fix. Fold them in so the one-line verdict carries the root cause.
   const diag = Array.isArray(listener.diagnostics) && listener.diagnostics.length > 0 ? ` — ${listener.diagnostics.join(' | ')}` : '';
+  // Only the LOADED half goes through the budget attribution. The asset findings
+  // above stay where they are on purpose: a 404 or an SPA-fallback `text/html` is a
+  // fact about what the deploy SERVES, true whatever the clock did, and a load that
+  // happens to time out in the same run must not launder it into a retryable flake.
+  /** @type {Failure[]} */
+  const staged = [];
   if (!REAL_LISTENER_MODES.has(listener.loadMode)) {
-    failures.push({ stage: 'listener', reason: `loaded mode '${listener.loadMode}' is not a real LLM backend (R2)${diag}` });
+    staged.push({ stage: 'listener', reason: `loaded mode '${listener.loadMode}' is not a real LLM backend (R2)${diag}` });
   }
+  /** @type {Failure[]} */
+  const smoke = [];
   if (!listener.smoke) {
-    failures.push({ stage: 'listener', reason: 'smoke-run never produced a reply' });
-    return;
-  }
-  if (!REAL_LISTENER_MODES.has(listener.smoke.mode)) {
-    failures.push({ stage: 'listener', reason: `smoke-run degraded to '${listener.smoke.mode}' (R4)${diag}` });
+    smoke.push({ stage: 'listener', reason: 'smoke-run never produced a reply' });
+  } else if (!REAL_LISTENER_MODES.has(listener.smoke.mode)) {
+    smoke.push({ stage: 'listener', reason: `smoke-run degraded to '${listener.smoke.mode}' (R4)${diag}` });
   } else if (isDegenerateText(listener.smoke.text)) {
-    failures.push({
+    smoke.push({
       stage: 'listener',
       reason: `smoke-run reply is not language: ${JSON.stringify(String(listener.smoke.text ?? '').slice(0, 40))} (R4)${diag}`,
     });
   }
+  staged.push(
+    ...budgetAware(smoke, 'listener', 'the reply smoke-run', listener.smoke?.ms, listener.budgets?.callMs, diag),
+  );
+  failures.push(
+    ...budgetAware(staged, 'listener', 'the listener model load', listener.loadMs, listener.budgets?.initMs, diag),
+  );
 }
 
-/** @param {Verdict} verdict @returns {number} */
+/**
+ * A run with even ONE code regression is a code verdict — exit 100 — however many
+ * other stages the machine made unjudgeable. Only when every finding is budget
+ * exhaustion does the run fall back to the retryable infra code: there is nothing
+ * to say about the code, so it must not say anything.
+ *
+ * @param {Verdict} verdict @returns {number}
+ */
 export function exitCodeFor(verdict) {
-  return verdict.pass ? EXIT_PASS : EXIT_REGRESSION;
+  if (verdict.pass) return EXIT_PASS;
+  return verdict.failures.some((f) => kindOf(f) === 'regression') ? EXIT_REGRESSION : EXIT_INFRA;
+}
+
+/** @param {Failure[]} failures @returns {string} */
+function byStage(failures) {
+  const grouped = new Map();
+  for (const f of failures) {
+    if (!grouped.has(f.stage)) grouped.set(f.stage, []);
+    grouped.get(f.stage).push(f.reason);
+  }
+  return [...grouped.entries()].map(([stage, reasons]) => `${stage} (${reasons.join('; ')})`).join(', ');
 }
 
 /**
  * One grep-able summary line, stage-named per KTD4 — what a human (or the E3
  * refinery gate) reads first.
  *
+ * Three shapes, one per exit code, because the word that opens the line is the
+ * whole message for most readers: REGRESSION means the code broke, INFRA means the
+ * check could not tell. A run that found both leads with the regression — that IS
+ * the verdict — and still names the stages it could not judge, so a green-looking
+ * remainder is never mistaken for a stage that passed.
+ *
  * @param {Verdict} verdict @returns {string}
  */
 export function summarizeVerdict(verdict) {
   if (verdict.pass) return `WORKS-CHECK PASS: ${verdict.scope ?? 'stt + tts + smart-turn'} — real backends, non-empty smoke output`;
-  const byStage = new Map();
-  for (const f of verdict.failures) {
-    if (!byStage.has(f.stage)) byStage.set(f.stage, []);
-    byStage.get(f.stage).push(f.reason);
+  const regressions = verdict.failures.filter((f) => kindOf(f) === 'regression');
+  const unjudged = verdict.failures.filter((f) => kindOf(f) === 'infra');
+  if (regressions.length === 0) {
+    return `WORKS-CHECK INFRA (budget exhausted): ${byStage(unjudged)} — no verdict about the code; re-run on an idle machine`;
   }
-  const parts = [...byStage.entries()].map(([stage, reasons]) => `${stage} (${reasons.join('; ')})`);
-  return `WORKS-CHECK REGRESSION: ${parts.join(', ')}`;
+  const line = `WORKS-CHECK REGRESSION: ${byStage(regressions)}`;
+  return unjudged.length === 0 ? line : `${line} · NOT JUDGED (budget exhausted): ${byStage(unjudged)}`;
 }

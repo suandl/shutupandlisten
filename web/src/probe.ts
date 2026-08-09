@@ -31,6 +31,22 @@ import { resolveListenerOptions } from './listener-config.ts';
 import { resolveSttOptions } from './stt-config.ts';
 import { resolveTtsOptions } from './tts-config.ts';
 import { resolveSmartTurnOptions } from './smart-turn-config.ts';
+import {
+  LISTENER_BUDGETS,
+  LISTENER_GENERATE_TIMEOUT_MS,
+  LISTENER_INIT_TIMEOUT_MS,
+  SMART_TURN_BUDGETS,
+  SMART_TURN_INIT_TIMEOUT_MS,
+  SMART_TURN_LOAD_TIMEOUT_MS,
+  SMART_TURN_PREDICT_CALLS,
+  SMART_TURN_PREDICT_TIMEOUT_MS,
+  STT_BUDGETS,
+  STT_TIMEOUT_MS,
+  TTS_BUDGETS,
+  TTS_INIT_TIMEOUT_MS,
+  TTS_SYNTHESIZE_TIMEOUT_MS,
+  type StageBudgets,
+} from './probe-budgets.ts';
 import { createListener } from './listener.ts';
 import { createTranscriber } from './stt.ts';
 import { createSpeaker } from './tts.ts';
@@ -60,6 +76,10 @@ export interface SttStageReport {
   loadMs: number;
   /** Result of transcribing the fixture; null when the smoke-run never ran. */
   smoke: { mode: string; text: string; ms: number } | null;
+  /** What the gate ALLOWED each half (probe-budgets.ts), next to what it spent —
+   *  the pair works-verdict.mjs reads to tell a broken backend from a box that ran
+   *  out of time (su-ucww). Every stage report carries it, for the same reason. */
+  budgets: StageBudgets;
   /** An adapter throw (contract break) — captured, never propagated. */
   error: string | null;
 }
@@ -72,6 +92,8 @@ export interface TtsStageReport {
   diagnostics: string[];
   /** Result of synthesizing the smoke sentence; null when the smoke-run never ran. */
   smoke: { mode: string; samples: number; sampleRate: number; rms: number; ms: number } | null;
+  /** Granted vs spent — see SttStageReport.budgets. */
+  budgets: StageBudgets;
   error: string | null;
 }
 
@@ -117,6 +139,9 @@ export interface SmartTurnStageReport {
     busyMs: number;
     predictRuns: OccupancyReport[];
   } | null;
+  /** Granted vs spent — see SttStageReport.budgets. `initMs` is the EARLIER of this
+   *  stage's two load-side budgets (probe-budgets.ts explains why). */
+  budgets: StageBudgets;
   error: string | null;
 }
 
@@ -153,6 +178,9 @@ export interface ListenerStageReport {
    *  backend. Reported, never judged: it is the difference between a 52s load and a
    *  228s one, so a load time is unreadable without it. */
   crossOriginIsolated: boolean;
+  /** Granted vs spent — see SttStageReport.budgets. Reported even on a weights-only
+   *  run, where nothing was loaded and so nothing can have exhausted them. */
+  budgets: StageBudgets;
   error: string | null;
 }
 
@@ -177,14 +205,6 @@ export const LISTENER_SMOKE_TURN = 'I have been turning the same problem over al
  *  budget and reported a stub for a listener that had loaded perfectly well. */
 const LISTENER_SMOKE_TOKENS = 16;
 
-/** The listener model load is far heavier than STT/TTS (1.09-1.69G of weights) and
- *  the gate's page is not cross-origin isolated, so ORT runs the WASM backend
- *  single-threaded: 228s to load, measured. These budgets are sized from that
- *  measurement so a SLOW load reads as slow, not as a broken stage — the adapter's
- *  own defaults are tuned for the app, not for this. */
-const LISTENER_INIT_TIMEOUT_MS = 420000;
-const LISTENER_GENERATE_TIMEOUT_MS = 240000;
-
 /** Idle window for the occupancy noise floor — a little longer than a warm verdict
  *  (~270ms measured), so the control and the measurement span comparable spans. */
 const OCCUPANCY_IDLE_MS = 300;
@@ -192,8 +212,10 @@ const OCCUPANCY_IDLE_MS = 300;
  *  against timer slop, short enough to be free next to a 21MB model load. */
 const OCCUPANCY_BUSY_MS = 150;
 /** Warm verdicts measured. Enough to see the spread on a shared box — the floor
- *  arithmetic turns on this number — without adding seconds to the gate. */
-const OCCUPANCY_WARM_RUNS = 3;
+ *  arithmetic turns on this number — without adding seconds to the gate. Derived
+ *  from the call count the budget ceiling is built on (probe-budgets.ts), minus the
+ *  cold verdict, so the two can never drift apart. */
+const OCCUPANCY_WARM_RUNS = SMART_TURN_PREDICT_CALLS - 1;
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -205,10 +227,13 @@ function rmsOf(audio: Float32Array): number {
 }
 
 async function runStt(fixture: ProbeFixture): Promise<SttStageReport> {
-  const report: SttStageReport = { loadMode: 'stub', loadMs: 0, smoke: null, error: null };
+  const report: SttStageReport = { loadMode: 'stub', loadMs: 0, smoke: null, budgets: STT_BUDGETS, error: null };
   try {
     const t0 = performance.now();
-    const transcriber = await createTranscriber(resolveSttOptions(location.search, location.href));
+    const transcriber = await createTranscriber({
+      ...resolveSttOptions(location.search, location.href),
+      timeoutMs: STT_TIMEOUT_MS,
+    });
     report.loadMode = transcriber.mode;
     report.loadMs = Math.round(performance.now() - t0);
     try {
@@ -225,11 +250,20 @@ async function runStt(fixture: ProbeFixture): Promise<SttStageReport> {
 }
 
 async function runTts(): Promise<TtsStageReport> {
-  const report: TtsStageReport = { loadMode: 'stub', loadMs: 0, diagnostics: [], smoke: null, error: null };
+  const report: TtsStageReport = {
+    loadMode: 'stub',
+    loadMs: 0,
+    diagnostics: [],
+    smoke: null,
+    budgets: TTS_BUDGETS,
+    error: null,
+  };
   try {
     const t0 = performance.now();
     const speaker = await createSpeaker({
       ...resolveTtsOptions(location.search, location.href),
+      initTimeoutMs: TTS_INIT_TIMEOUT_MS,
+      timeoutMs: TTS_SYNTHESIZE_TIMEOUT_MS,
       onDiagnostic: (m) => report.diagnostics.push(m),
     });
     report.loadMode = speaker.mode;
@@ -268,12 +302,16 @@ async function runSmartTurn(fixture: ProbeFixture): Promise<SmartTurnStageReport
     diagnostics: [],
     smoke: null,
     occupancy: null,
+    budgets: SMART_TURN_BUDGETS,
     error: null,
   };
   try {
     const t0 = performance.now();
     const smartTurn = await createSmartTurn({
       ...resolveSmartTurnOptions(location.search, location.href),
+      initTimeoutMs: SMART_TURN_INIT_TIMEOUT_MS,
+      loadTimeoutMs: SMART_TURN_LOAD_TIMEOUT_MS,
+      timeoutMs: SMART_TURN_PREDICT_TIMEOUT_MS,
       onDiagnostic: (m) => report.diagnostics.push(m),
     });
     report.loadMode = smartTurn.mode;
@@ -397,6 +435,7 @@ async function baseListenerReport(): Promise<ListenerStageReport> {
     assets: await runListenerAssets(opts.engineUrl, opts.model),
     loaded: false,
     crossOriginIsolated: Boolean(self.crossOriginIsolated),
+    budgets: LISTENER_BUDGETS,
     error: null,
   };
   return report;
