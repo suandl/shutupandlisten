@@ -49,6 +49,30 @@ scripts/eval-keys.sh npx promptfoo eval   # run from promptfoo/ as ../scripts/..
 (promptfoo itself still resolves `promptfooconfig.yaml` from the
 current directory, so run eval commands from `promptfoo/`.)
 
+### Adding the Gemini key
+
+The `google-gemini-2.5-flash` provider is wired into
+`promptfooconfig.yaml` but **has no credential yet**, so its cells error
+until one is provisioned. The enable is one line:
+
+1. Create a `google` item with an `api-key` field in the
+   `shutupandlisten` vault (same vault and service account as `openai`
+   and `anthropic`).
+2. Uncomment `GOOGLE_API_KEY=op://shutupandlisten/google/api-key` in
+   `promptfoo/.env.op`.
+3. Add `google-gemini-2.5-flash` to `EVAL_PROVIDERS` in
+   `.github/workflows/promptfoo.yml` so CI covers it too.
+
+That line ships commented out on purpose. `op run` resolves every
+reference in `.env.op` *before* exec'ing the child and aborts the whole
+invocation if any one of them misses — so a live reference to an item
+that doesn't exist takes the OpenAI and Anthropic cells down with it,
+not just Gemini. Keep it commented until the vault item exists.
+
+promptfoo reads the key as `GOOGLE_API_KEY` →
+`GOOGLE_GENERATIVE_AI_API_KEY` → `GEMINI_API_KEY`; any of the three
+works if you are running with a personal key in `.env.local` instead.
+
 ## Setup (one-time)
 
 ```sh
@@ -93,9 +117,12 @@ uploaded as a workflow artifact.
   only when a maintainer adds the `run-evals` label to the PR (or via a
   manual **Run workflow** dispatch). Push a new commit after labeling
   and it re-runs.
-- **Providers:** the two cloud providers only
-  (`openai-gpt-4o`, `anthropic-claude-haiku-4-5`); the on-device
-  `ollama:*` providers are skipped because the runner has no Ollama.
+- **Providers:** the two *credentialed* cloud providers only
+  (`openai-gpt-4o`, `anthropic-claude-haiku-4-5`). The on-device
+  `ollama:*` providers are skipped because the runner has no Ollama, and
+  `google-gemini-2.5-flash` is skipped because no Gemini key is
+  provisioned yet — add it to `EVAL_PROVIDERS` once the vault item
+  exists (see "Adding the Gemini key" above).
 - **Secret:** set one repository secret, `OP_SERVICE_ACCOUNT_TOKEN` — a
   1Password [service-account](https://developer.1password.com/docs/service-accounts/)
   token with read access to the `shutupandlisten` vault (the same
@@ -122,6 +149,23 @@ dictating an idea out loud, not asking for advice) drives the user side,
 parameterised with the scenario's `topic` and `idea_arc` and
 reactive to the listener's reply each turn. The system under test
 (one of the prompts from `../prompts/`) produces the listener turn.
+
+Three listener prompts make up the prompt axis, and every one of them
+runs against every provider — the file name is the variant's name, not
+a binding to a vendor:
+
+- `claude.md` — the **v0 baseline**, deliberately frozen. Silence during
+  dictation, then exactly one anchored thread-pull. Best on
+  probing-depth and no-summarize in the 2026-08-05 re-score.
+- `chatgpt.md` — the **hardened** variant the web app ships. Adds voice
+  hygiene, a response hierarchy, and a brevity cap; buys question
+  variety and short replies at the cost of probing and B3.
+- `gemini.md` — **v0 plus spoken-output hygiene** (su-5ky). Forked from
+  `claude.md` and keeps its response discipline intact; adds only the
+  format rules a spoken surface needs (no markdown, no stage
+  directions, no preamble) plus a one-question-mark cap. It does *not*
+  adopt the response hierarchy, which is the part of the hardening that
+  cost probing and B3.
 
 The multi-turn loop is orchestrated by `providers/multi-turn.js`,
 which wraps a target listener model (e.g. `openai:gpt-4o` or
@@ -169,7 +213,7 @@ The transcript is scored by four judges in `judges/`:
 
 ## Iteration loop
 
-1. Edit `../prompts/claude.md` (or `chatgpt.md`)
+1. Edit `../prompts/claude.md` (or `chatgpt.md`, or `gemini.md`)
 2. `npm run eval`
 3. `npm run view` — compare against the previous run
 4. Repeat

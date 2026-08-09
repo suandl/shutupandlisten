@@ -45,8 +45,12 @@ jobs:
     env:
       PROMPTFOO_DISABLE_TELEMETRY: '1'
       PROMPTFOO_DISABLE_UPDATE: '1'
-      # Cloud providers only — the config also defines on-device (ollama:*)
-      # providers that need a local Ollama runtime unavailable on the runner.
+      # Credentialed cloud providers only. The config also defines on-device
+      # (ollama:*) providers that need a local Ollama runtime unavailable on
+      # the runner, and google-gemini-2.5-flash, which has no key provisioned
+      # yet — its cells would error, not score. Add it here once the `google`
+      # item exists in the vault and .env.op's GOOGLE_API_KEY line is
+      # uncommented (promptfoo/README.md → "Adding the Gemini key").
       EVAL_PROVIDERS: 'openai-gpt-4o|anthropic-claude-haiku-4-5'
     steps:
       - name: Checkout

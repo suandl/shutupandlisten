@@ -1,8 +1,10 @@
 description: shutupandlisten — listener-prompt evaluation harness
 
 # Matrix:
-#   2 prompts   (prompts/claude.md [v0], prompts/chatgpt.md [hardened])
-#   × 2 providers (openai:gpt-4o, anthropic:claude-haiku-4-5)
+#   3 prompts   (prompts/claude.md [v0], prompts/chatgpt.md [hardened],
+#                prompts/gemini.md [v0 + spoken-output hygiene])
+#   × 3 cloud providers (openai:gpt-4o, anthropic:claude-haiku-4-5,
+#                        google:gemini-2.5-flash)
 #   × 4 scenarios (scenarios/*.yaml — driven multi-turn by simulators/thinker.md)
 #   × 4 judges  (probing-depth, restraint, no-summarize, variety)
 #
@@ -10,6 +12,19 @@ description: shutupandlisten — listener-prompt evaluation harness
 # (the prompt the web app ships) while claude.md stayed at v0, so the
 # prompt axis now measures that hardened variant against the locked
 # baseline.
+#
+# gemini.md (su-5ky) is a THIRD point on that axis, forked from claude.md —
+# the v0 baseline, which the 2026-08-05 re-score measured as the better of
+# the two on exactly the judges this fork cares about (probing 5.00 vs 3.50,
+# restraint 2.00 vs 1.88, B3 4.00 vs 3.38; see
+# docs/findings/listener-eval-rescore-2026-08.md §3b). The fork deliberately
+# does NOT import chatgpt.md's response *hierarchy* — that same re-score (§5)
+# names the hierarchy's level-2 "minimal acknowledgment" and level-3 "short
+# momentum-preserving reflection" rungs as the mechanism behind the hardened
+# prompt's −1.50 probing and −0.62 B3 regressions. What it DOES import is the
+# orthogonal half: spoken-output hygiene (no markdown, no stage directions,
+# finished sentences), which claude.md lacks entirely and which every voice
+# surface needs. See docs/findings/gemini-prompt-variant-2026-08.md.
 #
 # Each scenario runs as a 4-6 turn conversation: simulators/thinker.md
 # drives the user (thinker) side using the scenario's `topic` and
@@ -23,11 +38,17 @@ prompts:
   # prompts/*.md with the starting turn from the active scenario. The
   # multi-turn provider parses this JSON chat array, extracts the
   # system prompt (listener role) and the starting user turn, then
-  # runs the simulator/listener loop from there. Both system-prompt
-  # vars (claude_system / chatgpt_system) are set in defaultTest.vars
-  # — each prompt template references only its own. `starting_turn`
-  # (and the rest of the scenario keys) come from the scenario YAML,
-  # loaded into each test via `tests: file://…` below.
+  # runs the simulator/listener loop from there. All three system-prompt
+  # vars (claude_system / chatgpt_system / gemini_system) are set in
+  # defaultTest.vars — each prompt template references only its own.
+  # `starting_turn` (and the rest of the scenario keys) come from the
+  # scenario YAML, loaded into each test via `tests: file://…` below.
+  #
+  # Prompts and providers cross fully: every prompt runs on every provider,
+  # so `gemini` is a prompt VARIANT, not "the prompt for the Gemini model".
+  # That is deliberate — the prompt axis and the model axis are separable
+  # only if both are crossed, and the 2026-08-05 re-score turned on exactly
+  # that separation (prompt effect 0.62 vs model effect 0.88 on B3).
   - id: claude-listener
     label: claude
     raw: |-
@@ -40,6 +61,13 @@ prompts:
     raw: |-
       [
         {"role": "system", "content": {{ chatgpt_system | dump }}},
+        {"role": "user",   "content": {{ starting_turn | dump }}}
+      ]
+  - id: gemini-listener
+    label: gemini
+    raw: |-
+      [
+        {"role": "system", "content": {{ gemini_system | dump }}},
         {"role": "user",   "content": {{ starting_turn | dump }}}
       ]
 
@@ -64,6 +92,28 @@ providers:
     label: anthropic-claude-haiku-4-5
     config:
       targetModel: anthropic:claude-haiku-4-5
+      simulatorModel: openai:gpt-4o
+      maxTurns: 5
+      simulatorSystemPath: simulators/thinker.md
+  # Third cloud rung (su-5ky). gemini-2.5-flash is the voice-class tier that
+  # matches gpt-4o / haiku-4-5 — the flash line is what a live voice loop can
+  # afford, and promptfoo 0.121 knows the id natively via the `google:` (AI
+  # Studio) provider.
+  #
+  # NEEDS A CREDENTIAL THAT DOES NOT EXIST YET. promptfoo resolves this
+  # provider's key as GOOGLE_API_KEY -> GOOGLE_GENERATIVE_AI_API_KEY ->
+  # GEMINI_API_KEY, and the `shutupandlisten` 1Password vault currently holds
+  # only `openai` and `anthropic` items — so these cells ERROR until someone
+  # provisions one. See promptfoo/.env.op for the one-line enable and
+  # promptfoo/README.md → "Adding the Gemini key" for why that line is
+  # commented out rather than shipped live.
+  #
+  # The simulator stays pinned to openai:gpt-4o here, exactly as on the other
+  # rungs: only the listener may vary, or the thinker becomes a confound.
+  - id: file://providers/multi-turn.js
+    label: google-gemini-2.5-flash
+    config:
+      targetModel: google:gemini-2.5-flash
       simulatorModel: openai:gpt-4o
       maxTurns: 5
       simulatorSystemPath: simulators/thinker.md
@@ -162,6 +212,7 @@ defaultTest:
   vars:
     claude_system: file://../prompts/claude.md
     chatgpt_system: file://../prompts/chatgpt.md
+    gemini_system: file://../prompts/gemini.md
   assert:
     # All four judges run against the full multi-turn transcript
     # returned by providers/multi-turn.js. Variety is meaningful now
