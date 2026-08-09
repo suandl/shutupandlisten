@@ -471,7 +471,7 @@ decision-ready verdict (U8) gets its evidence.
 ## The works-check (pre-operator gate)
 
 ```
-npm run works-check                    # exit 0 pass · 100 regression (names the stage) · other = infra
+npm run works-check                    # exit 0 pass · 100 regression (names the stage) · other = infra (incl. budget exhaustion)
 npm run works-check -- --with-listener # ...and load the 1.69G listener model + generate (minutes)
 ```
 
@@ -512,6 +512,30 @@ four orders of magnitude apart:
 
 Denoise stays unguarded on purpose: it is an AudioWorklet over a live mic
 MediaStream — no mic, no audio graph, headless.
+
+**Out of time ≠ out of backend** (su-ucww). Every adapter degrades to its labelled
+fallback when a budget runs out, and from the verdict's side that is
+indistinguishable from a broken backend — so on a busy box the gate used to report
+the *machine's* state as a code regression, identically on a branch and on `main`
+(STT init at 15001ms vs 15006ms, both pinned to the same 15s budget). Two changes
+keep it honest. The gate now grants its own budgets rather than inheriting the
+app's, which are deliberately tight because a live UI must never block on a model
+download (`src/probe-budgets.ts`, sized ~10× the uncontended measurements in
+`docs/findings/reply-latency-baseline.md`). And a half that *still* spends its
+whole budget and degrades is classified **infra** — `WORKS-CHECK INFRA (budget
+exhausted): …`, exit 2, "re-run on an idle machine" — never exit 100. A run that
+finds both a real regression and an unjudgeable stage exits 100 and names each, so
+a stage nobody could judge never reads like one that passed. The outer watchdogs
+are derived from those budgets so a stage's own deadline always fires first: a
+wedged stage names itself instead of dying as an unclassifiable "the probe run did
+not complete".
+
+Per *half*, and only on an actual degrade, is the whole rule. A timed-out load
+speaks for its entire stage — every assertion after it is measuring the stub the
+timeout produced — but a load that merely ran long and still came back **real**
+excuses nothing: the stage stayed judgeable, so an empty transcript or a degraded
+synthesis under it is exit 100 as usual. Downgrading those too would be the same
+lie pointing the other way, retrying forever over output that is genuinely broken.
 
 Prereqs: `npm run provision:stt` + `provision:tts` + `provision:smart-turn` +
 `provision:llm`, and a Playwright browser

@@ -15,8 +15,12 @@
 //
 // Exit codes (origin KTD4 — see scripts/works-verdict.mjs, which owns the rules):
 //   0   pass · 100  real regression (summary names the stage) · anything else
-//   infra-flake (build/server/browser/fixture/provisioning — retryable, not a
-//   verdict about the code).
+//   infra-flake (build/server/browser/fixture/provisioning, or a stage that ran out
+//   of TIME rather than out of backend — retryable, not a verdict about the code).
+//
+// Budgets are the gate's, not the app's (src/probe-budgets.ts): the adapters'
+// own timeouts are tight because a live UI must never block on a model download,
+// and a gate inheriting them reports a busy box as a broken stage (su-ucww).
 //
 // Serving model: vite build with copyPublicDir OFF (the provisioned model trees
 // are multi-GB), then HARDLINK the needed public/ subtrees into the outDir —
@@ -59,6 +63,7 @@ import { DEFAULT_LLM_MODEL } from '../src/listener.ts';
 import { DEFAULT_MOONSHINE_MODEL, DEFAULT_WHISPER_MODEL } from '../src/stt.ts';
 import { DEFAULT_TTS_MODEL } from '../src/tts.ts';
 import { DEFAULT_SMART_TURN_MODEL_URL } from '../src/smart-turn.ts';
+import { BASE_PROBE_BUDGET_MS, LISTENER_PROBE_BUDGET_MS, PROBE_WATCHDOG_SLACK_MS } from '../src/probe-budgets.ts';
 import { WORKS_CHECK_PORT, WORKS_CHECK_OUT_DIR } from '../vite.works-check.config.ts';
 import { parseWavPcm16 } from './wav.mjs';
 import { EXIT_INFRA, evaluateReport, exitCodeFor, summarizeVerdict } from './works-verdict.mjs';
@@ -71,20 +76,21 @@ const CONFIG = path.join(WEB_DIR, 'vite.works-check.config.ts');
 
 const SERVER_UP_TIMEOUT_MS = 20000;
 const PROBE_READY_TIMEOUT_MS = 20000;
-/** Outer watchdog on the probe run. The adapters carry their own (much tighter)
- *  init/synthesis budgets and degrade to stubs the verdict then FAILS — so a slow
- *  model is a regression, and this deadline only catches a dead page, which is
- *  infra. Worst healthy run in the su-ljrb.1 spike was ~15s; 240s is pure slack. */
-const PROBE_RUN_TIMEOUT_MS = 240000;
-/** Watchdog for `--with-listener`. The listener adds a 1.69G weight load onto the
- *  WASM heap, single-threaded because `vite preview` sends no COOP/COEP and so the
- *  page never gets SharedArrayBuffer — measured at 228s to load on an 8-core host
- *  (the same model loads in ~52s served cross-origin-isolated). It gets its own
- *  deadline rather than eating the slack the other stages rely on, sized above the
- *  probe's own init+generate budgets (420s + 240s) so THOSE fire first: a wedged
- *  model must read as a REGRESSION naming the stage, never as this watchdog's
- *  unclassifiable infra timeout. */
-const LISTENER_RUN_TIMEOUT_MS = 900000;
+/** Outer watchdogs on the probe run — one per tier, DERIVED from the per-stage
+ *  budgets the probe grants (src/probe-budgets.ts) rather than hand-picked.
+ *
+ *  The rule they encode: a stage's own budget must always fire before this one. A
+ *  stage that runs out of budget degrades to its labelled fallback, and the verdict
+ *  then names the stage and says whether it ran out of backend (regression) or out
+ *  of time (infra — su-ucww). This watchdog can say neither: it catches a page that
+ *  is dead rather than slow, and all it can report is that nothing came back. Let
+ *  it fire first and every wedged-stage run collapses into that one unclassifiable
+ *  answer, which is why it is sized above the SUM of the budgets plus slack.
+ *
+ *  These are pathological ceilings, not expectations: a healthy run is ~25-30s
+ *  (minutes with `--with-listener`), and `--timeout` overrides either. */
+const PROBE_RUN_TIMEOUT_MS = BASE_PROBE_BUDGET_MS + PROBE_WATCHDOG_SLACK_MS;
+const LISTENER_RUN_TIMEOUT_MS = LISTENER_PROBE_BUDGET_MS + PROBE_WATCHDOG_SLACK_MS;
 /** Cap on the retained browser-console ring. Only the last 100 lines are ever
  *  persisted or tailed, so a chatty model load must not grow the buffer for the
  *  whole run — hold a little headroom over what's written and drop the rest. */
