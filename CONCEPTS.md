@@ -83,3 +83,28 @@ meaning — use them as written, and map synonyms back to them.
 - **the two axes** — The evaluation's coupled dimensions: quality (does the
   pipeline hold restraint + naturalness vs the baseline) and cost-to-deliver
   (per-session and per-user economics of each delivery option).
+
+## Testing & gates
+
+See `docs/testing-strategy.md` for the tiers these terms belong to.
+
+- **works-check** — The command that proves the shipped pipeline stages load
+  their **real backend** and produce output on a fixture, headless against a
+  production-shaped build (`npm run works-check`). Liveness, not accuracy: it
+  answers "does this run?", never "is this good?".
+
+- **works-gate** — The works-check used as enforcement: the refinery running it
+  before it lands a web deliverable. The check and the gate are separate — the
+  check ships and runs standalone whether or not the gate is wired.
+
+- **real backend** — The live implementation of a stage, as opposed to a
+  **labelled degrade**: the stub or fallback a stage announces itself as after
+  failing to load (`stub`, `sim`, `heuristic`, passthrough). Each stage's real
+  backend is declared explicitly, so a stage whose intended floor *is* a
+  fallback is not counted as a regression.
+
+- **real regression** vs **infra flake** — The two failure verdicts. A real
+  regression is a stage that loaded but reports a degrade, or produced nothing;
+  it blocks a land and names the stage. An infra flake is provisioning, launch,
+  WASM-init, or a timeout; it does not block, but is surfaced. "Not
+  provisioned" and "broken" must never be confusable.
