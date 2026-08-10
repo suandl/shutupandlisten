@@ -7,7 +7,7 @@ The U3 browser build (`web/src/turn-detection.ts`) and the U7 native build both
 run against these — "reuse U3 logic" means these vectors and the spec, not the
 code.
 
-Two kinds live here:
+Three kinds live here:
 
 ## `scenarios/` — exact-output behavioral vectors
 
@@ -102,6 +102,64 @@ and no worse total error. The floor in `labeled/` is set deliberately *short*
 (sub-second) — that is where the bare floor clips mid-thought pauses and the
 `incomplete` veto demonstrably rescues them; at a multi-second floor neither arm
 cuts off and the comparison is empty.
+
+## `gate/` — bar vectors for the silence-vs-speak gate
+
+Where `scenarios/` pins the detector's timing and `labeled/` scores its
+endpointing, these score the **whole gate** — `TurnDetector` →
+`AnalystCadence` → `CandidatePool` → `ResponseHierarchy` — against
+[usefulness-bar](../../docs/usefulness-bar.md) **B1**, "holds silence through an
+unfinished thought". Replayed by
+`ios/ShutUpAndListenKit/Tests/TurnEngineTests/B1GateReplayTests.swift`.
+
+Same schema, two additive fields and one deliberate omission:
+
+```jsonc
+{
+  "name": "b1-03-unpunctuated-pause-no-cue",
+  "description": "...",
+  // NO "knobs": a bar vector measures the SHIPPED defaults, so a retune of
+  // TurnKnobs.defaults moves the measurement. Set them only to probe a tuning.
+  "groundTruth": {                    // replaces `expected` — see below
+    "midThoughtPauses": [ { "t": 3000, "note": "the thinker resumes at 4200" } ],
+    "landings":         [ { "t": 7000, "note": "the thought is finished" } ]
+  },
+  "analyst": {                        // optional: what the analyst WOULD return,
+    "candidates": [                   // since it is a model and cannot run headlessly.
+      { "text": "...", "register": "question" }
+    ]
+  },
+  "events": [
+    { "t": 0,    "type": "speech-start" },
+    { "t": 3000, "type": "speech-end", "text": "..." },   // `text`: the transcript
+    { "t": 3050, "type": "eou", "source": "linguistic" }, //  for that segment
+  ]
+}
+```
+
+- **`text` on `speech-end`** is what was transcribed during that segment. The
+  runner accumulates it per turn (the utterance the gate sizes) and per session
+  (the monotonic basis `CandidatePool.expire` requires).
+- **`"source": "linguistic"` on `eou`** means *score the utterance so far with the
+  real `LinguisticEOU`* rather than handing the engine a verdict. The words are the
+  input; whether they read as finished is the engine's answer, not the fixture's.
+- **No `expected` block, by design.** These carry `groundTruth` — which pauses are
+  mid-thought and where the thought lands — in the same spirit as `labeled/`'s
+  `trueTurnBoundaries`. Pinning the gate's output in the fixture would make a
+  measurement into a tautology; the bar is scored in the runner instead. Every
+  `speech-end` must appear in one of the two lists, so a vector cannot quietly
+  exempt the pause it exists to exercise.
+
+The runner supplies its own 50 ms tick grid: a patience deadline is only
+*discovered* when an event advances the clock past it, so a replay driven by
+speech alone would attribute an evaluation to whenever the thinker next spoke.
+
+| Vector | Asserts |
+|--------|---------|
+| `b1-01-trailing-conjunction-pause` | A pause after a trailing conjunction reads as "still going", the veto extends the floor past the resume, and the window never closes — the gate is never even asked. |
+| `b1-02-filled-pause-disfluency` | Same, twice over, for a filled pause (`um`) and a discourse-marker pause (`,`) inside one unfinished sentence. |
+| `b1-03-unpunctuated-pause-no-cue` | The decisive case: a mid-thought pause with **no** linguistic cue and no terminal punctuation (STT drops it routinely). `LinguisticEOU` returns its 0.6 "no strong cue" default — *above* the 0.5 threshold — so no veto fires and only the bare floor stands between the thinker and an interruption. |
+| `b1-04-landing-earns-one-brief-reply` | The other half of the bar: a landing still earns exactly one brief reply, drawn from a still-fresh pool candidate of the register the gate asked for. |
 
 ## Provenance / timing-only milestone note
 

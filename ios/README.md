@@ -40,6 +40,7 @@ the golden vectors with `web/src/`, not the code.
 |---|---|---|
 | Turn state machine (patience floor + asymmetric EOU veto, `evaluate` → host decision, utterance/evaluation split) | `spec/turn-state-machine.md` | `TurnEngine/TurnDetector.swift` |
 | Golden vectors | `spec/turn-vectors/scenarios/` | replayed by `TurnEngineTests/GoldenVectorTests.swift` (read from the repo checkout — single source of truth) |
+| B1 bar vectors (does the gate hold silence through an unfinished thought?) | `spec/turn-vectors/gate/` + `docs/usefulness-bar.md` | replayed by `TurnEngineTests/B1GateReplayTests.swift` through the whole gate path |
 | Response hierarchy gate (silence → ack → reflection → question; escalate slowly) | `web/src/response-hierarchy.ts` | `TurnEngine/ResponseHierarchy.swift` |
 | Shared completion threshold (one constant, two readers) | `web/src/completion-threshold.ts` | `TurnEngine/CompletionThreshold.swift` |
 | Listener system prompt | `prompts/claude.md` | embedded in `TurnEngine/ListenerPrompt.swift` (re-sync on change) |
@@ -270,13 +271,38 @@ cd ios/ShutUpAndListenKit && swift test
 ```
 
 runs the golden-vector parity suite (all `spec/turn-vectors/scenarios/`
-vectors, exact-output) plus the gate's rule tests and the mode / just-listen
-/ coverage-preset tests (61 tests) — on macOS or Linux; the
+vectors, exact-output) plus the gate's rule tests, the mode / just-listen
+/ coverage-preset tests, and the B1 bar measurement below — on macOS or Linux; the
 tests read the vectors from the repo checkout, so run them from a full clone.
 The Swift port's algorithm was additionally cross-checked against all 11
-scenario vectors via an instruction-level mirror at port time. The full
-suite runs green on Linux; the app target itself is not covered by it (see
-the Building note).
+scenario vectors via an instruction-level mirror at port time. The app target
+itself is not covered by it (see the Building note).
+
+`.github/workflows/kit-tests.yml` runs exactly this on every push/PR that
+touches the Kit or the vectors — an `ubuntu-latest` runner in the official
+`swift:6.1` image, since nothing in the package needs Xcode or a simulator.
+It is the repo's first automatically-triggered iOS job. The suite is split
+across two steps — the B1 measurement alone, then everything else — so that the
+expected-red measurement below cannot mask an unrelated Kit regression.
+
+**One suite member is expected RED, and that is the result, not a break.**
+`B1GateReplayTests` measures the gate against usefulness-bar **B1** ("holds
+silence through an unfinished thought"), and it currently fails on
+`b1-03-unpunctuated-pause-no-cue`: a mid-thought pause carrying no lexical cue
+scores `LinguisticEOU`'s 0.6 "no strong cue" default, which is *above* the 0.5
+completion threshold, so the veto never fires and the 200 ms floor lets the
+companion speak into an unfinished sentence. See
+`docs/findings/b1-gate-measurement-2026-08.md`. Do not make it green by
+weakening a vector.
+
+A **second** test is also red, and it is *not* new:
+`AnalystPromptTests.testGrowingTranscriptLeavesEarlierChunksByteIdentical` fails
+on a clean `main` too (197 tests, 1 failure). It compares whole `SystemBlock`
+values as the transcript grows, but `cached` marks where the cache breakpoint
+sits and that marker legitimately advances onto each newly-frozen chunk; the
+chunk *text* is byte-identical, which is what a cache hit actually needs. Tracked
+as `su-3885`. Nothing ran `swift test` before this workflow existed, which is how
+it stayed red unnoticed.
 
 ## Knobs
 

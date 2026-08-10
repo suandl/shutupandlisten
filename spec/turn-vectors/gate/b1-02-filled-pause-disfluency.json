@@ -1,0 +1,25 @@
+{
+  "name": "b1-02-filled-pause-disfluency",
+  "description": "Two disfluent mid-thought pauses inside one unfinished sentence — one after a filler ('um'), one after a comma — then the landing. Both score far below the completion threshold, so both extend the floor and neither closes the patience window. The second mechanism this bar depends on: a pause whose WORDS say 'still going'.",
+  "groundTruth": {
+    "midThoughtPauses": [
+      { "t": 1800, "note": "filled pause — trailed off on 'um'" },
+      { "t": 5200, "note": "discourse-marker pause — trailed off on a comma" }
+    ],
+    "landings": [
+      { "t": 9800, "note": "the thought resolves into a single finished claim" }
+    ]
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 1800, "type": "speech-end", "text": "so the thing I've been chewing on is um" },
+    { "t": 1850, "type": "eou", "source": "linguistic" },
+    { "t": 3000, "type": "speech-start" },
+    { "t": 5200, "type": "speech-end", "text": "whether the retry logic is even," },
+    { "t": 5250, "type": "eou", "source": "linguistic" },
+    { "t": 6900, "type": "speech-start" },
+    { "t": 9800, "type": "speech-end", "text": "or whether the health check is just flapping under load." },
+    { "t": 9850, "type": "eou", "source": "linguistic" },
+    { "t": 12000, "type": "tick" }
+  ]
+}
