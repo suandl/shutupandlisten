@@ -47,8 +47,13 @@ if (env.backends?.onnx?.wasm) {
 // future TTS model supports WebGPU, `device: 'webgpu'` from the worker overrides this.
 export async function pipeline(task, model, options = {}) {
   if (task !== 'text-to-speech') throw new Error(`unsupported task: ${task} (this engine only speaks)`);
-  const tokenizer = await AutoTokenizer.from_pretrained(model);
+  // Model FIRST, tokenizer second. The worker tries wasm and then webgpu (see
+  // tts.worker.ts), and it is the MODEL construction that fails on a device the
+  // host cannot provide — so loading the tokenizer first meant every failed
+  // attempt paid for a tokenizer the retry then loaded again. Cached, therefore
+  // only wasteful rather than wrong, but the ordering buys nothing either way.
   const tts = await AutoModelForTextToWaveform.from_pretrained(model, { device: 'wasm', dtype: 'q8', ...options });
+  const tokenizer = await AutoTokenizer.from_pretrained(model);
   const samplingRate = tts.config?.sampling_rate;
   if (!(samplingRate > 0)) throw new Error(`model config carries no sampling_rate (${model})`);
   return async (text) => {

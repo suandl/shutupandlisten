@@ -12,6 +12,15 @@
 // pipeline; this command is the "operator stops being the integration test" gate.
 //
 // Usage: npm run works-check [-- --with-listener] [--port N] [--timeout MS]
+//                            [--headed] [--keep]
+//
+// --headed / --keep exist for debugging a RED gate, where the only other recourse
+// is reading a console tail out of .works-check/report.json: --headed shows the
+// browser doing the work, --keep holds the browser and the preview server up
+// afterwards so the probe page can be poked at by hand (Ctrl-C tears both down and
+// still reports the verdict's exit code). --headed additionally needs the full
+// chromium build — `npx playwright install chromium` — and a display; the headless
+// shell this gate normally runs on cannot do headless:false.
 //
 // Exit codes (origin KTD4 — see scripts/works-verdict.mjs, which owns the rules):
 //   0   pass · 100  real regression (summary names the stage) · anything else
@@ -55,7 +64,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync, linkSync, copyFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { chromium } from 'playwright';
 
@@ -64,7 +73,7 @@ import { DEFAULT_MOONSHINE_MODEL, DEFAULT_WHISPER_MODEL } from '../src/stt.ts';
 import { DEFAULT_TTS_MODEL } from '../src/tts.ts';
 import { DEFAULT_SMART_TURN_MODEL_URL } from '../src/smart-turn.ts';
 import { BASE_PROBE_BUDGET_MS, LISTENER_PROBE_BUDGET_MS, PROBE_WATCHDOG_SLACK_MS } from '../src/probe-budgets.ts';
-import { WORKS_CHECK_PORT, WORKS_CHECK_OUT_DIR } from '../vite.works-check.config.ts';
+import { WORKS_CHECK_PORT, WORKS_CHECK_OUT_DIR } from './works-check.constants.mjs';
 import { parseWavPcm16 } from './wav.mjs';
 import { EXIT_INFRA, evaluateReport, exitCodeFor, summarizeVerdict } from './works-verdict.mjs';
 
@@ -132,8 +141,14 @@ const SERVED_ASSETS = [
 
 const log = (m) => console.log(m);
 
-function parseArgs(argv) {
-  const opts = { port: WORKS_CHECK_PORT, timeoutMs: null, withListener: false };
+const USAGE = 'works-check [--port N] [--timeout MS] [--with-listener] [--headed] [--keep]';
+
+/** Exported for scripts/works-check.test.mjs — it is the one pure half of this
+ *  driver, and everything else here needs a browser and 3.3G of provisioned
+ *  weights to exercise. The module-level `main()` call is guarded at the bottom of
+ *  the file so importing it here does not launch a check run. */
+export function parseArgs(argv) {
+  const opts = { port: WORKS_CHECK_PORT, timeoutMs: null, withListener: false, headed: false, keep: false };
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -145,12 +160,34 @@ function parseArgs(argv) {
     if (a === '--port') opts.port = Number(value(a));
     else if (a === '--timeout') opts.timeoutMs = Number(value(a));
     else if (a === '--with-listener') opts.withListener = true;
-    else throw new Error(`unknown flag: ${a} (usage: works-check [--port N] [--timeout MS] [--with-listener])`);
+    else if (a === '--headed') opts.headed = true;
+    else if (a === '--keep') opts.keep = true;
+    else throw new Error(`unknown flag: ${a} (usage: ${USAGE})`);
   }
   if (!Number.isInteger(opts.port) || opts.port <= 0) throw new Error('--port must be a positive integer');
   if (opts.timeoutMs === null) opts.timeoutMs = opts.withListener ? LISTENER_RUN_TIMEOUT_MS : PROBE_RUN_TIMEOUT_MS;
   if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs <= 0) throw new Error('--timeout must be positive ms');
   return opts;
+}
+
+/** Chromium's setuid/namespace sandbox cannot start as root, so a rootful
+ *  container has to disable it — and that convenience is how the flag came to be
+ *  passed unconditionally here and in e2e/capture.ts, on every host, sandbox or
+ *  no sandbox. The content is localhost-only on a dev box, so the practical risk
+ *  is low, but it is still a real sandbox removal taken for a reason that does not
+ *  apply to most of the machines running it. Ask for it instead:
+ *
+ *    uid 0            no sandbox is possible — drop it, or Chromium will not start
+ *    PW_NO_SANDBOX=1  explicit opt-out for a host where the sandbox cannot work
+ *                     (a container without CAP_SYS_ADMIN, a locked-down userns)
+ *
+ *  Everywhere else the sandbox stays ON, which is the default this should always
+ *  have had. Shared with e2e/capture.ts by name, not by import: one env var covers
+ *  both browser launches in this repo, and neither file should have to depend on
+ *  the other for two lines. */
+function chromiumLaunchArgs() {
+  const rootful = process.getuid?.() === 0;
+  return rootful || process.env.PW_NO_SANDBOX === '1' ? ['--no-sandbox'] : [];
 }
 
 /** An infra failure: the check could not reach a verdict. Thrown (never
@@ -291,10 +328,27 @@ async function main() {
     consoleLines.push(line);
     if (consoleLines.length > CONSOLE_LINES_MAX) consoleLines.shift();
   };
+  // Set while --keep is parked in the teardown below, waiting to be interrupted.
+  let releaseKeepHold = null;
+  // Whether the run got as far as printing a verdict. Only used to caption the
+  // --keep banner: parking with no explanation on screen, when the reason is an
+  // InfraError that cannot print until after teardown, reads like a hang.
+  let reachedVerdict = false;
   // Tear the detached preview server down even on Ctrl-C, so an interrupted run
   // never squats on the pinned port (capture.ts's discipline — su-lou.4.1).
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {
+      // Under --keep the first interrupt is the ordinary way to finish, not an
+      // abort: release the hold and let the teardown below run, which stops the
+      // server, closes the browser and preserves the verdict's exit code. Any
+      // other interrupt — a second one, or one outside the hold — takes the hard
+      // path, because teardown must never depend on a cooperative event loop.
+      if (releaseKeepHold) {
+        const release = releaseKeepHold;
+        releaseKeepHold = null;
+        release();
+        return;
+      }
       stopServer(server);
       process.exit(sig === 'SIGINT' ? 130 : 143);
     });
@@ -329,10 +383,43 @@ async function main() {
     log(`works-check: serving on :${opts.port}`);
 
     try {
-      browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+      // handleSIGINT/handleSIGTERM OFF because this driver handles both itself,
+      // and Playwright's versions do not cooperate: they close the browser and
+      // then call process.exit(130) on their own. Whoever registered first wins,
+      // and the ONLY reason the plain path survives that is an accident of
+      // ordering — the signal handlers above are installed before launch, and
+      // they exit the process synchronously, so Playwright's never runs.
+      //
+      // --keep breaks the accident. Its handler deliberately RETURNS instead of
+      // exiting, so that the teardown below can run; control then reaches
+      // Playwright's handler, which exits the process mid-teardown. Measured:
+      // 'tearing down' prints, stopServer never runs, and the detached preview
+      // server is left squatting :4650 — the exact leak su-lou.4.1 forbids —
+      // with the verdict's exit code replaced by 130. Owning the two signals
+      // outright is what makes a cooperative hold possible at all.
+      //
+      // SIGHUP is deliberately left to Playwright: this driver does not handle
+      // it, and node's default action for it is to terminate WITHOUT running the
+      // exit hook that reaps the browser.
+      browser = await chromium.launch({
+        headless: !opts.headed,
+        args: chromiumLaunchArgs(),
+        handleSIGINT: false,
+        handleSIGTERM: false,
+      });
     } catch (e) {
       infra('browser', `could not launch a browser (${e.message.split('\n')[0]})`, [
         'install one with: npx playwright install chromium-headless-shell   (add --with-deps on a bare host)',
+        // --headed has its OWN prerequisites, and neither is the one above:
+        // headless:false cannot run on chromium-headless-shell at all (it wants
+        // the full chromium build, a separate download), and it needs a display.
+        ...(opts.headed
+          ? [
+              '--headed needs the FULL chromium build, not the headless shell: npx playwright install chromium',
+              '--headed also needs a real display: run it on a desktop session, or under xvfb-run, or drop the flag',
+            ]
+          : []),
+        'if this host cannot run the Chromium sandbox (a container without CAP_SYS_ADMIN, a locked-down userns), re-run with PW_NO_SANDBOX=1',
       ]);
     }
     const page = await browser.newPage();
@@ -440,20 +527,50 @@ async function main() {
     log(summarizeVerdict(verdict));
     log(`  full report: ${path.relative(WEB_DIR, reportPath)}`);
     process.exitCode = exitCodeFor(verdict);
+    reachedVerdict = true;
   } finally {
+    // --keep DELAYS this teardown rather than skipping it. Skipping outright was
+    // the obvious reading, and it does not work: Playwright kills the browser
+    // when the driver process exits, so "don't call browser.close()" leaves
+    // nothing to inspect, and the detached preview server that DOES outlive us
+    // would then squat the pinned port forever — the exact leak the signal
+    // handler above exists to prevent (su-lou.4.1). Parking here instead keeps
+    // both alive for as long as they are wanted and still tears them down.
+    //
+    // Guarded on `browser`, which is only set once the server answered: with no
+    // browser there is nothing to hold open, and an infra failure that got that
+    // far should print its remedy rather than park.
+    if (opts.keep && browser) {
+      log('');
+      log(`works-check: --keep — the probe page is live at ${probeUrl}`);
+      log('  the browser and the preview server stay up. Press Ctrl-C to tear them down.');
+      if (!reachedVerdict) log('  NOTE: this run reached no verdict — the failure prints after teardown.');
+      await new Promise((resolve) => {
+        releaseKeepHold = resolve;
+      });
+      releaseKeepHold = null;
+      log('works-check: tearing down.');
+    }
     if (browser) await browser.close().catch(() => {});
     stopServer(server);
   }
 }
 
-main().catch((e) => {
-  // Reached AFTER the finally teardown ran. An InfraError is the check saying
-  // "no verdict"; any other throw is equally not a code verdict — both exit 2.
-  if (e instanceof InfraError) {
-    console.error(`\nWORKS-CHECK INFRA (${e.step}): ${e.message}`);
-    for (const h of e.hints) console.error(`  → ${h}`);
-  } else {
-    console.error(`\nWORKS-CHECK INFRA (unexpected): ${e.stack ?? e.message}`);
-  }
-  process.exitCode = EXIT_INFRA;
-});
+// Run only when invoked as the CLI, never on import — scripts/works-check.test.mjs
+// imports parseArgs from here, and without this guard that import would launch a
+// full check run (build, server, browser) inside the node suite. Same shape as
+// provision-llm.mjs's guard, which is the existing convention for a script in this
+// directory with a testable pure half.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => {
+    // Reached AFTER the finally teardown ran. An InfraError is the check saying
+    // "no verdict"; any other throw is equally not a code verdict — both exit 2.
+    if (e instanceof InfraError) {
+      console.error(`\nWORKS-CHECK INFRA (${e.step}): ${e.message}`);
+      for (const h of e.hints) console.error(`  → ${h}`);
+    } else {
+      console.error(`\nWORKS-CHECK INFRA (unexpected): ${e.stack ?? e.message}`);
+    }
+    process.exitCode = EXIT_INFRA;
+  });
+}

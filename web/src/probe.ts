@@ -488,9 +488,10 @@ async function run(fixture: ProbeFixture, options: ProbeOptions = {}): Promise<P
     // crowding them.
     listener: options.withListener ? await loadListener(listener) : listener,
   };
-  // Mirror for humans: the page keeps the full report on screen for anyone
-  // driving the probe by hand, and the console line survives in the
-  // driver-captured browser logs.
+  // Mirror for humans: the page keeps the full report on screen, so a run held
+  // open with `works-check --keep` (or watched with --headed) can be read off the
+  // probe page directly instead of out of report.json, and the console line
+  // survives in the driver-captured browser logs either way.
   const pretty = JSON.stringify(report, null, 2);
   document.getElementById('probe-log')!.textContent = pretty;
   console.log(`WORKS_CHECK_REPORT ${JSON.stringify(report)}`);
