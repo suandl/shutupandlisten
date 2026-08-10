@@ -55,11 +55,44 @@ export interface AssembleResult {
   narrated: boolean;
 }
 
-const FF = ffmpegPath as unknown as string;
+/**
+ * The usable ffmpeg binary, or null when none is provisioned.
+ *
+ * `ffmpeg-static` delivers its binary through an `install` lifecycle script, and npm ≥12
+ * BLOCKS install scripts for packages outside `allowScripts`. On such a host a plain
+ * `npm ci` leaves the package directory fully populated (index.js, install.js, types/)
+ * while the binary itself is ABSENT — `npm install-scripts ls` lists it as blocked. So
+ * the binary is a PROVISIONED asset here, like the STT/LLM/TTS weights, not something
+ * that is simply always present: `npm run provision:ffmpeg` fetches it on demand.
+ *
+ * `ffmpeg-static` resolves the FFMPEG_BIN override itself (at module load), so this
+ * covers both the bundled binary and an explicit system ffmpeg.
+ */
+export function ffmpegBin(): string | null {
+  const p = ffmpegPath as unknown as string | null;
+  if (!p) return null;
+  // A bare command name (FFMPEG_BIN=ffmpeg) is resolved by the OS from PATH, not from
+  // the filesystem — only a real path can be existence-checked.
+  if (!p.includes('/') && !p.includes(path.sep)) return p;
+  return existsSync(p) ? p : null;
+}
+
+/** The binary, or a diagnosis of why there isn't one. For the paths that cannot degrade. */
+function requireFfmpeg(): string {
+  const bin = ffmpegBin();
+  if (!bin) {
+    throw new Error(
+      'assemble: no ffmpeg binary available. `ffmpeg-static` ships it via an install ' +
+        'script, which npm ≥12 blocks for packages outside `allowScripts` — run ' +
+        '`npm run provision:ffmpeg` to fetch it, or set FFMPEG_BIN to a system ffmpeg.',
+    );
+  }
+  return bin;
+}
 
 function run(args: string[]): string {
   // stdio captured so ffmpeg's stderr chatter stays out of the run output.
-  return execFileSync(FF, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) ?? '';
+  return execFileSync(requireFfmpeg(), args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) ?? '';
 }
 
 /** Base seconds a frame is shown before narration stretch: its duration, +1s if it has an observation. */
@@ -85,9 +118,15 @@ function writeConcat(listPath: string, frames: { abs: string; duration: number }
  * unknown. ffmpeg prints the banner to STDERR and `-f null -` exits 0, so this uses
  * spawnSync (which exposes stderr on success) — execFileSync returns stdout only,
  * which is empty here. Exported for the unit test that pins exactly that.
+ *
+ * `bin` defaults to the provisioned binary and is injectable so the stderr-banner
+ * regression can be pinned against a stub on a host with no ffmpeg. With no binary at
+ * all the probe degrades to 0 — the same "duration unknown" answer a failed probe
+ * gives, which callers already treat as "fall back to the frame's base duration".
  */
-export function probeDuration(file: string): number {
-  const res = spawnSync(FF, ['-i', file, '-hide_banner', '-f', 'null', '-'], {
+export function probeDuration(file: string, bin: string | null = ffmpegBin()): number {
+  if (!bin) return 0;
+  const res = spawnSync(bin, ['-i', file, '-hide_banner', '-f', 'null', '-'], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });

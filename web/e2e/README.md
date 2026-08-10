@@ -54,7 +54,17 @@ inspectable.
   npx playwright install chromium-headless-shell     # add --with-deps on a bare host (sudo apt)
   ```
   The engine prints this exact command if the browser is missing.
-- **ffmpeg** — none needed system-wide; `ffmpeg-static` (a devDependency) bundles it.
+- **ffmpeg** — none needed system-wide, but it is **provisioned, not automatic**:
+  ```bash
+  npm run provision:ffmpeg
+  ```
+  `ffmpeg-static` (a devDependency) delivers its binary through an `install` lifecycle
+  script, and npm ≥ 12 blocks install scripts for packages outside `allowScripts`. On
+  such a host `npm ci` leaves the package directory populated but the binary absent
+  (`npm install-scripts ls` lists it as blocked), so capture fails with a clear
+  "no ffmpeg binary available" error until you run the line above. Alternatively point
+  `FFMPEG_BIN` at a system ffmpeg. The `assemble.ts` unit tests that need a real binary
+  skip cleanly while it is un-provisioned, so `npm test` passes either way.
 - **Narration is optional.** With `OPENAI_API_KEY` set the engine synthesizes per-step
   narration (`tts-1`/`nova`, override via `DEMO_TTS_MODEL` / `DEMO_TTS_VOICE`) and mux
   it in. With no key — CI, a fresh clone — or on any narration failure it degrades to a
