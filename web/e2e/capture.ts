@@ -93,6 +93,26 @@ async function waitForServer(url: string, timeoutMs: number): Promise<boolean> {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Chromium's setuid/namespace sandbox cannot start as root, so a rootful
+ *  container has to disable it — and that convenience is why the flag used to be
+ *  passed unconditionally, on every host, sandbox or no sandbox. Localhost-only
+ *  content on a dev box makes the practical risk low, but it is still a real
+ *  sandbox removal taken for a reason that does not apply to most of the machines
+ *  running it. Ask for it instead:
+ *
+ *    uid 0            no sandbox is possible — drop it, or Chromium will not start
+ *    PW_NO_SANDBOX=1  explicit opt-out for a host where the sandbox cannot work
+ *                     (a container without CAP_SYS_ADMIN, a locked-down userns)
+ *
+ *  Everywhere else the sandbox stays ON. scripts/works-check.mjs inherited the
+ *  unconditional flag from this file and now carries the same gate under the same
+ *  env var — one variable for both browser launches in this repo, duplicated
+ *  rather than imported so neither script depends on the other for two lines. */
+function chromiumLaunchArgs(): string[] {
+  const rootful = process.getuid?.() === 0;
+  return rootful || process.env.PW_NO_SANDBOX === '1' ? ['--no-sandbox'] : [];
+}
+
 /** Spawn `npm run dev` (pinned :5173) and resolve once it serves. Returns the child to tear down, or null when reusing a server this run does not own. */
 async function startDevServer(port: number, log: (m: string) => void): Promise<ChildProcess | null> {
   const base = `http://localhost:${port}/`;
@@ -417,11 +437,12 @@ async function main(): Promise<void> {
     else log(`server: using --base-url ${base}`);
 
     try {
-      browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+      browser = await chromium.launch({ headless: true, args: chromiumLaunchArgs() });
     } catch (e) {
       throw new Error(
         `Could not launch a browser (${(e as Error).message.split('\n')[0]}).\n` +
-          `Install one with:  npx playwright install chromium-headless-shell   (add --with-deps on a bare host).`,
+          `Install one with:  npx playwright install chromium-headless-shell   (add --with-deps on a bare host).\n` +
+          `If this host cannot run the Chromium sandbox, re-run with PW_NO_SANDBOX=1.`,
       );
     }
     const page = await browser.newPage({ viewport: VIEWPORT });

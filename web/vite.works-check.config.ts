@@ -21,15 +21,17 @@
 //     server's pinned :5173 (su-lou.4.1): the driver gets a stable origin or a
 //     fast, classifiable port-clash failure, never a silent port hop. 4650 also
 //     keeps check runs from ever contending with a live `npm run dev`.
+//
+// The port and outDir themselves live in scripts/works-check.constants.mjs, which
+// both this config and the driver import. They were defined here, which forced the
+// CLI to import vite (and the base config's whole plugin graph) for two scalars.
 
 import { fileURLToPath } from 'node:url';
 
 import { defineConfig, mergeConfig } from 'vite';
 
 import base from './vite.config.ts';
-
-export const WORKS_CHECK_PORT = 4650;
-export const WORKS_CHECK_OUT_DIR = '.works-check/dist';
+import { WORKS_CHECK_OUT_DIR, WORKS_CHECK_PORT } from './scripts/works-check.constants.mjs';
 
 export default mergeConfig(
   base,
