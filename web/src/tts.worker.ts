@@ -52,6 +52,15 @@ type Engine = {
 
 let synthesizer: TtsPipeline | null = null;
 
+/** Per-attempt cap on the engine text embedded in the failure reason. Applied to
+ *  each candidate device separately rather than to the joined string, so a single
+ *  verbose ONNX error cannot push the OTHER device's failure out of the line — the
+ *  reason has to keep naming both, since which ones failed is the diagnosis. */
+const FAILURE_DETAIL_MAX = 160;
+
+const truncateFailure = (s: string): string =>
+  s.length <= FAILURE_DETAIL_MAX ? s : `${s.slice(0, FAILURE_DETAIL_MAX - 1)}…`;
+
 ctx.addEventListener('message', (ev: { data: unknown }) => {
   const msg = ev.data as InitMessage | SynthesizeMessage | undefined;
   if (!msg) return;
@@ -102,6 +111,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
     { mode: 'webgpu', opts: { device: 'webgpu' } },
   ];
   const failures: string[] = [];
+  const fullFailures: string[] = [];
   for (const c of candidates) {
     try {
       synthesizer = await engine.pipeline('text-to-speech', msg.model, c.opts);
@@ -113,9 +123,17 @@ async function handleInit(msg: InitMessage): Promise<void> {
       // fatal preprocessor_config.json probe) hid behind a bare 'no model
       // loaded' for weeks. The serialized causes ride the error reason into the
       // adapter's onDiagnostic line, where the works-check (and a human) read them.
-      failures.push(`${c.mode}: ${e instanceof Error ? e.message : String(e)}`);
+      const detail = `${c.mode}: ${e instanceof Error ? e.message : String(e)}`;
+      fullFailures.push(detail);
+      failures.push(truncateFailure(detail));
     }
   }
+  // The full text is logged, not posted. The reason goes to onDiagnostic and from
+  // there to console.warn and the UI, and an ONNX construction error runs to
+  // several hundred characters — enough to bury the rest of the line. Logging the
+  // untruncated version here keeps it in the browser console, which is where the
+  // works-check driver captures it and persists it into .works-check/report.json.
+  if (fullFailures.some((f, i) => f !== failures[i])) console.warn(`[tts.worker] no model loaded: ${fullFailures.join('; ')}`);
   ctx.postMessage({ type: 'error', reason: `no model loaded (${failures.join('; ')})` });
 }
 
