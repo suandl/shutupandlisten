@@ -67,6 +67,10 @@ contract — "reuse U3 logic" means the spec, not this TypeScript.
 
 ## Run it
 
+Needs the Node version in the repo-root [`.nvmrc`](../.nvmrc) — `nvm use`.
+The suites execute `.ts` sources directly under Node's native type-stripping
+(see below), so an older Node cannot run them at all.
+
 ```bash
 cd web
 npm install

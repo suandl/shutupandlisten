@@ -4,7 +4,17 @@ How to run and iterate on the prompts in this repo.
 
 ## Prerequisites
 
-- Node 18+
+- Node 22 — the version in the repo-root [`.nvmrc`](../.nvmrc), so `nvm use`
+  (or `fnm use`) from anywhere in the repo picks it up. **Not Node 24 by
+  default:** Node 24 ships npm 12, which will not run a dependency's install
+  script unless it is approved. `better-sqlite3` downloads its native binding
+  *from* that script, so `npm ci` leaves the binding missing and every command
+  here — `npm run validate` included — aborts with `Could not locate the
+  bindings file`, which reads like a `promptfooconfig.yaml` problem and is not
+  one. Nothing is actually incompatible: if you need Node 24, install with
+  `npm ci --allow-scripts better-sqlite3` (or approve it once with
+  `npm install-scripts approve better-sqlite3`) and promptfoo runs normally.
+  Node 22 is pinned so that no one has to know this.
 - API keys, via either of:
   - **1Password (default, nothing on disk):** the [1Password CLI](https://developer.1password.com/docs/cli/)
     (`op`) plus a service-account token (see below). When no

@@ -2,6 +2,9 @@
   "name": "shutupandlisten-promptfoo",
   "private": true,
   "description": "promptfoo evaluation harness for the shutupandlisten prompts",
+  "engines": {
+    "node": ">=22.22.0 <23"
+  },
   "scripts": {
     "validate": "promptfoo validate",
     "test": "node --test test/*.test.js",

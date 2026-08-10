@@ -34,6 +34,35 @@ The prompt is meant to be pasted into:
   the Anthropic key held server-side. Contract in
   [`server/API.md`](server/API.md).
 
+## Node version
+
+`promptfoo/`, `web/`, and `server/` all run on the Node version pinned in
+[`.nvmrc`](.nvmrc) — Node 22. Run `nvm use` (or `fnm use`) before any `npm`
+command; CI reads the same file, so the workflow and a local checkout cannot
+drift apart.
+
+It is pinned rather than a floor because the window is closed at both ends:
+
+- **Older fails.** `web/` and `server/` execute their `.ts` sources directly
+  under Node's native type-stripping — there is no build step — so a Node
+  without it cannot run their tests, nor `server`'s entrypoint.
+- **Newer needs a step we would rather not require.** Node 24 ships npm 12,
+  which refuses to run a dependency's install script unless it is approved.
+  `better-sqlite3` downloads its native binding *from* that script, so under
+  npm 12 no binding is ever fetched and every `promptfoo` command aborts with
+  `Could not locate the bindings file`, which reads like a
+  `promptfooconfig.yaml` problem and is not one. Node 22 ships npm 10, which
+  still runs install scripts, so the pinned version needs no approval step.
+
+Each package's `engines` field records its own half of that constraint, and
+each sets `engine-strict=true`, so `npm ci` on an out-of-range Node refuses
+with the version it wants instead of installing a tree that breaks later.
+
+`.nvmrc` names the Node 22 line, which is the only line all three accept. Keep
+it current within that line (`nvm install 22`): `promptfoo/` inherits a
+`>=22.22.0` floor from promptfoo itself, so an early 22.x is refused at install
+— clearly, and with the range it wants, which is the point.
+
 ## Iterating on the prompt
 
 See [`promptfoo/README.md`](promptfoo/README.md) for how to run the
