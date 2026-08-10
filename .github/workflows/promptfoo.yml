@@ -59,7 +59,12 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Read the repo-root .nvmrc rather than pinning a version here. A
+          # hardcoded pin is what let CI and local runners silently diverge:
+          # CI ran 20 and stayed green while `npm run validate` on a modern
+          # local Node died in better-sqlite3's ABI check, which reads as a
+          # promptfooconfig.yaml problem and is not one (su-6ea0).
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: promptfoo/package-lock.json
 

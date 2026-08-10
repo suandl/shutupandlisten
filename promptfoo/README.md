@@ -4,7 +4,12 @@ How to run and iterate on the prompts in this repo.
 
 ## Prerequisites
 
-- Node 18+
+- Node 22 — the version in the repo-root [`.nvmrc`](../.nvmrc), so `nvm use`
+  (or `fnm use`) from anywhere in the repo picks it up. **Not Node 24:**
+  promptfoo's bundled `better-sqlite3` has no prebuild for Node 24's ABI, so
+  every command here — `npm run validate` included — aborts with a SQLite
+  version-mismatch error that reads like a `promptfooconfig.yaml` problem and
+  is not one.
 - API keys, via either of:
   - **1Password (default, nothing on disk):** the [1Password CLI](https://developer.1password.com/docs/cli/)
     (`op`) plus a service-account token (see below). When no

@@ -34,6 +34,27 @@ The prompt is meant to be pasted into:
   the Anthropic key held server-side. Contract in
   [`server/API.md`](server/API.md).
 
+## Node version
+
+`promptfoo/`, `web/`, and `server/` all run on the Node version pinned in
+[`.nvmrc`](.nvmrc) — Node 22. Run `nvm use` (or `fnm use`) before any `npm`
+command; CI reads the same file, so the workflow and a local checkout cannot
+drift apart.
+
+It is pinned rather than a floor because the window is closed at both ends:
+
+- **Older fails.** `web/` and `server/` execute their `.ts` sources directly
+  under Node's native type-stripping — there is no build step — so a Node
+  without it cannot run their tests, nor `server`'s entrypoint.
+- **Newer fails.** `promptfoo/`'s bundled `better-sqlite3` ships no prebuild
+  for Node 24's ABI, so every `promptfoo` command aborts with a SQLite
+  version-mismatch error that reads like a `promptfooconfig.yaml` problem.
+
+Each package's `engines` field records its own half of that constraint, and
+each sets `engine-strict=true`, so `npm ci` on an out-of-range Node refuses
+with the version it wants instead of installing a tree that breaks later.
+`.nvmrc` names the one version that satisfies all three.
+
 ## Iterating on the prompt
 
 See [`promptfoo/README.md`](promptfoo/README.md) for how to run the

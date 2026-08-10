@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Customer-facing proxy for shutupandlisten: holds the Anthropic key, meters per-user substantive-tier listener turns and coverage checks.",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "start": "node src/index.ts",
     "test": "node --test 'src/**/*.test.ts'",
