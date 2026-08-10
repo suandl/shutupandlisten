@@ -15,6 +15,7 @@
     "provision:tts": "node scripts/provision-tts.mjs",
     "provision:denoise": "node scripts/provision-denoise.mjs",
     "provision:smart-turn": "node scripts/provision-smart-turn.mjs",
+    "provision:ffmpeg": "node node_modules/ffmpeg-static/install.js",
     "measure": "node src/measure.ts",
     "measure:race": "node src/measure-race.ts",
     "measure:loop": "node scripts/loop-latency.mjs",
