@@ -197,7 +197,8 @@ committing the U5 pick.
 
 ## 8. Reproduce
 
-Prereqs: Node 18+, `promptfoo/` deps (`npm ci`), an OpenAI key for the pinned
+Prereqs: the Node version in the repo-root `.nvmrc` (`nvm use` — `npm ci`
+refuses any other), `promptfoo/` deps (`npm ci`), an OpenAI key for the pinned
 thinker + judges (via `scripts/eval-keys.sh` / `.env.op`, or `.env.local`), and
 **Ollama running** with the candidate models pulled. The judges/simulator are
 cloud; only the *listener* is local — there is no global base URL override.
