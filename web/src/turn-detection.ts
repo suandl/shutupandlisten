@@ -29,7 +29,10 @@
 // OutputEvent doc block below; everything calibrated to a thought — word counts,
 // the question cooldown, transcript grouping — keys on the former.
 
-import { DEFAULT_COMPLETION_THRESHOLD } from './completion-threshold.ts';
+import {
+  DEFAULT_COMPLETION_THRESHOLD,
+  DEFAULT_CONFIDENT_COMPLETION_THRESHOLD,
+} from './completion-threshold.ts';
 
 export type Verdict = 'complete' | 'incomplete';
 export type TurnState = 'listening' | 'speaking' | 'pending' | 'deciding' | 'responding';
@@ -47,16 +50,27 @@ export type DecisionOutcome = 'speak' | 'silence';
 export interface TurnKnobs {
   /** Patience window: min silence (ms) after speech before a pause may end the turn. */
   silenceFloorMs: number;
-  /** Extra patience (ms) added when the EOU verdict for the pause is `incomplete`. */
+  /**
+   * Extra patience (ms) added when the pause's EOU reading is not confidently
+   * complete (the asymmetric veto — see `confidentCompletionThreshold`).
+   */
   incompleteExtensionMs: number;
   /**
-   * smart-turn P(complete) >= this ⇒ `complete`, else `incomplete`. Higher ⇒ more
-   * patient. The gate thresholds the SAME probability for its own rule 2, so both
+   * smart-turn P(complete) >= this ⇒ the two-valued `complete`/`incomplete` verdict
+   * is `complete`, else `incomplete`. This is the gate's rule-2 boundary too, so both
    * read one shared default (completion-threshold.ts) and the live app derives the
    * gate's runtime value from this knob — see that module for why drift here is a
-   * companion that holds the turn open and then answers anyway.
+   * companion that holds the turn open and then answers anyway. Higher ⇒ more patient.
    */
   completionThreshold: number;
+  /**
+   * smart-turn P(complete) below which the asymmetric veto still EXTENDS the floor,
+   * even when the verdict is `complete`. Decouples patience from the verdict: a
+   * weak-cue pause (the linguistic EOU's 0.6 "no strong cue") stays patient without
+   * being relabelled incomplete. `>= completionThreshold` by construction — see
+   * completion-threshold.ts. Read only by the detector; the gate never sees it.
+   */
+  confidentCompletionThreshold: number;
   /** Length (ms) of the stubbed canned response (timing-only milestone). */
   responseDurationMs: number;
   /** false ⇒ patience-only baseline arm: ignore every EOU verdict. */
@@ -75,6 +89,7 @@ export const DEFAULT_KNOBS: TurnKnobs = {
   silenceFloorMs: 200,
   incompleteExtensionMs: 4000,
   completionThreshold: DEFAULT_COMPLETION_THRESHOLD,
+  confidentCompletionThreshold: DEFAULT_CONFIDENT_COMPLETION_THRESHOLD,
   responseDurationMs: 1500,
   useSmartTurn: true,
 };
@@ -155,6 +170,15 @@ export class TurnDetector {
   private evaluation = 0;
   private silenceStart = 0;
   private verdict: Verdict | null = null;
+  /**
+   * The graded P(complete) the current pause's `verdict` came from, when the EOU
+   * evidence was a score rather than a bare verdict. The veto reads THIS against
+   * `confidentCompletionThreshold`, so weak evidence of completeness extends the floor
+   * without the verdict having to call the utterance incomplete. null ⇒ only a
+   * two-valued verdict was supplied (or the pause has no evidence yet), and the veto
+   * falls back to `verdict === 'incomplete'`. Reset with `verdict`.
+   */
+  private lastCompletionProb: number | null = null;
   private responseStart = 0;
   private clock = 0;
   private buffer: OutputEvent[] = [];
@@ -280,9 +304,24 @@ export class TurnDetector {
     this.onEmit?.(e);
   }
 
-  /** Whether the current pause's deadline is extended by an `incomplete` veto. */
+  /**
+   * Whether the current pause's deadline is extended by the asymmetric veto (spec §2
+   * — it may only LENGTHEN patience). It fires for any pause that is not CONFIDENTLY
+   * complete: given a graded probability the bar is `confidentCompletionThreshold`, so
+   * weak evidence of completeness (e.g. the linguistic EOU's no-strong-cue 0.6) still
+   * extends the floor WITHOUT the verdict having to claim the utterance is incomplete.
+   * The gate's rule-2 silence keeps the lower `completionThreshold`, so the two B1
+   * mechanisms no longer read one number. A bare verdict with no probability — the
+   * golden scenario vectors, or a caller supplying only `complete`/`incomplete` —
+   * keeps the original two-valued rule. A non-finite score is not evidence of
+   * completeness, so it too extends, matching resolveVerdict's NaN → `incomplete`.
+   */
   private extended(): boolean {
-    return this.knobs.useSmartTurn && this.verdict === 'incomplete';
+    if (!this.knobs.useSmartTurn) return false;
+    if (this.lastCompletionProb !== null) {
+      return !(this.lastCompletionProb >= this.knobs.confidentCompletionThreshold);
+    }
+    return this.verdict === 'incomplete';
   }
 
   private deadline(): number {
@@ -353,6 +392,7 @@ export class TurnDetector {
         // the thinking-pause is preserved and the SAME turn continues.
         this._state = 'speaking';
         this.verdict = null;
+        this.lastCompletionProb = null;
         return;
       case 'deciding':
         // Resumed while the verdict was still outstanding. Nothing has been
@@ -361,6 +401,7 @@ export class TurnDetector {
         // turn continues. Ties resolve toward keeping the turn open (spec §1).
         this._state = 'speaking';
         this.verdict = null;
+        this.lastCompletionProb = null;
         this.evaluationReason = null;
         return;
       case 'responding':
@@ -383,6 +424,7 @@ export class TurnDetector {
     this._state = 'pending';
     this.silenceStart = t;
     this.verdict = null;
+    this.lastCompletionProb = null;
   }
 
   private onEou(event: { verdict?: Verdict; completionProb?: number }, t: number): void {
@@ -394,6 +436,11 @@ export class TurnDetector {
     if (!v) return;
     const changed = v !== this.verdict;
     this.verdict = v;
+    // Keep the graded score the verdict came from so the veto can weigh confidence
+    // directly. When the caller supplied an explicit verdict, leave this null so the
+    // veto falls back to the two-valued rule — mirroring resolveVerdict, where an
+    // explicit verdict wins over any probability.
+    this.lastCompletionProb = event.verdict == null ? (event.completionProb ?? null) : null;
     // Re-evaluation is EVIDENCE-driven, not clock-driven: fresh EOU evidence
     // arriving while the host is still deciding supersedes the outstanding
     // evaluation instead of waiting for a tick or a debounce timer. The patience
