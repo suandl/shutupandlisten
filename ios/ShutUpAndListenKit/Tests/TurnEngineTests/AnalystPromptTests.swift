@@ -89,7 +89,13 @@ final class AnalystPromptTests: XCTestCase {
 
         // Instructions + both already-frozen chunks are unchanged — that prefix
         // is what the next cycle reads back from cache instead of re-writing.
-        XCTAssertEqual(Array(a.systemBlocks[0...2]), Array(b.systemBlocks[0...2]))
+        // TEXT only, deliberately: `cached` is the breakpoint MARKER, and it is
+        // supposed to advance onto the newly-frozen chunk — which is what the
+        // two breakpointIndex assertions below pin. SystemBlock is Equatable
+        // over (text, cached), so comparing whole blocks here would demand the
+        // marker stay put and contradict them.
+        XCTAssertEqual(a.systemBlocks[0...2].map(\.text),
+                       b.systemBlocks[0...2].map(\.text))
 
         // Only the newly-completed chunk is added, and the breakpoint moves onto it.
         XCTAssertEqual(a.systemBlocks.count, 4)
