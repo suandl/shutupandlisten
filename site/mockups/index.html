@@ -1,0 +1,326 @@
+<!-- shutupandlisten.sh · site mockups · gallery + what varies across the three -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shutupandlisten.sh — site mockups</title>
+<style>
+  :root{
+    --page:#08090B; --bg:#0B0D10; --surface:#12151A; --raised:#191D23;
+    --ink:#E9E4DA; --ink2:#8E9298; --ink3:#565B62; --line:#20242B;
+    --track:rgba(233,228,218,.09);
+    --accent:#E8AB5C; --accent-ink:#E7BE8A; --accent-dim:rgba(232,171,92,.12);
+    --shadow:0 24px 60px rgba(0,0,0,.45);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --page:#EFEDE7; --bg:#F7F5F0; --surface:#FFFFFF; --raised:#FBFAF6;
+      --ink:#20232A; --ink2:#5E636B; --ink3:#9EA2A9; --line:#E5E1D8;
+      --track:rgba(30,33,42,.10);
+      --accent:#96661F; --accent-ink:#7C5316; --accent-dim:rgba(150,102,31,.10);
+      --shadow:0 20px 50px rgba(70,58,34,.14);
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--page); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent); text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{max-width:1080px; margin:0 auto; padding:64px 40px 96px}
+  .brand{font-size:14px; font-weight:600; letter-spacing:.02em; color:var(--ink2);
+    display:flex; align-items:center; gap:10px}
+  h1{font-size:34px; font-weight:700; letter-spacing:-.022em; margin:16px 0 10px; line-height:1.15}
+  .lede{max-width:66ch; color:var(--ink2); font-size:16px; line-height:1.65; margin:0 0 8px}
+  .lede b{color:var(--ink); font-weight:600}
+  section{margin-top:64px}
+  h2{font-size:12px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:var(--ink3); margin:0 0 18px;
+    display:flex; align-items:center; gap:14px}
+  h2::after{content:""; flex:1; height:1px; background:var(--line)}
+
+  /* ── gallery ──────────────────────────────────────────────────────────── */
+  .gal{display:grid; grid-template-columns:repeat(auto-fit,minmax(268px,1fr)); gap:20px}
+  .shot{display:block; border:1px solid var(--line); border-radius:20px; background:var(--surface); overflow:hidden;
+    color:inherit; transition:transform .25s ease, box-shadow .25s ease}
+  .shot:hover{transform:translateY(-3px); box-shadow:var(--shadow); text-decoration:none}
+  .thumb{height:198px; background:var(--bg); border-bottom:1px solid var(--line); position:relative; overflow:hidden;
+    display:flex; align-items:center; justify-content:center; padding:20px}
+  .shot .tx{padding:16px 18px 18px}
+  .shot .tt{font-size:15px; font-weight:600; margin-bottom:5px; display:flex; align-items:center; gap:8px}
+  .shot .tt .go{color:var(--accent); font-weight:400}
+  .shot .why{font-size:13px; color:var(--ink2); line-height:1.55}
+  .shot .lv{margin-top:11px; font:500 10.5px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3);
+    letter-spacing:.04em}
+
+  /* thumbnail vignettes — the three settings, in miniature */
+  .th-hold{display:flex; flex-direction:column; align-items:center; gap:16px}
+  .th-hold svg{display:block}
+  .th-hold .trk{fill:none; stroke:var(--track); stroke-width:1.4}
+  .th-hold .w{font-size:9px; color:var(--ink3)}
+  .th-line{width:100%}
+  .th-line .l{font-size:19px; line-height:1.06; letter-spacing:-.03em; font-weight:400}
+  .th-line .l .em{color:var(--accent)}
+  .th-line .m{margin-top:14px; font-size:8px; font-weight:600; color:var(--ink3); letter-spacing:.02em}
+  .th-cad{width:100%; display:flex; flex-direction:column; gap:9px}
+  .th-cad .row{display:flex; gap:9px; align-items:flex-start}
+  .th-cad svg{flex:none; display:block; margin-top:1px}
+  .th-cad .trk{fill:none; stroke:var(--track); stroke-width:1.6}
+  .th-cad .arc{fill:none; stroke:var(--accent); stroke-width:1.6; stroke-linecap:round;
+    transform:rotate(-90deg); transform-origin:50% 50%}
+  .th-cad .pt{fill:var(--accent)}
+  .th-cad .tx1{font-size:8.5px; line-height:1.5; color:var(--ink2)}
+  .th-cad .gap{font-size:7.5px; font-style:italic; color:var(--ink3)}
+  .th-cad .qq{font-size:10px; line-height:1.35; color:var(--accent-ink)}
+
+  /* ── the levers table ─────────────────────────────────────────────────── */
+  .tblwrap{overflow-x:auto; border:1px solid var(--line); border-radius:18px; background:var(--surface)}
+  table{border-collapse:collapse; width:100%; min-width:640px}
+  th,td{text-align:left; padding:15px 18px; border-bottom:1px solid var(--line); vertical-align:top;
+    font-size:13.5px; line-height:1.55}
+  thead th{font-size:11px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:var(--ink3)}
+  tbody tr:last-child td, tbody tr:last-child th{border-bottom:0}
+  tbody th{font-weight:400; color:var(--ink2); width:150px; white-space:nowrap}
+  td b{font-weight:600; color:var(--ink)}
+  .most b{color:inherit}
+  .most{color:var(--accent-ink)}
+
+  /* ── identity carry-over ──────────────────────────────────────────────── */
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:20px}
+  .card{border:1px solid var(--line); border-radius:20px; background:var(--surface); padding:24px}
+  .card h3{margin:0 0 6px; font-size:15px; font-weight:600}
+  .card p{font-size:13px; color:var(--ink2); line-height:1.6; margin:0 0 14px}
+  .swatches{display:grid; grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:9px}
+  .sw{border:1px solid var(--line); border-radius:12px; overflow:hidden}
+  .sw .chip{height:44px}
+  .sw .l{padding:8px 10px 9px; background:var(--bg)}
+  .sw .n{font-size:11.5px; font-weight:600}
+  .sw .h{font:400 10px/1.5 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink3)}
+  .rings{display:flex; justify-content:space-around; align-items:center; padding:6px 0 2px}
+  .ringcase{text-align:center}
+  .ringcase .cap{margin-top:11px; font-size:10px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:var(--ink3)}
+  .m{display:inline-block}   /* transform/scale does not apply to inline boxes */
+  .m .trk{fill:none; stroke:var(--track); stroke-width:2}
+  .m .arc{fill:none; stroke:var(--accent); stroke-width:2.2; stroke-linecap:round;
+    transform:rotate(-90deg); transform-origin:50% 50%}
+  .m .pt{fill:var(--accent)}
+  .breathe{animation:br 5.8s ease-in-out infinite}
+  @keyframes br{0%,100%{transform:scale(1)} 50%{transform:scale(1.03)}}
+  .filling .arc{stroke-dasharray:207; animation:fl 9s ease-in-out infinite}
+  @keyframes fl{0%{stroke-dashoffset:207; opacity:0} 8%{opacity:.95} 60%{stroke-dashoffset:72; opacity:.95}
+    72%{stroke-dashoffset:72; opacity:.95} 86%{opacity:0; stroke-dashoffset:80} 100%{stroke-dashoffset:207; opacity:0}}
+  .glow{filter:drop-shadow(0 0 6px var(--accent))}
+
+  .note{border-left:2px solid var(--accent); padding:2px 0 2px 16px; margin:20px 0 0; max-width:70ch;
+    font-size:13.5px; color:var(--ink2); line-height:1.7}
+  .note b{color:var(--ink); font-weight:600}
+
+  ul.plain{margin:0; padding-left:20px; max-width:72ch; color:var(--ink2); font-size:14px; line-height:1.75}
+  ul.plain b{color:var(--ink); font-weight:600}
+
+  footer{margin-top:72px; padding-top:20px; border-top:1px solid var(--line); font-size:13px; color:var(--ink3); line-height:1.7}
+  @media (prefers-reduced-motion: reduce){ *{animation:none !important} .filling .arc{stroke-dashoffset:72; opacity:.95} }
+</style>
+
+<div class="wrap">
+  <div class="brand">
+    <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true"><circle cx="7.5" cy="7.5" r="6.4" fill="none" stroke="currentColor" stroke-width="1.4" opacity=".55"/></svg>
+    shutupandlisten.sh · site mockups · August 2026
+  </div>
+  <h1>Silence is the product.<br>The site should look like it.</h1>
+  <p class="lede">Three mockups of the public site, all executing <b>one</b> visual direction — the identity
+  already shipped for the iOS app, extended to the web. Not three ideas: one idea at three settings, so the
+  comparison isolates real choices rather than taste. Rationale per mockup and the open questions live in
+  <a href="README.md">README.md</a>.</p>
+  <p class="lede">The bet is contrast, not volume. In a feed of loud AI landing pages a near-black page that
+  does almost nothing <i>is</i> the pattern interrupt — so every version pushes the identity to a confident
+  extreme rather than dressing it down. <b>The failure mode to avoid is timid, not loud.</b></p>
+
+  <!-- ═══════════ GALLERY ═══════════ -->
+  <section>
+    <h2>The three</h2>
+    <div class="gal">
+
+      <a class="shot" href="hold.html">
+        <div class="thumb">
+          <div class="th-hold">
+            <svg width="104" height="104" viewBox="0 0 104 104" class="breathe"><circle class="trk" cx="52" cy="52" r="46"/></svg>
+            <div class="w">Nothing here is going to interrupt you.</div>
+          </div>
+        </div>
+        <div class="tx">
+          <div class="tt">hold <span class="go">→</span></div>
+          <div class="why">The ring is the page. A 56 vmin mark, one whispered line, and you have to scroll
+          before the site will explain itself. The interaction is the thesis.</div>
+          <div class="lv">space MAX · hook WHISPER · ring HERO</div>
+        </div>
+      </a>
+
+      <a class="shot" href="line.html">
+        <div class="thumb">
+          <div class="th-line">
+            <div class="l">Every AI is desperate to help. This one <span class="em">waits</span>.</div>
+            <div class="m">shutupandlisten</div>
+          </div>
+        </div>
+        <div class="tx">
+          <div class="tt">line <span class="go">→</span></div>
+          <div class="why">One sentence at display scale in regular weight, with the accent spent on a single
+          word. The ring shrinks to a 15 px signature. Loudest, without raising its voice.</div>
+          <div class="lv">space MID · hook LOUD · ring MARK</div>
+        </div>
+      </a>
+
+      <a class="shot" href="cadence.html">
+        <div class="thumb">
+          <div class="th-cad">
+            <div class="row">
+              <svg width="15" height="15" viewBox="0 0 27 27"><circle class="trk" cx="13.5" cy="13.5" r="11"/></svg>
+              <div class="tx1">…I start reading to move the number instead of reading to actually read.</div>
+            </div>
+            <div class="row">
+              <svg width="15" height="15" viewBox="0 0 27 27"><circle class="trk" cx="13.5" cy="13.5" r="11"/><circle class="arc" cx="13.5" cy="13.5" r="11" stroke-dasharray="69" stroke-dashoffset="0"/></svg>
+              <div class="gap">it said nothing · 4.8s</div>
+            </div>
+            <div class="row">
+              <svg width="15" height="15" viewBox="0 0 27 27"><circle class="trk" cx="13.5" cy="13.5" r="11"/><circle class="pt" cx="13.5" cy="2.5" r="2.6"/></svg>
+              <div class="qq">With the number gone, what makes someone open the app again tomorrow?</div>
+            </div>
+          </div>
+        </div>
+        <div class="tx">
+          <div class="tt">cadence <span class="go">→</span></div>
+          <div class="why">The evidence is the hero: a real exchange with the silences left in, the ring
+          running down it as a spine. Argues by demonstrating instead of claiming.</div>
+          <div class="lv">space MID · hook MED · ring SPINE ×8</div>
+        </div>
+      </a>
+
+    </div>
+  </section>
+
+  <!-- ═══════════ WHAT VARIES ═══════════ -->
+  <section>
+    <h2>What actually varies</h2>
+    <div class="tblwrap">
+      <table>
+        <thead>
+          <tr><th>Lever</th><th>hold</th><th>line</th><th>cadence</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Negative space</th>
+            <td class="most"><b>Maximum.</b> A full viewport with one mark in it; 34 vh between blocks.</td>
+            <td>Generous but composed. The fold is full-bleed type, then a normal editorial rhythm.</td>
+            <td>Moderate. The page carries a transcript, so space is spent inside it, not around it.</td>
+          </tr>
+          <tr>
+            <th>Hook volume</th>
+            <td>Whisper — 15 px, centred, under the ring. The size <i>is</i> the restraint.</td>
+            <td class="most"><b>Loudest.</b> clamp(38–104 px), regular weight, one ember word.</td>
+            <td>Medium — a 27–44 px provocation that exists to set up the receipt underneath it.</td>
+          </tr>
+          <tr>
+            <th>Ring usage</th>
+            <td class="most"><b>Hero.</b> 56 vmin, breathing, arc holding at rest; then a three-tense strip.</td>
+            <td>Signature only. 15 px beside the wordmark and once on the OG card.</td>
+            <td>Structural. Eight instances at 27 px as the transcript's spine — the mark used as a <i>system</i>.</td>
+          </tr>
+          <tr>
+            <th>OG card strategy</th>
+            <td>Almost nothing: empty ring, wordmark, one ember point. A hole in the feed.</td>
+            <td>The hook, typeset. Survives being 320 px wide in a Slack row.</td>
+            <td class="most"><b>The product working.</b> Your sentence, the gap, its one question.</td>
+          </tr>
+          <tr>
+            <th>What it asks the reader to do first</th>
+            <td>Wait.</td>
+            <td>Read one sentence.</td>
+            <td>Watch it work.</td>
+          </tr>
+          <tr>
+            <th>Risk if it's wrong</th>
+            <td>Reads as unfinished rather than composed; bounce before the scroll.</td>
+            <td>Reads as an ad; the claim has to carry with no proof under it.</td>
+            <td>Reads as documentation; the fold is doing work, not stopping traffic.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Everything <b>not</b> in that table is deliberately identical across the three: palette,
+    type ramp, the ring's construction, the provider selector, the copy affordance, the share row, the
+    footer, and every word of the prompt excerpts. That is what makes the comparison mean something.</p>
+  </section>
+
+  <!-- ═══════════ IDENTITY CARRY-OVER ═══════════ -->
+  <section>
+    <h2>What carries over from the app</h2>
+    <div class="cards">
+
+      <div class="card">
+        <h3>One accent, ever</h3>
+        <p>Ember is reserved for what the listener <i>does</i> — the patience arc, its one question. Everything
+        else is warm ink on near-black. No second colour, no state taxonomy, no gradient.</p>
+        <div class="swatches">
+          <div class="sw"><div class="chip" style="background:#0B0D10"></div><div class="l"><div class="n">bg</div><div class="h">#0B0D10</div></div></div>
+          <div class="sw"><div class="chip" style="background:#12151A"></div><div class="l"><div class="n">surface</div><div class="h">#12151A</div></div></div>
+          <div class="sw"><div class="chip" style="background:#E9E4DA"></div><div class="l"><div class="n">ink</div><div class="h">#E9E4DA</div></div></div>
+          <div class="sw"><div class="chip" style="background:#8E9298"></div><div class="l"><div class="n">ink 2</div><div class="h">#8E9298</div></div></div>
+          <div class="sw"><div class="chip" style="background:#E8AB5C"></div><div class="l"><div class="n">ember</div><div class="h">#E8AB5C</div></div></div>
+          <div class="sw"><div class="chip" style="background:#20242B"></div><div class="l"><div class="n">hairline</div><div class="h">#20242B</div></div></div>
+        </div>
+        <p style="margin:14px 0 0">Ember here is <b>sulAccent</b> verbatim — <code style="font:400 12px ui-monospace,monospace">Color(red:0.91, green:0.67, blue:0.36)</code>
+        — the value shipped in <code style="font:400 12px ui-monospace,monospace">PatienceRing.swift</code>. See the README: the identity table on paper says
+        <code style="font:400 12px ui-monospace,monospace">#D9A15E</code>, and those two need reconciling.</p>
+      </div>
+
+      <div class="card">
+        <h3>One mark, three tenses</h3>
+        <p>A hairline circle is the entire brand mark. It breathes while it listens, an ember arc fills
+        clockwise while it waits out a pause — dissolving the instant you resume — and it settles to a single
+        point when its one question arrives. Never a bar, never a spinner.</p>
+        <div class="rings">
+          <div class="ringcase">
+            <span class="m breathe"><svg width="72" height="72" viewBox="0 0 72 72"><circle class="trk" cx="36" cy="36" r="33"/></svg></span>
+            <div class="cap">listening</div>
+          </div>
+          <div class="ringcase">
+            <span class="m filling"><svg width="72" height="72" viewBox="0 0 72 72"><circle class="trk" cx="36" cy="36" r="33"/><circle class="arc" cx="36" cy="36" r="33"/></svg></span>
+            <div class="cap">waiting</div>
+          </div>
+          <div class="ringcase">
+            <span class="m"><svg width="72" height="72" viewBox="0 0 72 72" class="glow"><circle class="trk" cx="36" cy="36" r="33"/><circle class="pt" cx="36" cy="3" r="3.6"/></svg></span>
+            <div class="cap">its question</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <p class="note">Type is the app's ramp unchanged — question 24/1.42 <b>regular</b>, caps at 11 px with
+    20% tracking for state words, SF Mono for every time and filename so they read as instrument markings.
+    Nothing in this product is bold-shouted, including the loud mockup: <b>line</b>'s 104 px hook is regular
+    weight. Size carries the conviction; weight would only carry volume.</p>
+  </section>
+
+  <!-- ═══════════ CONSTRAINTS ═══════════ -->
+  <section>
+    <h2>How to read these</h2>
+    <ul class="plain">
+      <li>Open <a href="hold.html">hold.html</a>, <a href="line.html">line.html</a>, <a href="cadence.html">cadence.html</a>
+      in any browser. No server, no build step, <b>no external requests</b> — every glyph, mark and colour is in the file.</li>
+      <li><b>Dark is the designed experience.</b> Switch your OS appearance to see the light translation
+      (<code style="font:400 12.5px ui-monospace,monospace">prefers-color-scheme</code>); it is a faithful paper version, not a second design.</li>
+      <li>The <b>provider selector is live</b> in all three — click Claude / ChatGPT / Gemini and the excerpt,
+      the filename, the line count and the paste instructions all change. It is CSS only; there is no script on any page.</li>
+      <li>The <b>copy buttons toggle</b> to their confirmed state so you can judge that moment. On the real
+      site that is the one place a few lines of clipboard JS are unavoidable.</li>
+      <li>Each page carries a small annotation card, bottom right. That is mockup furniture — not part of the design.</li>
+      <li>Picking the winner is not this bead's job. These exist so that choice can be made by looking.</li>
+    </ul>
+  </section>
+
+  <footer>
+    Sources of truth: <code style="font:400 12.5px ui-monospace,monospace">ios/App/UI/PatienceRing.swift</code> (the accent and the ring) and
+    <code style="font:400 12.5px ui-monospace,monospace">ios/mockups/README.md</code> §1 (palette, type ramp, motion rules).
+    Product vocabulary from <code style="font:400 12.5px ui-monospace,monospace">CONCEPTS.md</code>. Prompt excerpts are <b style="color:var(--ink2);font-weight:400">abridged</b> from
+    <code style="font:400 12.5px ui-monospace,monospace">prompts/</code> — cut for length, markdown emphasis stripped, never reworded.<br>
+    The site is not live — <code style="font:400 12.5px ui-monospace,monospace">shutupandlisten.sh</code> does not resolve yet and nothing here deploys. Hosting is tracked separately.
+  </footer>
+</div>
