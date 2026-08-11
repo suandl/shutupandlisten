@@ -295,14 +295,16 @@ companion speak into an unfinished sentence. See
 `docs/findings/b1-gate-measurement-2026-08.md`. Do not make it green by
 weakening a vector.
 
-A **second** test is also red, and it is *not* new:
-`AnalystPromptTests.testGrowingTranscriptLeavesEarlierChunksByteIdentical` fails
-on a clean `main` too (197 tests, 1 failure). It compares whole `SystemBlock`
-values as the transcript grows, but `cached` marks where the cache breakpoint
-sits and that marker legitimately advances onto each newly-frozen chunk; the
-chunk *text* is byte-identical, which is what a cache hit actually needs. Tracked
-as `su-3885`. Nothing ran `swift test` before this workflow existed, which is how
-it stayed red unnoticed.
+That measurement is the job's **only** expected red. A second test was red when
+this work started and is not any more:
+`AnalystPromptTests.testGrowingTranscriptLeavesEarlierChunksByteIdentical` failed
+on a clean `main` too (197 tests, 1 failure at c8c0365). It compared whole
+`SystemBlock` values as the transcript grows, but `cached` marks where the cache
+breakpoint sits and that marker legitimately advances onto each newly-frozen
+chunk; the chunk *text* is byte-identical, which is what a cache hit actually
+needs. Filed as `su-3885` and **fixed on `main` in #56**, so the rest of the Kit
+is green: 197 tests, 0 failures. Nothing ran `swift test` before this workflow
+existed, which is how it stayed red unnoticed — and is the case for the workflow.
 
 ## Knobs
 

@@ -196,19 +196,21 @@ passes could not compile:
   a line-by-line trace of the Swift path. All three land on the same verdict, the
   same timestamps, and the same totals.
 
-- **A second, unrelated failure is already on `main`.** The same run shows
+- **A second, unrelated failure was on `main`, and has since been fixed.** The
+  2026-08-10 run also showed
   `AnalystPromptTests.testGrowingTranscriptLeavesEarlierChunksByteIdentical`
-  failing — and it fails identically on a clean checkout of `origin/main`
-  (c8c0365, 197 tests, 1 failure), so it is **not** introduced here. It looks like
-  a defect in the test rather than in the chunker: it compares whole `SystemBlock`
-  values across a growing transcript, but `cached` marks *where the cache
-  breakpoint sits*, and that marker legitimately advances to the newly-frozen
-  chunk as the transcript grows. The chunk **text** — the thing that has to stay
-  byte-identical for a cache hit — is unchanged. Tracked as **su-3885**; not
-  fixed here, because this bead is scoped to the gate. Its visibility is the
-  point: it has been red for as long as nothing ran `swift test`.
+  failing — identically on a clean checkout of `origin/main` (c8c0365, 197 tests,
+  1 failure), so it was **not** introduced here. It was a defect in the test
+  rather than in the chunker: it compared whole `SystemBlock` values across a
+  growing transcript, but `cached` marks *where the cache breakpoint sits*, and
+  that marker legitimately advances to the newly-frozen chunk as the transcript
+  grows. The chunk **text** — the thing that has to stay byte-identical for a
+  cache hit — was unchanged. Filed as **su-3885** and fixed on `main` in #56
+  (49d80b6). This branch is rebased onto that fix, and the 2026-08-11 re-run
+  reports **197 tests, 0 failures** outside the B1 measurement. Its visibility
+  remains the point: it had been red for as long as nothing ran `swift test`.
 
-The `kit-tests` job will therefore be red for **two** reasons on its first run —
-the B1 measurement (intended, and the deliverable) and that pre-existing test bug
-(unintended, and pre-existing). They are separate steps in the job so the two
-never have to be told apart by reading a stack trace.
+The `kit-tests` job is therefore red for exactly **one** reason — the B1
+measurement, which is intended and is the deliverable. The suite is split across
+two steps anyway, so that the next failure elsewhere in the Kit never has to be
+told apart from the measurement by reading a stack trace.
