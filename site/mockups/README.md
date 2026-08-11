@@ -181,8 +181,8 @@ that variant carries and the others don't (`prompts/gemini.md`, PR #50).
 
 | Mockup | Build size | Notes |
 |---|---|---|
-| `hold.html` | **S** | Single page, one animation, no images. The 56 vmin hero needs a real check on short laptop viewports — the fold is the entire argument, so it must not clip. |
-| `line.html` | **S** | Smallest. The `clamp()` hook wants testing at 320 px and at 2560 px; that one line is the whole design and it has to break correctly at both ends. |
+| `hold.html` | **S** | Single page, one animation, no images. The 56 vmin hero holds at 1440 × 700 (checked) — the fold is the entire argument, so re-check it if the hero grows. |
+| `line.html` | **S** | Smallest. The `clamp()` hook was checked at 390 px and 1440 px; that one line is the whole design, so re-check both ends if its wording changes. |
 | `cadence.html` | **S–M** | Most content and the most words to keep true — the transcript is quoted from `prompts/claude.md` and drifts if the prompt's worked example changes. Worth a comment in the prompt file pointing at it. |
 | Any of them | **+S** | Clipboard JS, a rendered OG PNG, real `<meta>` tags, and DNS. None of that is design work, but none of it is free either. |
 

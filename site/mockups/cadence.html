@@ -186,6 +186,8 @@
     text-transform:uppercase; margin-bottom:7px}
   @media (max-width:900px){ .anno{display:none} }
 
+  /* the tagline is not load-bearing — drop it before it crowds the wordmark */
+  @media (max-width:560px){ .top .free{display:none} }
   @media (max-width:560px){
     .turn{grid-template-columns:21px 1fr; gap:0 16px}
     .tape::before{left:10px}
