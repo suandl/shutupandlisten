@@ -1,0 +1,21 @@
+{
+  "name": "b1-03-unpunctuated-pause-no-cue",
+  "description": "The ordinary case, and the one that decides B1. A thinker pauses mid-thought after a clause that carries NO linguistic cue — no trailing conjunction, no discourse marker, and no terminal punctuation, because STT routinely drops it. LinguisticEOU has no evidence either way and returns its 0.6 'no strong cue' default, which is ABOVE the 0.5 completion threshold, so the pause reads as a finished thought, the veto never fires, and only the bare floor stands between the thinker and an interruption. Nothing here is adversarial: this is unremarkable thinking-out-loud at the shipped defaults.",
+  "groundTruth": {
+    "midThoughtPauses": [
+      { "t": 3000, "note": "1200ms thinking pause mid-thought; the thinker resumes at 4200 with the second half of the same sentence" }
+    ],
+    "landings": [
+      { "t": 7000, "note": "the thought is finished" }
+    ]
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 3000, "type": "speech-end", "text": "I've been trying to work out why the deploy keeps failing on the staging box" },
+    { "t": 3050, "type": "eou", "source": "linguistic" },
+    { "t": 4200, "type": "speech-start" },
+    { "t": 7000, "type": "speech-end", "text": "and it works fine locally every single time." },
+    { "t": 7050, "type": "eou", "source": "linguistic" },
+    { "t": 10000, "type": "tick" }
+  ]
+}

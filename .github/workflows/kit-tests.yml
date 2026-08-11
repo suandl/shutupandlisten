@@ -1,0 +1,89 @@
+name: Kit tests
+
+# The first AUTOMATICALLY-TRIGGERED iOS CI job in this repo.
+#
+# Until now .github/workflows held only ios-visual.yml (workflow_dispatch-only,
+# macos-26, drives a simulator) and promptfoo.yml (label/dispatch-gated, paid API
+# calls). Nothing ran `swift test`, so the Kit — including the turn engine and the
+# response-hierarchy gate — had no automated execution at all, and this epic has
+# already merged Swift that three review passes could not compile.
+#
+# WHY UBUNTU AND NOT macos-26
+# ShutUpAndListenKit is deliberately headless-clean: TurnEngine is a pure port of
+# spec/turn-state-machine.md with no audio and no UI, TranscriptCore and
+# ClaudeClient add only Foundation (URLSession behind `canImport(FoundationNetworking)`),
+# and Package.swift keeps the platform floors as string literals precisely so a
+# non-Xcode toolchain can build it (see its header comment). So the whole package
+# compiles and tests on Linux. An ubuntu-latest runner is 1x billing and ~seconds
+# of queue; macos-26 is 10x billing and exists in ios-visual.yml for the one thing
+# that genuinely needs it — a booted simulator and the iOS 26 SDK. Nothing here
+# needs either.
+#
+# The official swift Docker image pins the toolchain exactly and needs no
+# marketplace action to install it.
+#
+# SCOPE: the Kit only. The App target (ios/App, incl. SessionController.swift) is
+# NOT built here — it needs the iOS SDK and a simulator, which is ios-visual.yml's
+# job. See su-xkmq.4 item 3, which tracks giving ios-visual.yml a real trigger.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/ShutUpAndListenKit/**'
+      - 'spec/turn-vectors/**'
+      - '.github/workflows/kit-tests.yml'
+  pull_request:
+    paths:
+      - 'ios/ShutUpAndListenKit/**'
+      - 'spec/turn-vectors/**'
+      - '.github/workflows/kit-tests.yml'
+
+jobs:
+  swift-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+
+      # checkout writes the tree as a different uid than the container user, so
+      # git refuses to read it as a repo. Nothing here needs git, but SwiftPM
+      # probes for it and the warning is noise at best.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Toolchain
+        run: swift --version
+
+      # Compile everything (including test targets) as its own step, so a build
+      # break reads as a build break rather than as a test failure.
+      - name: Build
+        run: swift build --package-path ios/ShutUpAndListenKit --build-tests
+
+      # The deliverable of su-uzy9.4: replay the B1 vectors through the real gate
+      # path (TurnDetector -> AnalystCadence -> CandidatePool -> ResponseHierarchy)
+      # and score them against usefulness-bar B1. Run FIRST and on its own so the
+      # verdict is legible in the log and cannot be confused with an unrelated
+      # failure elsewhere in the Kit.
+      #
+      # A FAILURE HERE IS A MEASUREMENT RESULT, not a broken build: it means the
+      # gate spoke into an unfinished thought. Per
+      # docs/on-device-quiet-companion-recommendation.md that is to be escalated,
+      # not tuned away. Do not "fix" it by weakening a vector.
+      - name: B1 gate measurement
+        run: swift test --package-path ios/ShutUpAndListenKit --filter B1GateReplayTests
+
+      # The REST of the Kit. `if: always()` so the B1 verdict above never hides
+      # this one — and `--skip` so this one never re-reports it.
+      #
+      # B1GateReplayTests is EXPECTED red (see the step above and
+      # docs/findings/b1-gate-measurement-2026-08.md). Left in the suite it would
+      # pin this step red too, for a reason already reported one step earlier —
+      # and a step that is permanently red cannot tell anyone when something ELSE
+      # in the Kit breaks. Skipping it here costs the measurement nothing: it
+      # still runs, still prints its report, and still fails the job, in its own
+      # step. This is not weakening the bar; it is keeping a second signal alive.
+      - name: Kit test suite (excluding the B1 measurement)
+        if: always()
+        run: swift test --package-path ios/ShutUpAndListenKit --skip B1GateReplayTests

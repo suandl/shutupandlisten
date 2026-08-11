@@ -1,0 +1,21 @@
+{
+  "name": "b1-01-trailing-conjunction-pause",
+  "description": "A thinker pauses mid-sentence right after a trailing conjunction, then resumes and lands the thought. The linguistic EOU reads the pause as 'still going', the asymmetric veto extends the patience window past the resume, and the window never closes — so the gate is never even asked. The favourable case for the architecture: this is what the gate is supposed to do.",
+  "groundTruth": {
+    "midThoughtPauses": [
+      { "t": 2600, "note": "1500ms breath after '...and' — the next clause was already in flight" }
+    ],
+    "landings": [
+      { "t": 7200, "note": "the thought is finished and handed over" }
+    ]
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 2600, "type": "speech-end", "text": "I keep coming back to the deploy thing and" },
+    { "t": 2650, "type": "eou", "source": "linguistic" },
+    { "t": 4100, "type": "speech-start" },
+    { "t": 7200, "type": "speech-end", "text": "the part that bugs me is it only fails on staging." },
+    { "t": 7250, "type": "eou", "source": "linguistic" },
+    { "t": 10000, "type": "tick" }
+  ]
+}
