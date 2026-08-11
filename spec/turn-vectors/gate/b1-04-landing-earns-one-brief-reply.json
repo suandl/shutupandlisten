@@ -1,6 +1,6 @@
 {
   "name": "b1-04-landing-earns-one-brief-reply",
-  "description": "The other half of the bar: holding silence is only useful if the companion still speaks when the thought genuinely lands. A brief opening aside earns a rules-only acknowledgment; that finished turn is what lets the analyst cadence run and fill the candidate pool; the second thought then pauses mid-sentence (held by the veto) and lands, and the landing draws ONE brief, still-fresh candidate from the pool. Exercises the whole chain — TurnDetector, AnalystCadence, CandidatePool, ResponseHierarchy — rather than the gate alone.",
+  "description": "The other half of the bar: holding silence is only useful if the companion still speaks when the thought genuinely lands. The opening thought is substantive, so it both earns a reflection and marks the analyst — and the pool is necessarily still cold there, so that first reply costs a live model call. The cadence cycle then runs and warms the pool; the second thought pauses mid-sentence (held by the veto) and lands, and the landing draws ONE brief, still-fresh candidate from the pool. Exercises the whole chain — TurnDetector, AnalystCadence, CandidatePool, ResponseHierarchy — rather than the gate alone. The opening turn is deliberately at or above GateConfig.substantiveWords: the host marks only a SUBSTANTIVE evaluated pause for the analyst, so a brief aside here would leave the pool cold at the landing and the vector would measure the live-call fallback twice instead of the pool path once.",
   "analyst": {
     "candidates": [
       { "text": "What made you look at the health check rather than the deploy itself?", "register": "question" },
@@ -12,13 +12,13 @@
       { "t": 7000, "note": "trailed off on 'like' — the comparison was still being assembled" }
     ],
     "landings": [
-      { "t": 2500, "note": "a short finished aside — earns the rules-only acknowledge rung, no model" },
-      { "t": 11000, "note": "the substantive thought lands — earns exactly one brief reply" }
+      { "t": 2500, "note": "the opening thought lands — substantive, so it earns one reflection AND marks the analyst; nothing has been analyzed yet, so this reply can only be a live call" },
+      { "t": 11000, "note": "the substantive thought lands — earns exactly one brief reply, this one drawn from the pool the first landing warmed" }
     ]
   },
   "events": [
     { "t": 0, "type": "speech-start" },
-    { "t": 2500, "type": "speech-end", "text": "okay so here's the thing that's been bugging me all week." },
+    { "t": 2500, "type": "speech-end", "text": "okay so the deploy on staging keeps falling over and the health check swears everything is fine." },
     { "t": 2550, "type": "eou", "source": "linguistic" },
     { "t": 5000, "type": "speech-start" },
     { "t": 7000, "type": "speech-end", "text": "and the more I look at it the more it seems like" },

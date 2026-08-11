@@ -15,12 +15,35 @@
 //   does the patience window close?    → TurnDetector (the asymmetric veto)
 //   silence, ack, reflection, question?→ decideTier  (the gate)
 //   is a backchannel actually spoken?  → resolveAcknowledge
+//   is a pause worth analyzing?        → the gate's own GateConfig.substantiveWords
 //   may the analyst refresh the pool?  → AnalystCadence.shouldRecompute
 //   is a candidate still fresh?        → CandidatePool.expire / .best(register:)
 //
 // Nothing here re-states a threshold, a word count, or a silence rule. A test
 // that modelled the policy would prove nothing about the policy, so it doesn't:
 // it feeds the real event stream in and records what the real gate did.
+//
+// THE ANALYST TRIGGER IS THE HOST'S, NOT THE HARNESS'S
+// ios/App/SessionController.swift is the only host of this engine, and its
+// analyst wiring is three specific things this harness mirrors exactly:
+//
+//   1. a pause is marked at the EVALUATED PAUSE — `noteAnalyzablePause`, called
+//      from `evaluate()` before `decideTier` — and NOT at `turnEnd`, which the
+//      machine emits only when the gate answers `speak` (spec §4b). Marking on
+//      `turnEnd` is the behaviour the host deliberately moved OFF: it left the
+//      pool cold at exactly the pause where a pre-warmed hint was meant to be
+//      ready, because a pause met with silence emits no `turnEnd` at all.
+//   2. only a SUBSTANTIVE pause marks it: `wordCount(text) >= substantiveWords`,
+//      read off the SAME derived GateConfig the gate reads, so a retuned knob
+//      can never leave the two disagreeing. One pause is worth one mark — the
+//      (turn, evaluation) key — however often it is re-evaluated on evidence.
+//   3. the cycle is a MODEL CALL: started on a host tick, `inFlight` until it
+//      returns, and its candidates are anchored to the transcript as it stood
+//      when the cycle STARTED (`recompute` stamps `anchor` at request time, not
+//      at reply time).
+//
+// Get any of these wrong and the pool looks warmer than it can be on a real
+// device — which would overstate the favourable half of this measurement.
 //
 // GROUND TRUTH, NOT EXPECTED OUTPUT
 // The vectors in spec/turn-vectors/gate/ carry `groundTruth` — which pauses are
@@ -127,6 +150,16 @@ private final class GateReplay {
     /// already DECIDED to speak — which is the whole of what B1 measures.
     static let liveModelCall = "<live model call>"
 
+    /// How long an analyst cycle takes to come back. Plumbing, like `tickMs`:
+    /// nothing in the engine reads it and no policy depends on the figure. But
+    /// ZERO would be a claim, and a false one — it would model an analyst that
+    /// answers within the same evaluation that marked the pause, and make every
+    /// landing look pool-backed no matter how the vector is shaped. 1.5 s is the
+    /// order of one short model round-trip (the same figure the shipped
+    /// `responseDurationMs` estimates for one utterance). All the measurement
+    /// depends on is that a cycle takes real time.
+    static let analystLatencyMs: Double = 1500
+
     private let vector: GateVector
     let knobs: TurnKnobs
     private let gateConfig: GateConfig
@@ -144,10 +177,27 @@ private final class GateReplay {
     private var pool = CandidatePool()
     private var analystLastRun: Double?
     private var analystPendingSince: Double?
+    /// A cycle the host has launched and not yet heard back from — the `inFlight`
+    /// guard, plus the anchor it stamped when it sent the request.
+    private var analystInFlight: (dueAt: Double, anchor: Int)?
+    /// Evaluated pauses already handed to the analyst, keyed exactly as the host
+    /// keys them: one substantive pause is worth one mark however often it is
+    /// re-evaluated on fresh evidence.
+    private var analyzedPauses: Set<PauseKey> = []
+
+    private struct PauseKey: Hashable {
+        let turn: Int
+        let evaluation: Int
+    }
 
     private(set) var observations: [GateObservation] = []
     private(set) var bargeIns: [Double] = []
     private(set) var problems: [String] = []
+    /// What the analyst actually did, in order. The pool path is the favourable
+    /// half of this measurement, so the report SHOWS it rather than asserting it:
+    /// a reader can see whether a cycle was ever marked, whether it came back
+    /// before the landing, and how stale its anchor was by then.
+    private(set) var analystLog: [String] = []
 
     init(_ vector: GateVector) {
         self.vector = vector
@@ -199,7 +249,7 @@ private final class GateReplay {
         for step in timeline() {
             switch step {
             case .tick(let t):
-                handle(detector.input(.tick(t: t)))
+                hostTick(t)
 
             case .scripted(let e):
                 switch e.type {
@@ -210,8 +260,6 @@ private final class GateReplay {
                     lastSpeechEnd = e.t
                     appendTranscript(e.text ?? "")
                     handle(detector.input(.speechEnd(t: e.t)))
-                    // The thinker moved on; retire candidates they have drifted past.
-                    pool.expire(currentPosition: finalizedText.count)
 
                 case "eou":
                     if e.source == "linguistic" {
@@ -226,7 +274,7 @@ private final class GateReplay {
                     )))
 
                 case "tick":
-                    handle(detector.input(.tick(t: e.t)))
+                    hostTick(e.t)
 
                 case "decision":
                     // A gate vector never scripts a decision: the point is that
@@ -259,10 +307,13 @@ private final class GateReplay {
                 bargeIns.append(t)
             case .responseEnd(let t, _, _):
                 lastResponseEnd = t
-            case .turnEnd(let t, _, _, _):
-                // A finished turn is what the analyst has to react to.
-                if analystPendingSince == nil { analystPendingSince = t }
-                runAnalystIfDue(now: t)
+            case .turnEnd:
+                // Deliberately NOT the analyst's trigger — see the header. The
+                // machine emits `turnEnd` only when the gate answered `speak`,
+                // so marking here would warm the pool from the listener's own
+                // replies and leave it cold through every withheld pause. The
+                // host marks the evaluated pause instead (`decide` below).
+                break
             case .evaluate(let t, let turn, let evaluation, let reason, _):
                 decide(t: t, turn: turn, evaluation: evaluation, patience: reason)
             case .responseStart:
@@ -271,23 +322,82 @@ private final class GateReplay {
         }
     }
 
-    /// The analyst is a MODEL, so it cannot run headlessly — the vector supplies
-    /// what it would have returned. WHEN it may run is still the engine's call.
-    private func runAnalystIfDue(now: Double) {
+    /// One host tick: the detector first, then the analyst — the order
+    /// `SessionController.onTick` uses, so a pause marked while the detector was
+    /// closing its window can start its cycle on the very same tick.
+    private func hostTick(_ t: Double) {
+        handle(detector.input(.tick(t: t)))
+        analystTick(now: t)
+    }
+
+    /// Mirrors `ConversationAnalyst.tick` on the host's timer: land a cycle that
+    /// has come back, expire against the live transcript, then start a cycle if
+    /// the cadence allows. The analyst is a MODEL, so it cannot run headlessly —
+    /// the vector supplies what it would have returned. WHEN it may run, and
+    /// what is still fresh by the time it lands, stay the engine's call.
+    ///
+    /// The analyst stays TICK-driven for the host's own reason: the case it
+    /// exists to serve is warming the pool DURING a substantive pause, which is
+    /// exactly when no transcript events are arriving.
+    private func analystTick(now: Double) {
+        // A cycle came back. Its candidates carry the anchor stamped when the
+        // request went out, so a thinker who kept talking through the round-trip
+        // gets a pool that is already that much staler — the host's behaviour.
+        if let cycle = analystInFlight, now >= cycle.dueAt {
+            let fresh = candidates(anchoredAt: cycle.anchor)
+            pool.replace(with: fresh)
+            analystInFlight = nil
+            analystLog.append("t=\(now) cycle landed — \(fresh.count) candidate(s) anchored at "
+                + "\(cycle.anchor) chars; transcript is now \(finalizedText.count)")
+        }
+        // `tick` expires against the live transcript before anything else.
+        pool.expire(currentPosition: finalizedText.count)
+
+        guard analystInFlight == nil else { return } // one cycle at a time
         guard AnalystCadence.shouldRecompute(
             nowMs: now, lastRunMs: analystLastRun, pendingSince: analystPendingSince
         ) else { return }
-        let anchor = finalizedText.count
-        let fresh: [Candidate] = (vector.analyst?.candidates ?? []).compactMap { c -> Candidate? in
+        guard !finalizedText.isEmpty else { return } // recompute's own guard
+
+        analystLastRun = now
+        analystPendingSince = nil
+        analystInFlight = (dueAt: now + Self.analystLatencyMs, anchor: finalizedText.count)
+        analystLog.append("t=\(now) cycle started — anchor \(finalizedText.count) chars, "
+            + "due back at \(now + Self.analystLatencyMs)")
+    }
+
+    /// What the vector says the analyst would have returned, anchored where the
+    /// cycle stamped it. Only the model tiers can enter the pool — the host
+    /// filters the rest out, so a fixture offering one is a fixture bug.
+    private func candidates(anchoredAt anchor: Int) -> [Candidate] {
+        (vector.analyst?.candidates ?? []).compactMap { c -> Candidate? in
             guard let register = Tier(rawValue: c.register) else {
                 problems.append("\(vector.name): analyst candidate has unknown register '\(c.register)'")
                 return nil
             }
+            guard register == .reflection || register == .question else {
+                problems.append("\(vector.name): analyst candidate has register '\(c.register)' — "
+                    + "the pool only ever holds the model tiers (reflection/question)")
+                return nil
+            }
             return Candidate(text: c.text, register: register, anchorPosition: anchor)
         }
-        pool.replace(with: fresh)
-        analystLastRun = now
-        analystPendingSince = nil
+    }
+
+    /// Mirrors `SessionController.noteAnalyzablePause`: new material for the
+    /// analyst, marked on the EVALUATED pause and independent of whatever the
+    /// gate answers next. "Substantive" is read off the same derived config the
+    /// gate reads, so a retuned knob cannot leave the two disagreeing.
+    private func noteAnalyzablePause(turn: Int, evaluation: Int, text: String, at t: Double) {
+        guard wordCount(text) >= gateConfig.substantiveWords else {
+            analystLog.append("t=\(t) pause NOT marked — turn \(turn) eval \(evaluation) is "
+                + "\(wordCount(text))w, under the gate's own substantive bar of "
+                + "\(gateConfig.substantiveWords)w")
+            return
+        }
+        guard analyzedPauses.insert(PauseKey(turn: turn, evaluation: evaluation)).inserted else { return }
+        if analystPendingSince == nil { analystPendingSince = t }
+        analystLog.append("t=\(t) pause marked — turn \(turn) eval \(evaluation), \(wordCount(text))w")
     }
 
     /// Answer one `evaluate` with the REAL gate, then hand the detector the
@@ -301,6 +411,8 @@ private final class GateReplay {
             msSinceWeLastSpoke: lastResponseEnd.map { t - $0 } ?? Double.infinity,
             priorDecisions: priorDecisions
         )
+        // New material for the analyst regardless of what the gate answers next.
+        noteAnalyzablePause(turn: turn, evaluation: evaluation, text: utteranceText, at: t)
         let decision = decideTier(ctx, config: gateConfig)
 
         var spoken: String? = nil
@@ -319,6 +431,10 @@ private final class GateReplay {
             source = resolved.spokenText == nil ? "silence" : "rules-ack"
 
         case .reflection, .question:
+            // `analyst.candidate(for:transcriptLength:)`: expire against the
+            // transcript as it stands right now, THEN pick — the freshness check
+            // is the pool's answer, taken at the moment of speaking.
+            pool.expire(currentPosition: finalizedText.count)
             if let candidate = pool.best(register: decision.tier) {
                 spoken = candidate.text
                 source = "pool"
@@ -544,6 +660,11 @@ final class B1GateReplayTests: XCTestCase {
             }
             if s.replay.observations.isEmpty {
                 lines.append("     (the patience window never closed — the gate was never asked)")
+            }
+            // The analyst's own trail: what the pool path actually did here,
+            // rather than a claim that it worked.
+            for entry in s.replay.analystLog {
+                lines.append("     analyst: \(entry)")
             }
             for v in s.violations {
                 lines.append("     ✗ B1 VIOLATION: spoke at t=\(v.observation.t) inside the "

@@ -154,12 +154,25 @@ The runner supplies its own 50 ms tick grid: a patience deadline is only
 *discovered* when an event advances the clock past it, so a replay driven by
 speech alone would attribute an evaluation to whenever the thinker next spoke.
 
+**A vector cannot warm the analyst pool by wishing.** `analyst.candidates` says
+what a cycle *would* return, never *whether* one runs. The runner mirrors the
+host (`ios/App/SessionController.swift`) exactly: a pause is marked for the
+analyst at the **evaluated pause** — not at `turnEnd`, which the machine emits
+only when the gate answered `speak` — and only when it is **substantive**
+(`wordCount >= GateConfig.substantiveWords`, the same number the gate reads), and
+the cycle itself is a model call that takes real time and anchors its candidates
+to the transcript as it stood when it *started*. So a vector whose only analyzed
+pause is a brief aside gets a **cold pool**, and its landing measures the live-
+call fallback — which is what a device would do. Shape the vector for the path
+you mean to measure, and read the runner's per-vector `analyst:` trail to check
+you got it.
+
 | Vector | Asserts |
 |--------|---------|
 | `b1-01-trailing-conjunction-pause` | A pause after a trailing conjunction reads as "still going", the veto extends the floor past the resume, and the window never closes — the gate is never even asked. |
 | `b1-02-filled-pause-disfluency` | Same, twice over, for a filled pause (`um`) and a discourse-marker pause (`,`) inside one unfinished sentence. |
 | `b1-03-unpunctuated-pause-no-cue` | The decisive case: a mid-thought pause with **no** linguistic cue and no terminal punctuation (STT drops it routinely). `LinguisticEOU` returns its 0.6 "no strong cue" default — *above* the 0.5 threshold — so no veto fires and only the bare floor stands between the thinker and an interruption. |
-| `b1-04-landing-earns-one-brief-reply` | The other half of the bar: a landing still earns exactly one brief reply, drawn from a still-fresh pool candidate of the register the gate asked for. |
+| `b1-04-landing-earns-one-brief-reply` | The other half of the bar: a landing still earns exactly one brief reply. Two landings, because the pool has a cold start — the first substantive landing marks the analyst and is answered by a live call, and only the second is drawn from a still-fresh pool candidate of the register the gate asked for. |
 
 ## Provenance / timing-only milestone note
 
