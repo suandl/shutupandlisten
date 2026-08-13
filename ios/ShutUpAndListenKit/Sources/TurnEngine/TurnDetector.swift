@@ -67,8 +67,11 @@ public struct TurnKnobs: Equatable, Sendable {
     /// EOU P(complete) below which the asymmetric veto still EXTENDS the floor, even
     /// when the verdict is `complete`. Decouples patience from the verdict: a
     /// weak-cue pause (LinguisticEOU's 0.6 "no strong cue") stays patient without
-    /// being relabelled incomplete. `>= completionThreshold` by construction — see
-    /// CompletionThreshold.swift. Read only by the detector; the gate never sees it.
+    /// being relabelled incomplete. Must be `>= completionThreshold` to mean anything;
+    /// the DEFAULTS satisfy that (see CompletionThreshold.swift) but
+    /// `completionThreshold` is live-tunable and this one is not, so a retune can
+    /// invert them — `extended()` therefore floors the bar at `completionThreshold`
+    /// rather than trusting the pair. Read only by the detector; the gate never sees it.
     public var confidentCompletionThreshold: Double
     /// Length (ms) the response is expected to hold the floor. The iOS host sets this
     /// per-response from a TTS duration estimate just before answering `speak`.
@@ -268,21 +271,45 @@ public final class TurnDetector {
         onEmit?(e)
     }
 
+    /// The confidence bar the veto actually applies: never below `completionThreshold`.
+    ///
+    /// Decoupling the two B1 mechanisms (su-uzy9.5) made the veto read a SECOND,
+    /// higher number — but `completionThreshold` is live-tunable (KnobsView) while
+    /// `confidentCompletionThreshold` is a fixed default, so a retune past 0.8
+    /// INVERTS the pair. That un-decouples them in the one direction that costs
+    /// patience: a pause whose score sits in [confident, completion) is called
+    /// `.incomplete` by resolveVerdict and yet clears the confidence bar, so the veto
+    /// does not extend — a floor extension the two-valued rule below would have
+    /// bought, lost to a knob whose whole advertised effect is "more patient".
+    ///
+    /// The bands only ever meant anything ordered — CompletionThreshold.swift
+    /// specifies `confidentCompletionThreshold >= completionThreshold` — so enforce
+    /// the ordering where it is READ rather than trusting it to hold. Here and not at
+    /// the knob boundary because `knobs` is settable at any time and callers build
+    /// `TurnKnobs` directly (the replay harness, the vectors).
+    ///
+    /// Mirrors web `TurnDetector.confidentBar()`. At the shipped defaults (0.5, 0.8)
+    /// this is 0.8 and nothing moves.
+    private func confidentBar() -> Double {
+        max(knobs.confidentCompletionThreshold, knobs.completionThreshold)
+    }
+
     /// Whether the current pause's deadline is extended by the asymmetric veto
     /// (spec §2 — it may only LENGTHEN patience). It fires for any pause that is not
-    /// CONFIDENTLY complete: given a graded probability the bar is
-    /// `confidentCompletionThreshold`, so weak evidence of completeness (e.g.
-    /// LinguisticEOU's no-strong-cue 0.6) still extends the floor WITHOUT the verdict
-    /// having to claim the utterance is incomplete. The gate's rule-2 silence keeps
-    /// the lower `completionThreshold`, so the two B1 mechanisms no longer read one
-    /// number. A bare verdict with no probability — the golden scenario vectors, or a
-    /// caller supplying only `complete`/`incomplete` — keeps the original two-valued
-    /// rule. A non-finite score is not evidence of completeness, so it too extends,
-    /// matching resolveVerdict's NaN → `.incomplete`.
+    /// CONFIDENTLY complete: given a graded probability the bar is `confidentBar()`,
+    /// so weak evidence of completeness (e.g. LinguisticEOU's no-strong-cue 0.6)
+    /// still extends the floor WITHOUT the verdict having to claim the utterance is
+    /// incomplete. The gate's rule-2 silence keeps the lower `completionThreshold`,
+    /// so the two B1 mechanisms no longer read one number — but the veto's bar is
+    /// floored at the gate's, which keeps the guarantee that an `.incomplete` verdict
+    /// ALWAYS extends. A bare verdict with no probability — the golden scenario
+    /// vectors, or a caller supplying only `complete`/`incomplete` — keeps the
+    /// original two-valued rule. A non-finite score is not evidence of completeness,
+    /// so it too extends, matching resolveVerdict's NaN → `.incomplete`.
     private func extended() -> Bool {
         guard knobs.useSmartTurn else { return false }
         if let p = lastCompletionProb {
-            return !(p >= knobs.confidentCompletionThreshold)
+            return !(p >= confidentBar())
         }
         return verdict == .incomplete
     }

@@ -67,8 +67,11 @@ export interface TurnKnobs {
    * smart-turn P(complete) below which the asymmetric veto still EXTENDS the floor,
    * even when the verdict is `complete`. Decouples patience from the verdict: a
    * weak-cue pause (the linguistic EOU's 0.6 "no strong cue") stays patient without
-   * being relabelled incomplete. `>= completionThreshold` by construction — see
-   * completion-threshold.ts. Read only by the detector; the gate never sees it.
+   * being relabelled incomplete. Must be `>= completionThreshold` to mean anything;
+   * the DEFAULTS satisfy that (see completion-threshold.ts) but `completionThreshold`
+   * is a live knob and this one is not, so a retune can invert them — `extended()`
+   * therefore floors the bar at `completionThreshold` rather than trusting the pair.
+   * Read only by the detector; the gate never sees it.
    */
   confidentCompletionThreshold: number;
   /** Length (ms) of the stubbed canned response (timing-only milestone). */
@@ -305,21 +308,49 @@ export class TurnDetector {
   }
 
   /**
+   * The confidence bar the veto actually applies: never below `completionThreshold`.
+   *
+   * Decoupling the two B1 mechanisms (su-uzy9.5) made the veto read a SECOND, higher
+   * number — but only `completionThreshold` has a live knob (0..1, knobs.ts), while
+   * `confidentCompletionThreshold` is a fixed default. Raise the slider past 0.8 and
+   * the pair INVERTS, which un-decouples them in the one direction that costs
+   * patience: a pause whose score sits in [confident, completion) is called
+   * `incomplete` by resolveVerdict and yet clears the confidence bar, so the veto
+   * does not extend. That is a floor extension the two-valued rule below would have
+   * bought, silently lost to a knob whose whole advertised effect is "more patient".
+   *
+   * The bands only ever meant anything ordered — completion-threshold.ts specifies
+   * `confidentCompletionThreshold >= completionThreshold` — so enforce the ordering
+   * where it is READ rather than trusting it to hold. Here and not in knobs.ts
+   * because `setKnobs()` takes a partial at any time and callers construct knobs
+   * directly (the replay harness, the vectors), so every one of those paths would
+   * need its own guard.
+   *
+   * Splitting the thresholds is preserved exactly wherever the pair is ordered — at
+   * the shipped defaults (0.5, 0.8) this is 0.8 and nothing moves.
+   */
+  private confidentBar(): number {
+    return Math.max(this.knobs.confidentCompletionThreshold, this.knobs.completionThreshold);
+  }
+
+  /**
    * Whether the current pause's deadline is extended by the asymmetric veto (spec §2
    * — it may only LENGTHEN patience). It fires for any pause that is not CONFIDENTLY
-   * complete: given a graded probability the bar is `confidentCompletionThreshold`, so
-   * weak evidence of completeness (e.g. the linguistic EOU's no-strong-cue 0.6) still
-   * extends the floor WITHOUT the verdict having to claim the utterance is incomplete.
-   * The gate's rule-2 silence keeps the lower `completionThreshold`, so the two B1
-   * mechanisms no longer read one number. A bare verdict with no probability — the
-   * golden scenario vectors, or a caller supplying only `complete`/`incomplete` —
-   * keeps the original two-valued rule. A non-finite score is not evidence of
-   * completeness, so it too extends, matching resolveVerdict's NaN → `incomplete`.
+   * complete: given a graded probability the bar is `confidentBar()`, so weak evidence
+   * of completeness (e.g. the linguistic EOU's no-strong-cue 0.6) still extends the
+   * floor WITHOUT the verdict having to claim the utterance is incomplete. The gate's
+   * rule-2 silence keeps the lower `completionThreshold`, so the two B1 mechanisms no
+   * longer read one number — but the veto's bar is floored at the gate's, which keeps
+   * the guarantee that an `incomplete` verdict ALWAYS extends. A bare verdict with no
+   * probability — the golden scenario vectors, or a caller supplying only
+   * `complete`/`incomplete` — keeps the original two-valued rule. A non-finite score
+   * is not evidence of completeness, so it too extends, matching resolveVerdict's
+   * NaN → `incomplete`.
    */
   private extended(): boolean {
     if (!this.knobs.useSmartTurn) return false;
     if (this.lastCompletionProb !== null) {
-      return !(this.lastCompletionProb >= this.knobs.confidentCompletionThreshold);
+      return !(this.lastCompletionProb >= this.confidentBar());
     }
     return this.verdict === 'incomplete';
   }

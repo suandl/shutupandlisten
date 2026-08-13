@@ -34,6 +34,17 @@
 // The live app also derives the gate's runtime value from the detector's live knob
 // (`GateConfig.derived(from:)`), so a retune of `completionThreshold` still moves
 // both readers at once; the confident threshold is the detector's alone.
+//
+// ORDERING IS A RUNTIME PROPERTY, NOT A CONSTRUCTION ONE. The band only exists while
+// `confidentCompletionThreshold >= completionThreshold`, and only the DEFAULTS below
+// are pinned that way: `completionThreshold` is live-tunable and the confident bar is
+// not, so any retune past 0.8 inverts the pair. An inverted pair is worse than a
+// welded one — a pause scoring inside the inverted band is called `.incomplete` and
+// STILL clears the confidence bar, so it collects neither the veto's extra patience
+// nor rule-2's silence, which is the whole B1 hold lost to a knob advertised as "more
+// patient". So the detector floors its bar at `completionThreshold` when it reads
+// them (TurnDetector `confidentBar()`) rather than trusting the two numbers to stay
+// ordered.
 
 /// EOU P(complete) at/above which a pause reads as a FINISHED thought; below it the
 /// thinker is positively mid-thought and the gate holds silence (rule 2). Higher ⇒
@@ -46,5 +57,7 @@ public let defaultCompletionThreshold: Double = 0.5
 /// (terminal punctuation 0.85, wrap-up 0.95): only a POSITIVE completeness cue
 /// releases the floor, and the mere absence of a cue keeps it patient. Must be
 /// ≥ `defaultCompletionThreshold`; the band between them is the "weak evidence of
-/// completeness" that earns patience but is never called incomplete.
+/// completeness" that earns patience but is never called incomplete. That ordering is
+/// pinned HERE only — a live `completionThreshold` can exceed this, which is why the
+/// detector floors its bar rather than assuming it (see the header).
 public let defaultConfidentCompletionThreshold: Double = 0.8

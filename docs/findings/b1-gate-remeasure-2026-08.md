@@ -65,18 +65,61 @@ boundary the gate holds silence below is still 0.5. It adds a higher bar for a
 *different* decision — how long to stay patient.
 
 The graded probability is only consulted when the EOU evidence carries one. A
-bare `complete`/`incomplete` verdict with no probability — the golden scenario
-vectors, and any caller that supplies only a verdict — falls through the original
-two-valued rule unchanged, which is why the parity contract in
-`spec/turn-vectors/` is untouched (those vectors carry explicit verdicts, never a
-probability). Across every vector in the repo, `b1-03`'s 0.6 is the *only*
-probability that lands in the `[0.5, 0.8)` band, so it is the only behaviour that
-moves.
+bare `complete`/`incomplete` verdict with no probability — the pre-existing golden
+scenario vectors, and any caller that supplies only a verdict — falls through the
+original two-valued rule unchanged, which is why no *existing* vector in
+`spec/turn-vectors/scenarios/` changed behaviour (each carries an explicit verdict,
+never a probability). Of the probabilities that appear anywhere in the repo,
+`b1-03`'s 0.6 is the only one landing in the `[0.5, 0.8)` band, so it is the only
+pre-existing behaviour that moves. (Scenario vector 12, added by the fix in §1a
+below, is the first to carry a probability — deliberately, since the ordering it
+pins is not expressible with a bare verdict.)
 
 Files (mirrored across both runtimes, per the standing parity discipline):
 `ios/ShutUpAndListenKit/Sources/TurnEngine/{CompletionThreshold,TurnDetector}.swift`
 and `web/src/{completion-threshold,turn-detection}.ts`. The gate
 (`ResponseHierarchy.swift` / `response-hierarchy.ts`) is not touched.
+
+## 1a. The ordering the band depends on is enforced, not assumed
+
+Everything above holds *while `confidentCompletionThreshold >= completionThreshold`*
+— an inverted pair has no band at all. The pre-open signoff on this branch (su-k0dl,
+reworked as su-g805) found that only the DEFAULTS were pinned that way:
+`completionThreshold` carries a live 0..1 knob (the URL param and the UI slider;
+`web/src/knobs.ts`, iOS `KnobsView`), while `confidentCompletionThreshold` carries no
+knob at all. Retune the first past 0.8 and the two invert.
+
+An inverted pair is *worse than the welded single number this section replaced*. A
+pause scoring in the inverted band — say `P(complete) = 0.85` with the knob at 0.9 —
+is called `incomplete` by `resolveVerdict` (0.85 < 0.9) and yet clears the fixed 0.8
+confidence bar, so the veto does not fire. On web that is not merely a shorter floor:
+`main.ts` hands the gate the detector's patience *reason* bridged back to a synthetic
+0/1 (`completionProbFromTurnEnd`), so a lost extension re-enters the gate as
+`completionProb: 1` — "certainly complete" — and rule-2 silence is skipped too. Both
+B1 mechanisms drop the pause at once, from a knob whose entire advertised effect is
+"more patient". (On iOS the demo host threads the real score to the gate, so only the
+veto half is lost there.)
+
+The fix enforces the ordering where the pair is READ — `extended()` floors its bar at
+`max(confidentCompletionThreshold, completionThreshold)` in both runtimes — rather
+than trusting two independently-settable numbers to stay ordered. At the shipped
+defaults the bar is 0.8 and nothing in §1 or §2 moves; what it restores is the
+asymmetric veto's invariant that an `incomplete` verdict may only ever LENGTHEN
+patience (spec §2), for *any* setting of the two knobs.
+
+It is floored at the read, not normalised at the knob boundary, because `setKnobs()`
+takes a partial at any time and callers construct knobs directly (the replay harness,
+the vectors) — each of those paths would otherwise need its own guard.
+
+Pinned by scenario vector `12-retuned-threshold-still-extends` — both runtimes replay
+it, so the ordering is a parity contract rather than a web-side test — plus five unit
+tests in `web/src/turn-detection.test.ts`. Three are regressions and fail against the
+pre-fix detector, as does the vector in both runtimes: the inverted-pair case, the
+same invariant swept across four orderings of the two thresholds, and an end-to-end
+check that a retuned threshold holds the pause in *both* mechanisms. The other two
+characterise §1's band itself (the 0.6 weak cue extends, the 0.85 positive cue
+releases) and pass either way — they had no test at all before, which is why the
+inversion went unnoticed.
 
 ## 2. The result
 
@@ -166,10 +209,13 @@ recorded measurement, is now green. The replay produced (abridged):
 
 The change was mirrored to the web TypeScript parity runtime (the documented
 second implementation of the same spec): `npx tsc --noEmit` is clean and
-`node --test` reports **394 passing, 0 failing** — including
-`response-hierarchy`'s "the detector and the gate default to the SAME completion
-threshold" (still true: the shared boundary is 0.5; the confident threshold is
-the detector's alone) and the `turn-detection` extension vectors.
+`node --test` reports **400 passing, 0 failing, 3 skipped** (394 before the §1a
+fix added its five unit tests and a vector) — including `response-hierarchy`'s
+"the detector and the gate default to the SAME completion threshold" (still true:
+the shared boundary is 0.5; the confident threshold is the detector's alone) and
+the `turn-detection` extension vectors. The Swift suite is **201 passing, 0
+failing**; the scenario-vector replay is a single test that loops the directory,
+so §1a's vector does not move that count.
 
 ## 5. What this does and does not settle
 

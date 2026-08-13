@@ -21,6 +21,10 @@ import { dirname, join } from 'node:path';
 
 import { TurnDetector } from './turn-detection.ts';
 import type { InputEvent, OutputEvent, TurnKnobs } from './turn-detection.ts';
+// The last block checks the two B1 mechanisms together, so it needs the gate the
+// detector's patience reason is bridged into — see that test for why it crosses over.
+import { decideTier, completionProbFromTurnEnd, type TurnEndReason } from './response-hierarchy.ts';
+import { gateConfigFromTurnKnobs } from './knobs.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const scenariosDir = join(here, '../../spec/turn-vectors/scenarios');
@@ -421,4 +425,137 @@ test('deciding: a host answering from within onEmit gets one ordered, complete s
   ]);
   assert.deepEqual(seen.slice(1), out, 'the callback saw exactly what the caller was returned');
   assert.equal(det.state, 'responding');
+});
+
+// ── The graded veto and the bar it reads (su-uzy9.5) ──
+//
+// Decoupling the two B1 mechanisms gave the veto its own, higher bar
+// (`confidentCompletionThreshold`) while the gate's rule-2 silence kept
+// `completionThreshold`. These pin both halves of that split — and then the
+// ORDERING it silently depends on, which is the half that had no test.
+
+test('veto: a weak-cue score extends the floor without the verdict calling it incomplete', () => {
+  // 0.6 is the linguistic EOU's "no strong cue" reading: >= completionThreshold (0.5)
+  // so the verdict is `complete`, but < confidentCompletionThreshold (0.8) so patience
+  // is still bought. That band IS the fix — it could not exist while one number served
+  // both readers, which is what let an uncued mid-thought pause defeat B1.
+  const det = new TurnDetector({ silenceFloorMs: 2000, incompleteExtensionMs: 4000 });
+  const out = [
+    ...det.input({ t: 0, type: 'speech-start' }),
+    ...det.input({ t: 2000, type: 'speech-end' }),
+    ...det.input({ t: 2100, type: 'eou', completionProb: 0.6 }),
+    ...det.input({ t: 10000, type: 'tick' }),
+  ];
+  assert.equal(det.peek(10000).verdict, 'complete', 'the evidence is not relabelled incomplete');
+  const evals = byType(out, 'evaluate') as Array<OutputEvent & { reason: string }>;
+  assert.equal(evals[0].t, 8000, 'floor (2000) + extension (4000) past speech-end (2000)');
+  assert.equal(evals[0].reason, 'extended', 'weak evidence of completeness still buys patience');
+});
+
+test('veto: a positive completeness cue releases the floor', () => {
+  const det = new TurnDetector({ silenceFloorMs: 2000, incompleteExtensionMs: 4000 });
+  const out = [
+    ...det.input({ t: 0, type: 'speech-start' }),
+    ...det.input({ t: 2000, type: 'speech-end' }),
+    ...det.input({ t: 2100, type: 'eou', completionProb: 0.85 }), // terminal punctuation
+    ...det.input({ t: 10000, type: 'tick' }),
+  ];
+  const evals = byType(out, 'evaluate') as Array<OutputEvent & { reason: string }>;
+  assert.equal(evals[0].t, 4000, 'bare floor: 0.85 >= 0.8 reads as confidently finished');
+  assert.equal(evals[0].reason, 'floor');
+});
+
+// REGRESSION (su-g805, pre-open signoff on su-uzy9.5). `completionThreshold` carries a
+// live 0..1 slider; `confidentCompletionThreshold` carries no knob at all. Raise the
+// slider past 0.8 and the pair INVERTS — and a score inside the inverted band was
+// called `incomplete` by resolveVerdict while still clearing the fixed confidence bar,
+// so the pause collected no extension. The veto's bar is floored at
+// `completionThreshold`, so the asymmetric veto's guarantee — an `incomplete` verdict
+// only ever LENGTHENS patience (spec §2) — survives any setting of the two knobs.
+test('veto: an incomplete verdict extends even when completionThreshold exceeds the confident bar', () => {
+  const det = new TurnDetector({
+    silenceFloorMs: 2000,
+    incompleteExtensionMs: 4000,
+    completionThreshold: 0.9, // the live retune
+    // confidentCompletionThreshold stays at its 0.8 default — no knob exposes it
+  });
+  const out = [
+    ...det.input({ t: 0, type: 'speech-start' }),
+    ...det.input({ t: 2000, type: 'speech-end' }),
+    ...det.input({ t: 2100, type: 'eou', completionProb: 0.85 }), // 0.8 <= 0.85 < 0.9
+    ...det.input({ t: 10000, type: 'tick' }),
+  ];
+  assert.equal(det.peek(10000).verdict, 'incomplete', '0.85 < completionThreshold 0.9');
+  const evals = byType(out, 'evaluate') as Array<OutputEvent & { reason: string }>;
+  assert.equal(evals[0].reason, 'extended', 'an incomplete verdict must never lose the extension');
+  assert.equal(evals[0].t, 8000, 'floor (2000) + extension (4000) past speech-end (2000)');
+});
+
+test('veto: incomplete always extends, for every ordering of the two thresholds', () => {
+  // The invariant the band relies on, checked across the ordering rather than assumed:
+  // ordered (the shipped shape), inverted (the live retune), and equal.
+  for (const [completionThreshold, confidentCompletionThreshold] of [
+    [0.5, 0.8],
+    [0.9, 0.8],
+    [0.8, 0.8],
+    [1, 0],
+  ] as const) {
+    const prob = completionThreshold - 0.05; // just under the bar ⇒ verdict `incomplete`
+    const det = new TurnDetector({
+      silenceFloorMs: 2000,
+      incompleteExtensionMs: 4000,
+      completionThreshold,
+      confidentCompletionThreshold,
+    });
+    const label = `completion=${completionThreshold} confident=${confidentCompletionThreshold}`;
+    const out = [
+      ...det.input({ t: 0, type: 'speech-start' }),
+      ...det.input({ t: 2000, type: 'speech-end' }),
+      ...det.input({ t: 2100, type: 'eou', completionProb: prob }),
+      ...det.input({ t: 10000, type: 'tick' }),
+    ];
+    assert.equal(det.peek(10000).verdict, 'incomplete', `${label}: verdict`);
+    const evals = byType(out, 'evaluate') as Array<OutputEvent & { reason: string }>;
+    assert.equal(evals[0].reason, 'extended', `${label}: an incomplete verdict extends`);
+  }
+});
+
+// The two B1 mechanisms, end to end — the failure the signoff actually caught.
+//
+// This crosses into the gate on purpose: on web the gate does not see the classifier's
+// score, it sees the detector's patience REASON bridged back to a synthetic 0/1
+// (main.ts, `completionProbFromTurnEnd`). So a lost extension is not merely a shorter
+// floor — it re-enters the gate as `completionProb: 1`, "certainly complete", and
+// rule-2 silence is skipped for a pause the same knob just called incomplete. Neither
+// mechanism holds, which is precisely the B1 failure the split was meant to fix.
+test('B1: a retuned completion threshold holds the pause in BOTH mechanisms', () => {
+  const det = new TurnDetector({
+    silenceFloorMs: 200,
+    incompleteExtensionMs: 4000,
+    completionThreshold: 0.9,
+  });
+  const out = [
+    ...det.input({ t: 0, type: 'speech-start' }),
+    ...det.input({ t: 1000, type: 'speech-end' }),
+    ...det.input({ t: 1000, type: 'eou', completionProb: 0.85 }),
+    ...det.input({ t: 6000, type: 'tick' }),
+  ];
+  const evaluate = byType(out, 'evaluate')[0] as OutputEvent & { reason: TurnEndReason };
+
+  // Mechanism 1 — the veto extends the patience floor.
+  assert.equal(evaluate.reason, 'extended');
+
+  // Mechanism 2 — the gate holds silence rather than speaking into the thought.
+  const decision = decideTier(
+    {
+      utteranceIndex: 1,
+      utteranceTextSoFar: 'so the thing I keep coming back to is whether we should',
+      completionProb: completionProbFromTurnEnd(evaluate.reason),
+      msSinceSpeechEnd: 4200,
+      msSinceWeLastSpoke: Infinity,
+      priorDecisions: [],
+    },
+    gateConfigFromTurnKnobs(det.config),
+  );
+  assert.equal(decision.tier, 'silence', 'the gate must not speak into a pause it calls incomplete');
 });

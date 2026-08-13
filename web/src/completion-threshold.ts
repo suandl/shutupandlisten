@@ -44,6 +44,18 @@
 // app derives the gate's threshold from the detector's `completionThreshold` knob
 // (knobs.ts `gateConfigFromTurnKnobs`), so retuning that one still moves both readers
 // at once. `confidentCompletionThreshold` is not wired to the gate at all.
+//
+// ORDERING IS A RUNTIME PROPERTY, NOT A CONSTRUCTION ONE. The band only exists while
+// `confidentCompletionThreshold >= completionThreshold`, and only the DEFAULTS below
+// are pinned that way: `completionThreshold` carries a live 0..1 slider and the
+// confident bar carries no knob at all, so any retune past 0.8 inverts the pair. An
+// inverted pair is worse than a welded one — a pause scoring inside the inverted band
+// is called `incomplete` and STILL clears the confidence bar, so it collects neither
+// the veto's extra patience nor (on web, where the gate reads the patience reason
+// through `completionProbFromTurnEnd`) rule-2's silence, which is the whole B1 hold
+// lost to a knob advertised as "more patient". So the detector floors its bar at
+// `completionThreshold` when it reads them (turn-detection.ts `confidentBar()`) rather
+// than trusting the two numbers to stay ordered.
 
 /**
  * smart-turn P(complete) at/above which a pause reads as a FINISHED thought; below it
@@ -63,6 +75,8 @@ export const DEFAULT_COMPLETION_THRESHOLD = 0.5;
  * (terminal punctuation 0.85, wrap-up 0.95): only a POSITIVE completeness cue releases
  * the floor, and the mere absence of a cue keeps it patient. Must be ≥
  * `DEFAULT_COMPLETION_THRESHOLD`; the band between them is the "weak evidence of
- * completeness" that earns patience but is never called incomplete.
+ * completeness" that earns patience but is never called incomplete. That ordering is
+ * pinned HERE only — a live `completionThreshold` can exceed this, which is why the
+ * detector floors its bar rather than assuming it (see the header).
  */
 export const DEFAULT_CONFIDENT_COMPLETION_THRESHOLD = 0.8;
