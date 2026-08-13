@@ -58,6 +58,95 @@ export interface TurnEndMark {
   evaluation: number;
   t: number;
   reason: 'floor' | 'extended';
+  /**
+   * The graded P(complete) behind the pause's verdict at the moment this window
+   * closed (`TurnSnapshot.completionProb`), when there was one.
+   *
+   * Carried because `reason` is NOT a proxy for it. Since su-uzy9.5 decoupled the two
+   * B1 mechanisms, `extended` means "not confidently complete", which includes pauses
+   * the classifier scored ABOVE the gate's own completion threshold — so a consumer
+   * that reconstructs a probability from `reason` alone (`completionProbFromTurnEnd`)
+   * feeds the gate a certainty the classifier never expressed, and rule-2 silence
+   * follows every floor extension. That is the coupling re-formed one layer up.
+   *
+   * Absent/null ⇒ the pause's evidence was a bare two-valued verdict, or there was
+   * none; the reason-bridge is then the correct and only reading. Optional so the
+   * pure grouping contract (and its tests) is unchanged for callers with no score.
+   */
+  completionProb?: number | null;
+}
+
+/** One `evaluate` emit, as the host reads it off the detector. */
+export interface TurnEndClosure {
+  turn: number;
+  evaluation: number;
+  /** The emit's own timestamp — the deadline on a fresh tick, the evidence's arrival on a re-emit. */
+  t: number;
+  reason: 'floor' | 'extended';
+  /**
+   * The detector's graded P(complete) AT THIS EMIT (`TurnSnapshot.completionProb`), or
+   * null when its evidence was a bare two-valued verdict — or had not arrived yet, which
+   * is the blind first evaluation.
+   */
+  completionProb: number | null;
+}
+
+export interface RecordTurnEndResult {
+  marks: TurnEndMark[];
+  /**
+   * `opened` — a new evaluation tick, so this closure is a loop-metric origin the caller
+   * must mark at `t`. `refreshed` — the SAME tick re-asked with better evidence; the
+   * origin has not moved and must not be re-marked.
+   */
+  effect: 'opened' | 'refreshed';
+  /**
+   * The turn whose superseded marks were dropped, and whose loop-metric origin the caller
+   * must clear before marking the new one. Null when nothing was superseded.
+   */
+  clearedTurn: number | null;
+}
+
+/**
+ * Fold one `evaluate` emit into the turn-end marks — the host's whole bookkeeping for
+ * "where did this turn's patience window close, and what did the classifier think".
+ *
+ * Three cases, and the middle one is the bug this function exists to pin (su-l74p):
+ *
+ * - **A new evaluation on a fresh turn** — record it.
+ * - **A re-emit of the SAME evaluation** (§4b: evidence-driven, not clock-driven — an EOU
+ *   verdict landing while the host is still deciding supersedes the outstanding question
+ *   instead of opening a new one). The deadline has not moved, so `t` and `reason` are
+ *   kept from the original emit; the EVIDENCE is what changed, so `completionProb` is
+ *   taken from the re-emit. Skipping the update entirely — which is what main.ts did —
+ *   strands the mark on the evidence the window closed with, and after a BLIND first
+ *   evaluation (deadline before any verdict: `completionProb: null`, `reason: 'floor'`)
+ *   that is no evidence at all. The gate then falls back to `completionProbFromTurnEnd`
+ *   and reads a certain 1, "finished thought", from a pause the classifier has since
+ *   scored 0.3 — and speaks into it. That is B1, the cardinal failure, restored by the
+ *   bookkeeping after the score was threaded correctly everywhere else.
+ * - **A new evaluation on a turn that already has one** — the gate declined, the thinker
+ *   kept going, and the window has closed again further along. The predecessor marked an
+ *   origin for a loop iteration that never happened, so drop it and clear that origin.
+ *
+ * Pure, and returns fresh marks rather than mutating, so the caller's loop-metric writes
+ * stay in the caller and this stays testable without a DOM.
+ */
+export function recordTurnEnd(marks: readonly TurnEndMark[], closure: TurnEndClosure): RecordTurnEndResult {
+  if (marks.some((m) => m.evaluation === closure.evaluation)) {
+    return {
+      marks: marks.map((m) =>
+        m.evaluation === closure.evaluation ? { ...m, completionProb: closure.completionProb } : m,
+      ),
+      effect: 'refreshed',
+      clearedTurn: null,
+    };
+  }
+  const superseded = marks.some((m) => m.turn === closure.turn);
+  return {
+    marks: [...marks.filter((m) => m.turn !== closure.turn), { ...closure }],
+    effect: 'opened',
+    clearedTurn: superseded ? closure.turn : null,
+  };
 }
 
 /** A turn's worth of transcript: its segments in order, and where it ended. */

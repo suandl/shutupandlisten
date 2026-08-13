@@ -56,11 +56,23 @@ public enum ResponseEndReason: String, Codable, Sendable {
 public struct TurnKnobs: Equatable, Sendable {
     /// Patience window: min silence (ms) after speech before a pause may end the turn.
     public var silenceFloorMs: Double
-    /// Extra patience (ms) added when the EOU verdict for the pause is `incomplete`.
+    /// Extra patience (ms) added when the pause's EOU reading is not confidently
+    /// complete (the asymmetric veto — see `confidentCompletionThreshold`).
     public var incompleteExtensionMs: Double
-    /// EOU P(complete) >= this ⇒ `complete`, else `incomplete`. Higher ⇒ more patient.
-    /// The gate thresholds the SAME probability for its rule 2 — see CompletionThreshold.swift.
+    /// EOU P(complete) >= this ⇒ the two-valued `complete`/`incomplete` verdict is
+    /// `complete`, else `incomplete`. This is the gate's rule-2 boundary too (see
+    /// CompletionThreshold.swift) and the value the UI-facing verdict uses. Higher ⇒
+    /// more patient.
     public var completionThreshold: Double
+    /// EOU P(complete) below which the asymmetric veto still EXTENDS the floor, even
+    /// when the verdict is `complete`. Decouples patience from the verdict: a
+    /// weak-cue pause (LinguisticEOU's 0.6 "no strong cue") stays patient without
+    /// being relabelled incomplete. Must be `>= completionThreshold` to mean anything;
+    /// the DEFAULTS satisfy that (see CompletionThreshold.swift) but
+    /// `completionThreshold` is live-tunable and this one is not, so a retune can
+    /// invert them — `extended()` therefore floors the bar at `completionThreshold`
+    /// rather than trusting the pair. Read only by the detector; the gate never sees it.
+    public var confidentCompletionThreshold: Double
     /// Length (ms) the response is expected to hold the floor. The iOS host sets this
     /// per-response from a TTS duration estimate just before answering `speak`.
     public var responseDurationMs: Double
@@ -75,12 +87,14 @@ public struct TurnKnobs: Equatable, Sendable {
         silenceFloorMs: Double = 200,
         incompleteExtensionMs: Double = 4000,
         completionThreshold: Double = defaultCompletionThreshold,
+        confidentCompletionThreshold: Double = defaultConfidentCompletionThreshold,
         responseDurationMs: Double = 1500,
         useSmartTurn: Bool = true
     ) {
         self.silenceFloorMs = silenceFloorMs
         self.incompleteExtensionMs = incompleteExtensionMs
         self.completionThreshold = completionThreshold
+        self.confidentCompletionThreshold = confidentCompletionThreshold
         self.responseDurationMs = responseDurationMs
         self.useSmartTurn = useSmartTurn
     }
@@ -125,6 +139,38 @@ public struct TurnSnapshot: Sendable {
     public let turn: Int
     public let evaluation: Int
     public let verdict: Verdict?
+    /// The graded P(complete) the current pause's `verdict` came from, or nil when
+    /// the evidence was a bare two-valued verdict (or the pause has no evidence yet).
+    ///
+    /// Exposed because `verdict` alone no longer determines what the pause MEANS.
+    /// Decoupling the two B1 mechanisms (su-uzy9.5) gave the veto its own higher bar,
+    /// so a weak-cue score in `[completionThreshold, confidentCompletionThreshold)`
+    /// reads `.complete` and still extends the floor. A host that needs the
+    /// classifier's actual reading — the response gate, whose rule 2 thresholds this
+    /// same probability — cannot recover it from `verdict`, and must NOT recover it
+    /// from the patience `reason` either: `.extended` no longer implies `.incomplete`,
+    /// so bridging the reason back to a certainty (`completionProb(fromTurnEnd:)`)
+    /// re-couples the two mechanisms and hands the gate 0 for a pause scored 0.6.
+    ///
+    /// The detector is the only component that knows which score belongs to the
+    /// CURRENT pause: it clears this wherever it clears `verdict` (speech resume, a
+    /// new pause). A host tracking the score itself must duplicate that lifecycle,
+    /// which is how the two copies drift.
+    ///
+    /// Read it while the snapshot is still the pause's — from an `onEmit` callback,
+    /// which runs inside `input(_:)` before the same call's discrete change can
+    /// resume speech and clear it. A host that instead loops over `input(_:)`'s
+    /// RETURNED events reads post-hoc state, where a resume that landed after the
+    /// deadline has already cleared the score (sul-demo does this, and keeps its own
+    /// `lastEouProb` for that reason).
+    public let completionProb: Double?
+    /// Whether the asymmetric veto is currently extending this pause's floor — i.e.
+    /// whether the live deadline includes `incompleteExtensionMs`.
+    ///
+    /// Same reason as `completionProb`: a UI cannot infer this from `verdict` any
+    /// more, because a weak-cue pause is held open while reading `.complete`. False
+    /// outside `.pending`, where no deadline is being timed.
+    public let extended: Bool
     /// ms until the patience window closes (and evaluation fires), if currently
     /// timing a pause; nil otherwise.
     public let msUntilTurnEnd: Double?
@@ -146,6 +192,13 @@ public final class TurnDetector {
     private var evaluation = 0
     private var silenceStart: Double = 0
     private var verdict: Verdict?
+    /// The graded P(complete) the current pause's `verdict` came from, when the EOU
+    /// evidence was a score rather than a bare verdict. The veto reads THIS against
+    /// `confidentCompletionThreshold`, so weak evidence of completeness extends the
+    /// floor without the verdict having to call the utterance incomplete. nil ⇒ only
+    /// a two-valued verdict was supplied (or the pause has no evidence yet), and the
+    /// veto falls back to `verdict == .incomplete`. Reset with `verdict`.
+    private var lastCompletionProb: Double?
     private var responseStart: Double = 0
     private var clock: Double = 0
     private var buffer: [OutputEvent] = []
@@ -239,6 +292,11 @@ public final class TurnDetector {
             turn: turn,
             evaluation: evaluation,
             verdict: verdict,
+            completionProb: lastCompletionProb,
+            // Scoped to `.pending` to match `msUntilTurnEnd`: the two describe one
+            // live deadline, and reporting an extension while no window is being
+            // timed would invite a caption about a countdown that is not running.
+            extended: _state == .pending && extended(),
             msUntilTurnEnd: msUntilTurnEnd
         )
     }
@@ -250,9 +308,47 @@ public final class TurnDetector {
         onEmit?(e)
     }
 
-    /// Whether the current pause's deadline is extended by an `incomplete` veto.
+    /// The confidence bar the veto actually applies: never below `completionThreshold`.
+    ///
+    /// Decoupling the two B1 mechanisms (su-uzy9.5) made the veto read a SECOND,
+    /// higher number — but `completionThreshold` is live-tunable (KnobsView) while
+    /// `confidentCompletionThreshold` is a fixed default, so a retune past 0.8
+    /// INVERTS the pair. That un-decouples them in the one direction that costs
+    /// patience: a pause whose score sits in [confident, completion) is called
+    /// `.incomplete` by resolveVerdict and yet clears the confidence bar, so the veto
+    /// does not extend — a floor extension the two-valued rule below would have
+    /// bought, lost to a knob whose whole advertised effect is "more patient".
+    ///
+    /// The bands only ever meant anything ordered — CompletionThreshold.swift
+    /// specifies `confidentCompletionThreshold >= completionThreshold` — so enforce
+    /// the ordering where it is READ rather than trusting it to hold. Here and not at
+    /// the knob boundary because `knobs` is settable at any time and callers build
+    /// `TurnKnobs` directly (the replay harness, the vectors).
+    ///
+    /// Mirrors web `TurnDetector.confidentBar()`. At the shipped defaults (0.5, 0.8)
+    /// this is 0.8 and nothing moves.
+    private func confidentBar() -> Double {
+        max(knobs.confidentCompletionThreshold, knobs.completionThreshold)
+    }
+
+    /// Whether the current pause's deadline is extended by the asymmetric veto
+    /// (spec §2 — it may only LENGTHEN patience). It fires for any pause that is not
+    /// CONFIDENTLY complete: given a graded probability the bar is `confidentBar()`,
+    /// so weak evidence of completeness (e.g. LinguisticEOU's no-strong-cue 0.6)
+    /// still extends the floor WITHOUT the verdict having to claim the utterance is
+    /// incomplete. The gate's rule-2 silence keeps the lower `completionThreshold`,
+    /// so the two B1 mechanisms no longer read one number — but the veto's bar is
+    /// floored at the gate's, which keeps the guarantee that an `.incomplete` verdict
+    /// ALWAYS extends. A bare verdict with no probability — the golden scenario
+    /// vectors, or a caller supplying only `complete`/`incomplete` — keeps the
+    /// original two-valued rule. A non-finite score is not evidence of completeness,
+    /// so it too extends, matching resolveVerdict's NaN → `.incomplete`.
     private func extended() -> Bool {
-        knobs.useSmartTurn && verdict == .incomplete
+        guard knobs.useSmartTurn else { return false }
+        if let p = lastCompletionProb {
+            return !(p >= confidentBar())
+        }
+        return verdict == .incomplete
     }
 
     private func deadline() -> Double {
@@ -312,6 +408,7 @@ public final class TurnDetector {
             // otherwise): the thinking-pause is preserved and the SAME turn continues.
             _state = .speaking
             verdict = nil
+            lastCompletionProb = nil
         case .deciding:
             // Resumed while the verdict was still outstanding. Nothing has been
             // spoken — there is no floor to yield and nothing to interrupt — so
@@ -319,6 +416,7 @@ public final class TurnDetector {
             // the SAME turn continues. Ties resolve toward keeping the turn open (§1).
             _state = .speaking
             verdict = nil
+            lastCompletionProb = nil
             evaluationReason = nil
         case .responding:
             // Barge-in — yield the floor instantly and open a fresh turn. The
@@ -338,6 +436,7 @@ public final class TurnDetector {
         _state = .pending
         silenceStart = t
         verdict = nil
+        lastCompletionProb = nil
     }
 
     private func onEou(verdict eventVerdict: Verdict?, completionProb: Double?, t: Double) {
@@ -348,6 +447,11 @@ public final class TurnDetector {
         guard let v = resolveVerdict(verdict: eventVerdict, completionProb: completionProb) else { return }
         let changed = v != verdict
         verdict = v
+        // Keep the graded score the verdict came from so the veto can weigh
+        // confidence directly. When the caller supplied an explicit verdict, leave
+        // this nil so the veto falls back to the two-valued rule — mirroring
+        // resolveVerdict, where an explicit verdict wins over any probability.
+        lastCompletionProb = (eventVerdict == nil) ? completionProb : nil
         // Re-evaluation is EVIDENCE-driven, not clock-driven: fresh EOU evidence
         // arriving while the host is still deciding supersedes the outstanding
         // evaluation. Same evaluation tick: the window has not closed again,

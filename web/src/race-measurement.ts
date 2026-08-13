@@ -163,9 +163,15 @@ export function scorePauseAtFloor(
     {
       utteranceIndex: pause.utteranceIndex ?? 1,
       utteranceTextSoFar: pause.textSoFar,
-      // The exact bridge main.ts feeds the gate: the detector's two-valued turn-end
-      // reason, not the classifier's score. 'floor' ⇒ 1 (the blind "certainly
-      // complete" that bypasses rule 2); 'extended' ⇒ 0 (the veto held).
+      // What main.ts feeds the gate for THIS corpus. main.ts prefers the pause's real
+      // P(complete) and falls back to the turn-end reason when there is none; every
+      // pause here supplies a bare two-valued `verdict` (below), so there never is
+      // one and the fallback arm is the faithful mirror. 'floor' ⇒ 1 (the blind
+      // "certainly complete" that bypasses rule 2); 'extended' ⇒ 0 (the veto held).
+      //
+      // That is not an accident of the corpus — it is the race. The blind first
+      // evaluation fires BEFORE any verdict lands, so the detector has no score to
+      // offer and the bridge is all a host can use, whatever the corpus carries.
       completionProb: completionProbFromTurnEnd(firstDeadline.reason),
       msSinceSpeechEnd: firstDeadline.t - speechEnd,
       msSinceWeLastSpoke: Infinity,

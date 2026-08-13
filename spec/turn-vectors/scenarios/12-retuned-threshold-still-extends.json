@@ -1,0 +1,32 @@
+{
+  "name": "12-retuned-threshold-still-extends",
+  "description": "The asymmetric veto's guarantee survives a live retune of completionThreshold. su-uzy9.5 gave the veto a SECOND, higher bar (confidentCompletionThreshold, 0.8) so a weak-cue pause buys patience without being called incomplete — but only completionThreshold carries a runtime knob, so raising it past 0.8 inverts the pair. Here P(complete)=0.85 sits in that inverted band: it is BELOW completionThreshold (0.9), so the verdict is 'incomplete', while still clearing the fixed 0.8 confidence bar. The veto must extend anyway — an 'incomplete' verdict may only ever LENGTHEN patience (spec §2). Regression for su-g805: before the veto's bar was floored at completionThreshold this closed at the bare floor (4000) with reason 'floor', which on web also bridges back to the gate as 'certainly complete' and skips rule-2 silence, so the pause lost BOTH B1 mechanisms at once.",
+  "knobs": {
+    "silenceFloorMs": 2000,
+    "incompleteExtensionMs": 4000,
+    "completionThreshold": 0.9,
+    "responseDurationMs": 1500,
+    "useSmartTurn": true
+  },
+  "events": [
+    { "t": 0, "type": "speech-start" },
+    { "t": 2000, "type": "speech-end" },
+    { "t": 2100, "type": "eou", "completionProb": 0.85 },
+    { "t": 8000, "type": "decision", "outcome": "speak" },
+    { "t": 10000, "type": "tick" }
+  ],
+  "expected": {
+    "turnStartCount": 1,
+    "turnEndCount": 1,
+    "turnEnds": [
+      { "t": 8000, "turn": 1, "reason": "extended" }
+    ],
+    "emit": [
+      { "t": 0, "type": "turn-start", "turn": 1 },
+      { "t": 8000, "type": "evaluate", "turn": 1, "evaluation": 1, "reason": "extended", "trigger": "deadline" },
+      { "t": 8000, "type": "turn-end", "turn": 1, "evaluation": 1, "reason": "extended" },
+      { "t": 8000, "type": "response-start", "turn": 1 },
+      { "t": 9500, "type": "response-end", "turn": 1, "reason": "completed" }
+    ]
+  }
+}

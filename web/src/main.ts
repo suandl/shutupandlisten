@@ -21,6 +21,7 @@ import { resolveSmartTurnOptions } from './smart-turn-config.ts';
 import { resolveDenoiseOptions } from './denoise-config.ts';
 import {
   groupTranscript,
+  recordTurnEnd,
   type TranscriptSegment,
   type TurnStartMark,
   type TurnEndMark,
@@ -740,21 +741,32 @@ function handleOut(e: OutputEvent): void {
     // The patience window closed. THIS is where the transcript's turn-end marker
     // and the loop metric's first stage belong — the moment the detector read the
     // pause as an end-of-thought — whether or not the companion goes on to speak.
-    // A superseding re-evaluation (same `evaluation`) re-uses the first mark: the
-    // patience deadline is where the window closed, and it has not moved.
+    // A superseding re-evaluation (same `evaluation`) re-uses the first mark's deadline:
+    // that is where the window closed, and it has not moved. Its SCORE is another matter
+    // — the re-emit exists precisely because better evidence arrived — so the mark's
+    // `completionProb` is refreshed from it. `recordTurnEnd` owns that distinction.
     //
     // A NEW evaluation of the same turn is the other case (§4b): the gate declined,
     // the thinker kept going, and the window has now closed again further along. Its
     // predecessor marked an origin for a loop iteration that never happened, so
     // replace it — the same reasoning cancelAbandonedEvaluation clears marks under.
-    if (!turnEnds.some((m) => m.evaluation === e.evaluation)) {
-      if (turnEnds.some((m) => m.turn === e.turn)) {
-        turnEnds = turnEnds.filter((m) => m.turn !== e.turn);
-        loopMetrics.clear(e.turn);
-      }
-      turnEnds.push({ turn: e.turn, evaluation: e.evaluation, t: e.t, reason: e.reason });
-      loopMetrics.mark(e.turn, 'turn-end', e.t);
-    }
+    //
+    // Snapshot the pause's graded EOU score ALONGSIDE its reason. Read here, in the
+    // emit callback, because this is the one moment it is unambiguously this pause's:
+    // `handleOut` runs synchronously inside `detector.input()`, before any later event
+    // can resume speech or open a new pause and clear it. `maybeRespond` runs later (it
+    // waits on STT) and would read a score belonging to some other pause. See
+    // TurnEndMark.completionProb for why the reason alone will not do.
+    const rec = recordTurnEnd(turnEnds, {
+      turn: e.turn,
+      evaluation: e.evaluation,
+      t: e.t,
+      reason: e.reason,
+      completionProb: detector.peek(e.t).completionProb,
+    });
+    turnEnds = rec.marks;
+    if (rec.clearedTurn !== null) loopMetrics.clear(rec.clearedTurn);
+    if (rec.effect === 'opened') loopMetrics.mark(e.turn, 'turn-end', e.t);
     awaiting = { evaluation: e.evaluation, turn: e.turn };
     if (loopActive()) renderTranscript(); // → maybeRespond answers once the transcript resolves
     else answerEvaluation('speak'); // timing-only: the stubbed response, exactly as before
@@ -918,11 +930,23 @@ function maybeRespond(groups: TurnTranscript[]): void {
       {
         utteranceIndex: g.turn,
         utteranceTextSoFar: userText,
-        // Stage-1 bridge: TurnEndMark carries the detector's two-valued reason, not
-        // the classifier's score, so the gate gets certainty stand-ins. Stage 2
-        // threads smart-turn's real P(complete) through here instead — the widened
-        // contract is what lets that be a one-line change (su-lou.10.3).
-        completionProb: completionProbFromTurnEnd(g.end.reason),
+        // The classifier's ACTUAL P(complete) for the pause this window closed on,
+        // falling back to the two-valued reason-bridge only when there was no graded
+        // score (a bare verdict, or a deadline that fired before the verdict landed —
+        // the blind first evaluation of race-measurement.ts).
+        //
+        // Deriving this from `g.end.reason` is the bug su-5l0q fixes. It was faithful
+        // while `extended` meant `verdict === 'incomplete'`, but su-uzy9.5 decoupled
+        // the veto from the verdict: the veto now extends on anything not CONFIDENTLY
+        // complete, so a weak-cue pause scoring 0.6 reads `complete`, is held open —
+        // and then bridged back to the gate as 0, "certainly incomplete". Rule 2 holds
+        // silence on that 0, so the companion waits out the whole extension and then
+        // refuses to speak. That re-couples the two B1 mechanisms through the UI path:
+        // the floor extension once again forces gate-rule-2 silence, which is exactly
+        // what the anchor bead set out to separate. Feeding the real 0.6 lets the two
+        // decide independently — extra patience from the veto, and, if the thinker
+        // really was finished, a reply the unchanged 0.5 gate threshold permits.
+        completionProb: g.end.completionProb ?? completionProbFromTurnEnd(g.end.reason),
         // No segments ⇒ no speech-end to measure from: NaN, the "no measurement"
         // sentinel (never a real 0-length pause), read the fail-safe way a non-finite
         // completionProb is — see the field doc in response-hierarchy.ts.
@@ -935,9 +959,11 @@ function maybeRespond(groups: TurnTranscript[]): void {
       // than re-defaulted — so the UI slider moves ONE boundary, not one of two that
       // silently disagree (knobs.ts `gateConfigFromTurnKnobs`; su-lou.10.5). Read at
       // decision time, so a mid-session retune during the feel-test applies to the
-      // very next turn. Inert today — the bridge above feeds a synthetic 0/1, which
-      // resolves identically for any threshold in (0, 1] — and load-bearing the
-      // moment stage 2 threads the classifier's real score through.
+      // very next turn. Now LOAD-BEARING: the score above is the classifier's real
+      // P(complete) whenever there is one, so this threshold decides an actual
+      // comparison rather than resolving a synthetic 0/1 the same way for any value
+      // in (0, 1]. It stays the gate's boundary alone — the veto's higher confidence
+      // bar is the detector's, and is never wired here (completion-threshold.ts).
       gateConfigFromTurnKnobs(detector.config),
     );
     loopMetrics.mark(g.turn, 'gate', now());
@@ -1134,14 +1160,26 @@ function refreshStage(): void {
   if (snap.state !== 'pending') verdictEl.textContent = snap.verdict ?? '—';
 
   if (snap.state === 'pending' && snap.msUntilTurnEnd !== null) {
+    // `snap.extended` is the detector's OWN answer to "is this deadline extended",
+    // not a re-derivation from the verdict. Since su-uzy9.5 the veto extends on any
+    // pause that is not confidently complete, so a weak-cue pause is held open while
+    // `verdict` reads `complete`; keying the total on `verdict === 'incomplete'` then
+    // omitted the extension it is actually counting down, and rendered e.g. "4100ms
+    // left of 200ms" with no explanation of the hold.
     const total =
-      detector.config.silenceFloorMs +
-      (detector.config.useSmartTurn && snap.verdict === 'incomplete' ? detector.config.incompleteExtensionMs : 0);
+      detector.config.silenceFloorMs + (snap.extended ? detector.config.incompleteExtensionMs : 0);
     const elapsed = Math.max(0, total - snap.msUntilTurnEnd);
     patienceFill.style.width = `${total > 0 ? (elapsed / total) * 100 : 0}%`;
-    patienceCap.textContent = `patience: ${Math.round(snap.msUntilTurnEnd)}ms left of ${total}ms${
-      snap.verdict === 'incomplete' ? ' (held by incomplete veto)' : ''
-    }`;
+    // Name which veto arm is holding: a positively-incomplete read, or the weak-cue
+    // band that buys patience without calling the thought unfinished.
+    const hold = !snap.extended
+      ? ''
+      : snap.verdict === 'incomplete'
+        ? ' (held by incomplete veto)'
+        : ` (held: not confidently complete${
+            snap.completionProb !== null ? `, P=${snap.completionProb.toFixed(2)}` : ''
+          })`;
+    patienceCap.textContent = `patience: ${Math.round(snap.msUntilTurnEnd)}ms left of ${total}ms${hold}`;
   } else {
     patienceFill.style.width = '0%';
     patienceCap.textContent =
