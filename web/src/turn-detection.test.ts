@@ -25,6 +25,9 @@ import type { InputEvent, OutputEvent, TurnKnobs } from './turn-detection.ts';
 // detector's patience reason is bridged into — see that test for why it crosses over.
 import { decideTier, completionProbFromTurnEnd, type TurnEndReason } from './response-hierarchy.ts';
 import { gateConfigFromTurnKnobs } from './knobs.ts';
+// The last test composes the host's own bookkeeping in between, because that is where
+// the score was getting lost — see 'a late EOU verdict still reaches the gate'.
+import { groupTranscript, recordTurnEnd, type TurnEndMark } from './transcript.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const scenariosDir = join(here, '../../spec/turn-vectors/scenarios');
@@ -664,4 +667,88 @@ test('B1: the weak-cue band extends the floor without silencing the gate', () =>
     ).tier;
     assert.equal(tier === 'silence', wantSilence, `P=${prob}: gate holds silence?`);
   }
+});
+
+// The BLIND FIRST EVALUATION, composed all the way through the host (su-l74p).
+//
+// Every B1 test above hand-builds the gate's `completionProb` the way main.ts is meant
+// to — `peek().completionProb ?? completionProbFromTurnEnd(reason)`. That mirror was
+// right while main.ts was wrong, because main.ts does not read the detector at gate
+// time: it snapshots the score into a TurnEndMark when the window closes, and reads the
+// MARK later, once STT resolves. So this test drives the real bookkeeping
+// (`recordTurnEnd` → `groupTranscript` → `decideTier`) and never restates it.
+//
+// The pause that exposes it is the one the race-measurement corpus is built on: the
+// silence floor closes BEFORE the classifier answers (su-lou.10.8). The window is blind
+// — no score, `reason: 'floor'` — and the verdict lands during `deciding`, while the
+// transcript is still pending. §4b re-evaluates on that evidence under the SAME
+// evaluation id, and the host has to fold the new score into the mark it already made.
+// Dropping the re-emit as a duplicate leaves the gate reading a certain 1 off the
+// reason-bridge, and it speaks into a thought the classifier just scored 0.3.
+test('B1: a late EOU verdict still reaches the gate through the turn-end mark', () => {
+  const text = 'so the thing I keep coming back to is whether we should'; // 12 words ⇒ substantive
+  const det = new TurnDetector({ silenceFloorMs: 200 });
+
+  // main.ts's `handleOut` evaluate arm, calling the same function main.ts calls.
+  let turnEnds: TurnEndMark[] = [];
+  const feed = (ev: InputEvent): void => {
+    for (const e of det.input(ev)) {
+      if (e.type !== 'evaluate') continue;
+      turnEnds = recordTurnEnd(turnEnds, {
+        turn: e.turn,
+        evaluation: e.evaluation,
+        t: e.t,
+        reason: e.reason,
+        completionProb: det.peek(e.t).completionProb,
+      }).marks;
+    }
+  };
+
+  feed({ t: 0, type: 'speech-start' });
+  feed({ t: 1000, type: 'speech-end' });
+  feed({ t: 1200, type: 'tick' }); // the 200ms floor closes with no verdict in hand
+  assert.equal(turnEnds.length, 1, 'the window closed once');
+  assert.equal(turnEnds[0].reason, 'floor', 'nothing had scored the pause, so nothing extended it');
+  assert.equal(turnEnds[0].completionProb, null, 'and there was no score to carry — the blind window');
+
+  // The classifier answers 50ms late. The host is still `deciding` (STT has not resolved),
+  // so this supersedes the outstanding question rather than opening a new one.
+  feed({ t: 1250, type: 'eou', completionProb: 0.3 });
+  assert.equal(det.state, 'deciding', 'the gate has not answered yet — the transcript is pending');
+  assert.equal(turnEnds.length, 1, 'same evaluation: the window did not close again');
+  assert.equal(turnEnds[0].t, 1200, 'the deadline it closed on has not moved');
+  assert.equal(turnEnds[0].completionProb, 0.3, 'but the mark now carries the verdict that landed');
+
+  // NOW the transcript resolves and maybeRespond gates the turn.
+  const [g] = groupTranscript({
+    segments: [{ id: 0, startT: 0, endT: 1000, text, mode: 'stub', pending: false }],
+    turnStarts: [{ turn: 1, t: 0 }],
+    turnEnds,
+  });
+  const end = g.end;
+  if (end === null) throw new Error('the turn must carry the window it closed on');
+
+  const gateCtx = {
+    utteranceIndex: g.turn,
+    utteranceTextSoFar: text,
+    msSinceSpeechEnd: end.t - 1000,
+    msSinceWeLastSpoke: Infinity,
+    priorDecisions: [],
+  };
+  const decision = decideTier(
+    { ...gateCtx, completionProb: end.completionProb ?? completionProbFromTurnEnd(end.reason) },
+    gateConfigFromTurnKnobs(det.config),
+  );
+  assert.equal(decision.tier, 'silence', 'B1: 0.3 is mid-thought — hold the floor');
+
+  // The regression proper. Stranded on the blind window, the mark offers no score, the
+  // bridge reads 'floor' as a certain 1, and rule 2 waves through a 12-word unfinished
+  // thought as a finished one. If these two ever agree again, the host has gone back to
+  // deriving the gate's evidence from the patience reason.
+  const stranded = decideTier(
+    { ...gateCtx, completionProb: completionProbFromTurnEnd(end.reason) },
+    gateConfigFromTurnKnobs(det.config),
+  );
+  assert.equal(stranded.tier, 'reflection', 'what the un-refreshed mark produced: an interruption');
+  assert.notEqual(decision.tier, stranded.tier, 'the fix is exactly this divergence');
 });

@@ -109,6 +109,16 @@ independent gates.
    `incomplete`, such a bridge reports certainty the classifier never expressed
    and re-welds the two mechanisms one layer up (§5).
 
+   A host that **caches** that score when the window closes — rather than reading
+   it at gate time — owes it a second read. An evidence-driven re-evaluation keeps
+   the same `evaluation` id (§4b) *precisely because* the score behind it changed,
+   and after a blind first evaluation (the deadline closing before any verdict
+   lands) the cached value is the absent one. Dismissing that re-emit as a
+   duplicate of a mark already made leaves the gate on the reason-bridge this
+   paragraph forbids — arrived at not by choosing it, but by never noticing the
+   score turned up. Deadline fields (`t`, `reason`) are the ones the re-emit does
+   not move; the score is the one it exists to move.
+
 ### Deadline (the one equation)
 
 While timing a pause, the turn-end deadline (in absolute time) is:

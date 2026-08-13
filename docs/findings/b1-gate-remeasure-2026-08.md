@@ -1,7 +1,7 @@
 ---
 title: "B1 gate re-measure: decoupling the veto and gate-rule-2 thresholds makes the uncued mid-thought pause hold — 4 of 4 vectors green"
 type: findings
-status: measured 2026-08-11 — EXECUTED on the Swift arm (official swift:6.1 image, Swift 6.1.3, Linux x86_64) after the su-uzy9.5 structural fix; full Kit 201 tests / 0 failures, B1 replay 4 of 4 held. Mirrored to the web parity runtime (394 tests / 0 failures, tsc clean). AMENDED 2026-08-13 (su-5l0q, §6): the web host was still deriving the gate's score from the patience reason and re-coupling the two mechanisms; fixed and re-verified — Swift 201/0 and B1 4 of 4 unchanged, web 402/0/3
+status: measured 2026-08-11 — EXECUTED on the Swift arm (official swift:6.1 image, Swift 6.1.3, Linux x86_64) after the su-uzy9.5 structural fix; full Kit 201 tests / 0 failures, B1 replay 4 of 4 held. Mirrored to the web parity runtime (394 tests / 0 failures, tsc clean). AMENDED 2026-08-13 (su-5l0q, §6): the web host was still deriving the gate's score from the patience reason and re-coupling the two mechanisms; fixed and re-verified — Swift 201/0 and B1 4 of 4 unchanged, web 402/0/3. AMENDED AGAIN 2026-08-13 (su-l74p, §7): the web host read the score once, at the emit callback, and dropped the evidence-driven re-emit that carried it — so a blind first evaluation left the gate on the reason-bridge anyway; fixed and re-verified — Swift 201/0 and B1 4 of 4 still unchanged, web 409/0/3
 unit: U7 (native turn engine) · U8 (recommendation)
 plan: docs/plans/2026-06-25-001-feat-on-device-quiet-companion-validation-plan.md
 bead: su-uzy9.5
@@ -299,3 +299,70 @@ diverging, the host has gone back to deriving the score from the reason.
 
 This addendum does not revisit §5's scope limit. It is still the architectural
 question only, and `SessionController.swift` is still out of scope.
+
+## 7. Addendum (2026-08-13, su-l74p): the score reached the mark and then stopped
+
+The second pre-open signoff (review bead `su-pb0s`) found §6 correct and
+incomplete, in the same shape §6 found §1 incomplete. The host now reads the
+pause's real score — but only once, and not necessarily at a moment when there
+is one.
+
+**What was wrong.** `main.ts` snapshots the score into the transcript's
+`TurnEndMark` inside the `evaluate` emit callback, and guarded the whole write
+with "have I already marked this evaluation?". An evidence-driven re-evaluation
+carries the **same** `evaluation` id — that is its definition (spec §4b): the
+window has not closed again, only the evidence behind the question improved. So
+every re-emit was dismissed as a duplicate, and the mark kept whatever the first
+emit happened to carry.
+
+After a **blind first evaluation** that is nothing at all. At the shipped 200 ms
+floor the window routinely closes before the classifier answers — the race §4
+already measures exactly this — so the mark is written `{reason: "floor",
+completionProb: null}`. The verdict lands 50 ms later, while the host is still
+`deciding` because the transcript has not resolved, and the mark never hears
+about it. When the transcript does resolve, `g.end.completionProb` is still
+null, the documented fallback fires, and `completionProbFromTurnEnd("floor")`
+hands the gate a certain **1** — "finished thought" — for a pause the
+classifier scored 0.3 half a second ago. Rule 2 waves it through and the
+companion speaks into an unfinished thought. B1, the cardinal failure, restored
+by the bookkeeping one step after the score was threaded correctly everywhere
+else.
+
+**Why §6's tests missed it.** They asserted the intended expression —
+`peek().completionProb ?? completionProbFromTurnEnd(reason)` — by rebuilding it
+in the test. `main.ts` does not evaluate that expression at gate time; it
+evaluates half of it at emit time, stores the result, and reads the store later.
+The mirror stayed faithful to the intent while the original drifted from it, and
+a mirror cannot report that. The bookkeeping was also unreachable from any test:
+it lived inline in an event callback in a DOM entry point.
+
+**The fix.** The fold is extracted to `recordTurnEnd` in `web/src/transcript.ts`
+— pure, and now the only thing that decides what a closure does to the marks.
+A same-`evaluation` re-emit refreshes `completionProb` and keeps `t` and
+`reason`, which describe a deadline that has not moved; a new evaluation on the
+same turn still supersedes its predecessor and clears the stale loop-metric
+origin. `main.ts` calls it and does the loop-metric writes the result asks for.
+Six unit tests pin the fold and one composed test drives detector → mark →
+`groupTranscript` → `decideTier` on the blind-window pause with a late verdict.
+**Three of the seven discriminate the bug** — the two same-`evaluation` refresh
+cases and the composed end-to-end — verified by restoring the old
+drop-the-re-emit behaviour under the new tests and watching exactly those three
+go red. The other four pin the behaviour the extraction had to preserve
+(supersession, the cleared loop-metric origin, other turns left alone, purity),
+which is what makes the move out of `main.ts` checkable rather than merely
+plausible. Spec §2 gains the consumer rule the inline code was missing: a host
+that *caches* the score owes it a second read on the re-emit.
+
+**Re-verified at this commit**, same toolchain and image as §4:
+
+| Arm | Result |
+|-----|--------|
+| Swift `swift:6.1`, full Kit | **201 passed, 0 failed** (unchanged — no Swift file changed) |
+| `B1GateReplayTests` | **4 of 4 held**, 0 barge-ins (unchanged) |
+| web `npx tsc --noEmit` | clean |
+| web `vite build` | clean |
+| web `node --test` | **409 passed, 0 failed, 3 skipped** (402 before; +7 regression tests) |
+
+The measurement in §2 and §3 is unchanged: no vector moved, no threshold moved,
+and the Swift arm was never on this path. What changed is that the web runtime
+now actually does what §6 said it did on the one pause shape §6 did not cover.

@@ -21,6 +21,7 @@ import { resolveSmartTurnOptions } from './smart-turn-config.ts';
 import { resolveDenoiseOptions } from './denoise-config.ts';
 import {
   groupTranscript,
+  recordTurnEnd,
   type TranscriptSegment,
   type TurnStartMark,
   type TurnEndMark,
@@ -740,33 +741,32 @@ function handleOut(e: OutputEvent): void {
     // The patience window closed. THIS is where the transcript's turn-end marker
     // and the loop metric's first stage belong — the moment the detector read the
     // pause as an end-of-thought — whether or not the companion goes on to speak.
-    // A superseding re-evaluation (same `evaluation`) re-uses the first mark: the
-    // patience deadline is where the window closed, and it has not moved.
+    // A superseding re-evaluation (same `evaluation`) re-uses the first mark's deadline:
+    // that is where the window closed, and it has not moved. Its SCORE is another matter
+    // — the re-emit exists precisely because better evidence arrived — so the mark's
+    // `completionProb` is refreshed from it. `recordTurnEnd` owns that distinction.
     //
     // A NEW evaluation of the same turn is the other case (§4b): the gate declined,
     // the thinker kept going, and the window has now closed again further along. Its
     // predecessor marked an origin for a loop iteration that never happened, so
     // replace it — the same reasoning cancelAbandonedEvaluation clears marks under.
-    if (!turnEnds.some((m) => m.evaluation === e.evaluation)) {
-      if (turnEnds.some((m) => m.turn === e.turn)) {
-        turnEnds = turnEnds.filter((m) => m.turn !== e.turn);
-        loopMetrics.clear(e.turn);
-      }
-      // Snapshot the pause's graded EOU score ALONGSIDE its reason. Read here, in
-      // the emit callback, because this is the one moment it is unambiguously this
-      // pause's: `handleOut` runs synchronously inside `detector.input()`, before any
-      // later event can resume speech or open a new pause and clear it. `maybeRespond`
-      // runs later (it waits on STT) and would read a score belonging to some other
-      // pause. See TurnEndMark.completionProb for why the reason alone will not do.
-      turnEnds.push({
-        turn: e.turn,
-        evaluation: e.evaluation,
-        t: e.t,
-        reason: e.reason,
-        completionProb: detector.peek(e.t).completionProb,
-      });
-      loopMetrics.mark(e.turn, 'turn-end', e.t);
-    }
+    //
+    // Snapshot the pause's graded EOU score ALONGSIDE its reason. Read here, in the
+    // emit callback, because this is the one moment it is unambiguously this pause's:
+    // `handleOut` runs synchronously inside `detector.input()`, before any later event
+    // can resume speech or open a new pause and clear it. `maybeRespond` runs later (it
+    // waits on STT) and would read a score belonging to some other pause. See
+    // TurnEndMark.completionProb for why the reason alone will not do.
+    const rec = recordTurnEnd(turnEnds, {
+      turn: e.turn,
+      evaluation: e.evaluation,
+      t: e.t,
+      reason: e.reason,
+      completionProb: detector.peek(e.t).completionProb,
+    });
+    turnEnds = rec.marks;
+    if (rec.clearedTurn !== null) loopMetrics.clear(rec.clearedTurn);
+    if (rec.effect === 'opened') loopMetrics.mark(e.turn, 'turn-end', e.t);
     awaiting = { evaluation: e.evaluation, turn: e.turn };
     if (loopActive()) renderTranscript(); // → maybeRespond answers once the transcript resolves
     else answerEvaluation('speak'); // timing-only: the stubbed response, exactly as before
