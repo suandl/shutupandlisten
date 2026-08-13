@@ -1,7 +1,7 @@
 ---
 title: "B1 gate re-measure: decoupling the veto and gate-rule-2 thresholds makes the uncued mid-thought pause hold — 4 of 4 vectors green"
 type: findings
-status: measured 2026-08-11 — EXECUTED on the Swift arm (official swift:6.1 image, Swift 6.1.3, Linux x86_64) after the su-uzy9.5 structural fix; full Kit 201 tests / 0 failures, B1 replay 4 of 4 held. Mirrored to the web parity runtime (394 tests / 0 failures, tsc clean)
+status: measured 2026-08-11 — EXECUTED on the Swift arm (official swift:6.1 image, Swift 6.1.3, Linux x86_64) after the su-uzy9.5 structural fix; full Kit 201 tests / 0 failures, B1 replay 4 of 4 held. Mirrored to the web parity runtime (394 tests / 0 failures, tsc clean). AMENDED 2026-08-13 (su-5l0q, §6): the web host was still deriving the gate's score from the patience reason and re-coupling the two mechanisms; fixed and re-verified — Swift 201/0 and B1 4 of 4 unchanged, web 402/0/3
 unit: U7 (native turn engine) · U8 (recommendation)
 plan: docs/plans/2026-06-25-001-feat-on-device-quiet-companion-validation-plan.md
 bead: su-uzy9.5
@@ -99,6 +99,13 @@ confidence bar, so the veto does not fire. On web that is not merely a shorter f
 B1 mechanisms drop the pause at once, from a knob whose entire advertised effect is
 "more patient". (On iOS the demo host threads the real score to the gate, so only the
 veto half is lost there.)
+
+> **Superseded in part — see §6.** The web asymmetry described here was itself the
+> defect the pre-open signoff caught: `main.ts` derived the gate's score from the
+> patience reason on *every* pause, not only inverted ones. It now threads the real
+> `P(complete)`, matching iOS. The ordering argument above stands on its own — the
+> veto half is lost either way — but the "and rule-2 silence is skipped too" clause
+> describes the web host as it was on 2026-08-11, not as it is now.
 
 The fix enforces the ordering where the pair is READ — `extended()` floors its bar at
 `max(confidentCompletionThreshold, completionThreshold)` in both runtimes — rather
@@ -234,3 +241,61 @@ self-restrain, restraint 1.94): the gate is the lever, not the model.
 The re-measure was authorized as a single attempt with a single structural fix.
 It landed green, so no escalation is required; had it landed red, per U8 that
 would have been a finding to report, not a thing to iterate on.
+
+---
+
+## 6. Addendum (2026-08-13, su-5l0q): the web host was still coupling the two
+
+The pre-open signoff on this branch (review bead `su-eyp8`) found the decoupling
+incomplete on the web arm, and it is worth recording because the §3 replay above
+does **not** catch it.
+
+**What was wrong.** §1 gave the veto its own confidence bar, so `reason:
+"extended"` stopped meaning "the classifier said incomplete". `web/src/main.ts`
+went on feeding the gate `completionProbFromTurnEnd(g.end.reason)` — a synthetic
+`0` for any extended pause. So a weak-cue pause (`P=0.6`) got the floor extension
+from mechanism 1 and then, if the extended deadline elapsed without the thinker
+resuming, was handed to mechanism 2 as "certainly incomplete" and silenced. The
+companion waited 7.2 s and said nothing. The two mechanisms were still reading one
+number — no longer the shared constant, but the patience reason standing in for it.
+
+**Why §3 missed it.** The `b1-03` trace takes the branch where the thinker
+*resumes* at 4200, inside the extension, so the window never closes and the gate is
+never asked. The bug lives on the other branch — extension elapses, thinker was
+genuinely finished — which no B1 vector exercises, because B1 is about *not*
+speaking. The Swift arm was unaffected: `sul-demo` already threaded the real score
+(`lastEouProb`), which is why the replay stayed green while the shipped web runtime
+had not actually decoupled anything.
+
+**The fix.** The detector's per-pause score is exposed on its snapshot
+(`TurnSnapshot.completionProb`, plus `extended` for the patience UI), both
+runtimes. `main.ts` captures it onto the transcript's `TurnEndMark` at the emit
+callback — the one moment it is unambiguously that pause's — and passes it to
+`EvalContext`, falling back to the reason-bridge only when there is no score (a
+bare verdict, or the blind first evaluation). `completionProbFromTurnEnd` survives
+as that documented fallback. The gate's own `completionThreshold` is untouched at
+0.5, and the veto's bar is still the detector's alone.
+
+**Contract.** Spec §2 now states the confidence bar, the ordering invariant, and
+that `"extended"` does not imply `incomplete`; §5 documents the snapshot and says
+hosts must read the score from it rather than reconstruct it. The vector README
+picks up `12-retuned-threshold-still-extends` and restates `b1-03` in the present
+tense.
+
+**Re-verified at this commit**, same toolchain and image as §4:
+
+| Arm | Result |
+|-----|--------|
+| Swift `swift:6.1`, full Kit | **201 passed, 0 failed** (unchanged) |
+| `B1GateReplayTests` | **4 of 4 held**, 0 barge-ins (unchanged) |
+| `GoldenVectorTests` | passed — all 12 scenario vectors, unchanged |
+| web `npx tsc --noEmit` | clean |
+| web `node --test` | **402 passed, 0 failed, 3 skipped** (400 before; +2 regression tests) |
+
+The new web tests pin the gap directly: a weak-cue pause that waits out the
+extension reaches `reflection` on the real score and `silence` on the bridged
+reason, and the test asserts the two **must** disagree. If that ever stops
+diverging, the host has gone back to deriving the score from the reason.
+
+This addendum does not revisit §5's scope limit. It is still the architectural
+question only, and `SessionController.swift` is still out of scope.

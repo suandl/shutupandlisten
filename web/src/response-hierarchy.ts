@@ -218,15 +218,22 @@ export interface EvalContext {
 }
 
 /**
- * `completionProb` for a caller that only has the detector's two-valued turn-end
- * reason.
+ * `completionProb` for a caller that has ONLY the detector's two-valued turn-end
+ * reason and no graded score behind it. `extended` ⇒ certainly incomplete, `floor` ⇒
+ * certainly complete, which resolves rule 2 the same way for any threshold in (0, 1].
  *
- * STAGE-1 BRIDGE. transcript.ts's `TurnEndMark` carries `reason`, not the score
- * behind it, so main.ts cannot yet hand the gate a real P(complete). `extended` ⇒
- * certainly incomplete, `floor` ⇒ certainly complete, which reproduces the old
- * rule-2 boolean exactly for any threshold in (0, 1]. Stage 2 deletes this and
- * threads the classifier's actual score through instead — at which point the gate
- * gains resolution without the contract changing again.
+ * FALLBACK, NOT THE DEFAULT PATH. main.ts now threads the classifier's real
+ * P(complete) (`TurnEndMark.completionProb`) and reaches for this only when there
+ * isn't one: a bare `complete`/`incomplete` verdict, or a deadline that fired before
+ * the verdict landed (the blind first evaluation — race-measurement.ts).
+ *
+ * Do NOT use it in preference to a score you have. It was faithful only while
+ * `extended` meant `verdict === 'incomplete'`; since su-uzy9.5 decoupled the veto
+ * from the verdict, `extended` also covers pauses scored ABOVE `completionThreshold`
+ * — "not confidently complete" rather than "incomplete". Bridging those back to 0
+ * tells the gate the classifier was certain of the opposite of what it said, and
+ * makes every floor extension force rule-2 silence, welding the two B1 mechanisms
+ * back together one layer above the constant that used to weld them (su-5l0q).
  */
 export function completionProbFromTurnEnd(reason: TurnEndReason): number {
   return reason === 'extended' ? 0 : 1;

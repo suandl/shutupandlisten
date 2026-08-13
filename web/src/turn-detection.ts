@@ -152,6 +152,38 @@ export interface TurnSnapshot {
   /** The latest evaluation-tick id (0 before the first patience window closed). */
   evaluation: number;
   verdict: Verdict | null;
+  /**
+   * The graded P(complete) the current pause's `verdict` came from, or null when the
+   * evidence was a bare two-valued verdict (or the pause has no evidence yet).
+   *
+   * Exposed because `verdict` alone no longer determines what the pause MEANS.
+   * Decoupling the two B1 mechanisms (su-uzy9.5) gave the veto its own higher bar, so
+   * a weak-cue score in [completionThreshold, confidentCompletionThreshold) reads
+   * `complete` and still extends the floor. A host that needs the classifier's actual
+   * reading — the response gate, whose rule 2 thresholds this same probability —
+   * cannot recover it from `verdict`, and must NOT recover it from the patience
+   * `reason` either: `extended` no longer implies `incomplete`, so bridging the reason
+   * back to a certainty (`completionProbFromTurnEnd`) re-couples the two mechanisms
+   * through the UI path and hands the gate a 0 for a pause the classifier scored 0.6.
+   * That is the whole B1 decoupling lost in the bridge — see main.ts's `maybeRespond`.
+   *
+   * The detector is the only component that knows which score belongs to the CURRENT
+   * pause: it clears this wherever it clears `verdict` (speech resume, a new pause).
+   * A host tracking the score itself would have to duplicate that lifecycle, which is
+   * how the two copies drift.
+   */
+  completionProb: number | null;
+  /**
+   * Whether the asymmetric veto is currently extending this pause's floor — i.e.
+   * whether the live deadline includes `incompleteExtensionMs`.
+   *
+   * Same reason as `completionProb`: a UI cannot infer this from `verdict` any more.
+   * A weak-cue pause is held open while reading `complete`, so a caption keyed on
+   * `verdict === 'incomplete'` under-reports the total the countdown is running
+   * against and renders more milliseconds left than the window it claims they are
+   * left of. False outside `pending`, where no deadline is being timed.
+   */
+  extended: boolean;
   /** ms until the patience window closes (and evaluation fires), if currently timing a pause; null otherwise. */
   msUntilTurnEnd: number | null;
 }
@@ -296,6 +328,11 @@ export class TurnDetector {
       turn: this.turn,
       evaluation: this.evaluation,
       verdict: this.verdict,
+      completionProb: this.lastCompletionProb,
+      // Scoped to `pending` to match `msUntilTurnEnd`: the two describe one live
+      // deadline, and reporting an extension while no window is being timed would
+      // invite a caption about a countdown that is not running.
+      extended: this._state === 'pending' && this.extended(),
       msUntilTurnEnd,
     };
   }

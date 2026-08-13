@@ -139,6 +139,38 @@ public struct TurnSnapshot: Sendable {
     public let turn: Int
     public let evaluation: Int
     public let verdict: Verdict?
+    /// The graded P(complete) the current pause's `verdict` came from, or nil when
+    /// the evidence was a bare two-valued verdict (or the pause has no evidence yet).
+    ///
+    /// Exposed because `verdict` alone no longer determines what the pause MEANS.
+    /// Decoupling the two B1 mechanisms (su-uzy9.5) gave the veto its own higher bar,
+    /// so a weak-cue score in `[completionThreshold, confidentCompletionThreshold)`
+    /// reads `.complete` and still extends the floor. A host that needs the
+    /// classifier's actual reading — the response gate, whose rule 2 thresholds this
+    /// same probability — cannot recover it from `verdict`, and must NOT recover it
+    /// from the patience `reason` either: `.extended` no longer implies `.incomplete`,
+    /// so bridging the reason back to a certainty (`completionProb(fromTurnEnd:)`)
+    /// re-couples the two mechanisms and hands the gate 0 for a pause scored 0.6.
+    ///
+    /// The detector is the only component that knows which score belongs to the
+    /// CURRENT pause: it clears this wherever it clears `verdict` (speech resume, a
+    /// new pause). A host tracking the score itself must duplicate that lifecycle,
+    /// which is how the two copies drift.
+    ///
+    /// Read it while the snapshot is still the pause's — from an `onEmit` callback,
+    /// which runs inside `input(_:)` before the same call's discrete change can
+    /// resume speech and clear it. A host that instead loops over `input(_:)`'s
+    /// RETURNED events reads post-hoc state, where a resume that landed after the
+    /// deadline has already cleared the score (sul-demo does this, and keeps its own
+    /// `lastEouProb` for that reason).
+    public let completionProb: Double?
+    /// Whether the asymmetric veto is currently extending this pause's floor — i.e.
+    /// whether the live deadline includes `incompleteExtensionMs`.
+    ///
+    /// Same reason as `completionProb`: a UI cannot infer this from `verdict` any
+    /// more, because a weak-cue pause is held open while reading `.complete`. False
+    /// outside `.pending`, where no deadline is being timed.
+    public let extended: Bool
     /// ms until the patience window closes (and evaluation fires), if currently
     /// timing a pause; nil otherwise.
     public let msUntilTurnEnd: Double?
@@ -260,6 +292,11 @@ public final class TurnDetector {
             turn: turn,
             evaluation: evaluation,
             verdict: verdict,
+            completionProb: lastCompletionProb,
+            // Scoped to `.pending` to match `msUntilTurnEnd`: the two describe one
+            // live deadline, and reporting an extension while no window is being
+            // timed would invite a caption about a countdown that is not running.
+            extended: _state == .pending && extended(),
             msUntilTurnEnd: msUntilTurnEnd
         )
     }

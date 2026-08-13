@@ -58,6 +58,22 @@ export interface TurnEndMark {
   evaluation: number;
   t: number;
   reason: 'floor' | 'extended';
+  /**
+   * The graded P(complete) behind the pause's verdict at the moment this window
+   * closed (`TurnSnapshot.completionProb`), when there was one.
+   *
+   * Carried because `reason` is NOT a proxy for it. Since su-uzy9.5 decoupled the two
+   * B1 mechanisms, `extended` means "not confidently complete", which includes pauses
+   * the classifier scored ABOVE the gate's own completion threshold — so a consumer
+   * that reconstructs a probability from `reason` alone (`completionProbFromTurnEnd`)
+   * feeds the gate a certainty the classifier never expressed, and rule-2 silence
+   * follows every floor extension. That is the coupling re-formed one layer up.
+   *
+   * Absent/null ⇒ the pause's evidence was a bare two-valued verdict, or there was
+   * none; the reason-bridge is then the correct and only reading. Optional so the
+   * pure grouping contract (and its tests) is unchanged for callers with no score.
+   */
+  completionProb?: number | null;
 }
 
 /** A turn's worth of transcript: its segments in order, and where it ended. */

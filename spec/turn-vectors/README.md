@@ -50,8 +50,9 @@ the machine waits; the turn ends only when a `{ "type": "decision", "outcome":
 window closes is asserting that the machine **waits** — which is why `01`'s
 `turnEnds: []` and `09`'s both mean something.
 
-These eleven cover the plan's scenarios 1–5, the asymmetric-veto hold, the
-un-collapsed `Deciding`, and the utterance/evaluation split:
+These twelve cover the plan's scenarios 1–5, the asymmetric-veto hold, the
+un-collapsed `Deciding`, the utterance/evaluation split, and the veto's
+confidence bar:
 
 | Vector | Plan scenario | Asserts |
 |--------|---------------|---------|
@@ -66,6 +67,7 @@ un-collapsed `Deciding`, and the utterance/evaluation split:
 | `09-evidence-reevaluation` | (§4a) | A fresh EOU verdict while deciding **supersedes** the evaluation (`trigger: evidence`) — re-evaluation is evidence-driven, not clock-driven. |
 | `10-late-decision-stamps-verdict` | (§6 note) | A `speak` verdict arriving 2500 ms after the window closed stamps `turn-end`/`response-start` at the **verdict** (6500) while `evaluate` keeps the deadline (4000) — deliberation latency is visible, not erased. |
 | `11-one-utterance-many-evaluations` | (§4b) | One thought, two declined pauses at a 500 ms floor: **three** evaluations (`evaluation` 1→3) under **one** turn. `turn` counts thoughts, `evaluation` counts window closures; only taking the floor ends a turn. |
+| `12-retuned-threshold-still-extends` | (§2 ordering) | The veto's bar is floored at `completionThreshold`, so a live retune that inverts the pair cannot cost a pause its extension: at `completionThreshold: 0.9`, `P=0.85` reads `incomplete` yet clears the fixed `0.8` confidence bar, and must still extend. An `incomplete` verdict may only ever lengthen patience. |
 
 ## `labeled/` — measurement vectors (scenario 6)
 
@@ -171,7 +173,7 @@ you got it.
 |--------|---------|
 | `b1-01-trailing-conjunction-pause` | A pause after a trailing conjunction reads as "still going", the veto extends the floor past the resume, and the window never closes — the gate is never even asked. |
 | `b1-02-filled-pause-disfluency` | Same, twice over, for a filled pause (`um`) and a discourse-marker pause (`,`) inside one unfinished sentence. |
-| `b1-03-unpunctuated-pause-no-cue` | The decisive case: a mid-thought pause with **no** linguistic cue and no terminal punctuation (STT drops it routinely). `LinguisticEOU` returns its 0.6 "no strong cue" default — *above* the 0.5 threshold — so no veto fires and only the bare floor stands between the thinker and an interruption. |
+| `b1-03-unpunctuated-pause-no-cue` | The decisive case: a mid-thought pause with **no** linguistic cue and no terminal punctuation (STT drops it routinely). `LinguisticEOU` returns its 0.6 "no strong cue" default. This is the vector that failed the first B1 measurement and forced the fix: 0.6 is *above* the 0.5 verdict boundary, so while the veto keyed on `incomplete` no veto fired and only the bare 200 ms floor stood between the thinker and an interruption. It now holds — 0.6 is *below* the veto's own 0.8 confidence bar, so the floor extends without the evidence being relabelled incomplete (spec §2). The vector is unchanged; the bar it measures moved. |
 | `b1-04-landing-earns-one-brief-reply` | The other half of the bar: a landing still earns exactly one brief reply. Two landings, because the pool has a cold start — the first substantive landing marks the analyst and is answered by a live call, and only the second is drawn from a still-fresh pool candidate of the register the gate asked for. |
 
 ## Provenance / timing-only milestone note
