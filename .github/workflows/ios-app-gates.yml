@@ -128,11 +128,22 @@ jobs:
 
       # The plan asks for both proofs to be attachable to the PR: B1's result
       # bundle and B5's log are what a reviewer without a Mac reads.
+      #
+      # The two proofs are named EXPLICITLY rather than globbed as
+      # `ios/build/gates/**`, because B5's Release archive is written into that
+      # same directory — `ios/build/gates/sual.xcarchive`, hundreds of MB. A
+      # glob would upload it on every App PR, at 10x-runner upload time plus
+      # artifact storage, to ship a build output nobody reads. Nothing here
+      # needs it: B5's verdict is the log, and the archive is rebuilt by any
+      # re-run. Adding a proof? Add a line — the omission direction is a missing
+      # small file, not a silent hundreds-of-MB upload.
       - name: Upload gate artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: ios-app-gate-artifacts
-          path: ios/build/gates/**
+          path: |
+            ios/build/gates/b1-app-tests.xcresult/**
+            ios/build/gates/b5-archive-check.log
           if-no-files-found: warn
           retention-days: 14
