@@ -23,8 +23,9 @@ name: Kit tests
 # marketplace action to install it.
 #
 # SCOPE: the Kit only. The App target (ios/App, incl. SessionController.swift) is
-# NOT built here — it needs the iOS SDK and a simulator, which is ios-visual.yml's
-# job. See su-xkmq.4 item 3, which tracks giving ios-visual.yml a real trigger.
+# NOT built here — it needs the iOS SDK and a simulator. That is
+# ios-app-gates.yml's job (su-uzy9.6): a path-filtered macos-26 counterpart to
+# this workflow that runs the port plan's Gate A3, B1 and B5 against ios/App.
 
 on:
   push:

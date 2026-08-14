@@ -1266,6 +1266,16 @@ subcommand is unavailable, use
 `ActionTestMetadata` entries and assert none has `testStatus == "Failure"` — the
 same two properties.)
 
+> **Since su-uzy9.6, B1 is automated** as `ios/scripts/gate-b1-app-tests.sh`, run
+> by `.github/workflows/ios-app-gates.yml` on every push/PR that touches the App.
+> The script is this block, with one deliberate change: the destination
+> `platform=iOS Simulator,name=iPhone 16,OS=26.0` is **stale on `macos-26`**,
+> which ships no iPhone 16 family device except the 16e — the lookup misses and
+> the run dies at destination resolution before a test executes. The script
+> resolves the device by name → UDID the way `capture-demo.sh` does. Do not
+> "correct" it back to the literal above. Gate semantics — the selector list, the
+> `$xc` gate, the count floor of 14 — are unchanged.
+
 **B3 — the scheduled regression run, stated as a command.** §7 is a list of named
 tests; this is the command that proves the list is real. Same shape as B1: one
 `-only-testing` per §7 app-test row, so a row that was never written fails the
@@ -1401,6 +1411,15 @@ not by itself prove the source was excluded — that is A3's job, and it is why 
 two gates are not interchangeable. The resource check is the stronger of the two
 halves here, and the one that fails loudly if the pbxproj merge dropped only the
 `demo-conversation.wav` entry from `EXCLUDED_SOURCE_FILE_NAMES`.
+
+> **Since su-uzy9.6, A3 and B5 are automated too** — `ios/scripts/gate-a3-release-exclusions.sh`
+> and `ios/scripts/gate-b5-release-archive.sh` (which does B4's archive first), run
+> together with B1 by `.github/workflows/ios-app-gates.yml`. Both assert exactly
+> what these blocks assert. The one addition is B4's invocation: it is built **unsigned**
+> (`CODE_SIGNING_ALLOWED=NO` plus emptied identity/team/profile/entitlements and
+> `CODE_SIGN_STYLE=Manual`), since a signature changes neither the bundled
+> resources nor the binary's symbols, and CI must not hold a team credential.
+> `$LOG` moves from `/tmp` to `ios/build/gates/` so the workflow can upload it.
 
 **Stage 13 — PR.** Body states: the §0.1 decision and its consequence for the visual
 workflow; that `transcriptIsReconciled` and the reconciler/stitcher/file-transcriber

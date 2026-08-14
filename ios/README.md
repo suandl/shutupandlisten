@@ -256,11 +256,12 @@ To restore the account path on a **paid** team:
 Nothing else changes: the plumbing (`App/Support/AppleSignIn.swift`, the
 sign-in sheet, the Settings account section) is preserved behind the flag.
 
-Note: this branch has been validated headlessly only — the Kit test suite
-runs on Linux and every App file is parse-checked, but the app has not yet
-been built or run on a device or simulator. Background continuation,
-interruption recovery, haptics, and sign-in are device-only claims until a
-hardware pass confirms them.
+Note: no hardware pass yet. The app **has** been built and run on a simulator —
+`ios-visual.yml` run 31768705979 (2026-08-14, macos-26 / Xcode 26.6) drove a
+real session end to end and returned green — and `ios-app-gates.yml` now builds
+the app target on every App-touching PR. But background continuation,
+interruption recovery, haptics, AEC, and sign-in remain device-only claims until
+someone confirms them on a phone.
 
 ## Tests
 
@@ -276,7 +277,7 @@ vectors, exact-output) plus the gate's rule tests, the mode / just-listen
 tests read the vectors from the repo checkout, so run them from a full clone.
 The Swift port's algorithm was additionally cross-checked against all 11
 scenario vectors via an instruction-level mirror at port time. The app target
-itself is not covered by it (see the Building note).
+itself is not covered by it — that is the app gates below.
 
 `.github/workflows/kit-tests.yml` runs exactly this on every push/PR that
 touches the Kit or the vectors — an `ubuntu-latest` runner in the official
@@ -305,6 +306,38 @@ chunk; the chunk *text* is byte-identical, which is what a cache hit actually
 needs. Filed as `su-3885` and **fixed on `main` in #56**, so the rest of the Kit
 is green: 197 tests, 0 failures. Nothing ran `swift test` before this workflow
 existed, which is how it stayed red unnoticed — and is the case for the workflow.
+
+### App gates (the target `swift test` cannot reach)
+
+The Kit is headless; `App/` is not. `.github/workflows/ios-app-gates.yml` is the
+`macos-26` counterpart that builds the **app target** and runs the port plan's
+non-negotiable gates on every push/PR touching `ios/App`, the app-test target,
+the `.xcodeproj`, the Kit's `Package.swift`, or the gate scripts themselves.
+Each gate is a script you can run by hand on a Mac — the workflow is a thin
+wrapper, the way `capture-demo.sh` is for the visual capture:
+
+| Gate | Script | Proves |
+|---|---|---|
+| **A3** | `ios/scripts/gate-a3-release-exclusions.sh` | All four capture-seam artifacts are named in the app target's *resolved* Release `EXCLUDED_SOURCE_FILE_NAMES`. Seconds, no build. |
+| **B1** | `ios/scripts/gate-b1-app-tests.sh` | The data-safety gate: `MigrationTests`' eight named cases and all of `WriterTests` **actually ran** on a simulator, nonzero and none failed. |
+| **B5** | `ios/scripts/gate-b5-release-archive.sh` | The security gate: a Release archive (built unsigned) carries no `demo-conversation.wav` and no capture-seam type names. |
+
+A3 and B5 are two mechanisms for one property and the plan requires **both, not
+either** — B5 reads symbol *absence*, which dead-stripping can also produce, so
+it cannot by itself prove the source was excluded; A3 reads the intent. B1 is a
+gate rather than a `⌘U` ritual because `-only-testing` fails the build outright
+on an identifier the target does not contain, and because a `jq` assertion over
+the result bundle independently requires that cases ran. **Move B1's selector
+list and its count floor together** — that is §7's rule, and the floor is a
+literal in the script rather than an env knob for the same reason.
+
+The gates run as three steps of one job (one 10x runner, three legible
+verdicts), and the later steps use `if: !cancelled()` so a red gate never hides
+the one after it. Both proofs — B1's `.xcresult` and B5's log — upload as
+`ios-app-gate-artifacts`.
+
+`ios-visual.yml` deliberately stays `workflow_dispatch`: it produces demo video
+and screenshots for a human to look at, and is not a gate.
 
 ## Knobs
 
