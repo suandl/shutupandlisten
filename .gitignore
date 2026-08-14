@@ -32,6 +32,12 @@ output/
 .build/
 .swiftpm/
 
+# xcodebuild scratch + gate output (ios/). capture-demo.sh writes DerivedData,
+# results/ and artifacts/ here; the gate scripts add gates/ (result bundles,
+# the B5 log, and a Release .xcarchive). All of it is regenerated per run and
+# an .xcarchive is hundreds of MB.
+ios/build/
+
 # Cached Swift toolchain tarball (post-create-project.sh; survives rebuilds)
 .devcontainer/.swift-cache/
 
