@@ -286,26 +286,32 @@ It is the repo's first automatically-triggered iOS job. The suite is split
 across two steps — the B1 measurement alone, then everything else — so that the
 expected-red measurement below cannot mask an unrelated Kit regression.
 
-**One suite member is expected RED, and that is the result, not a break.**
+**The B1 measurement was red, and is not any more — structurally.**
 `B1GateReplayTests` measures the gate against usefulness-bar **B1** ("holds
-silence through an unfinished thought"), and it currently fails on
+silence through an unfinished thought"). It failed on
 `b1-03-unpunctuated-pause-no-cue`: a mid-thought pause carrying no lexical cue
 scores `LinguisticEOU`'s 0.6 "no strong cue" default, which is *above* the 0.5
-completion threshold, so the veto never fires and the 200 ms floor lets the
-companion speak into an unfinished sentence. See
-`docs/findings/b1-gate-measurement-2026-08.md`. Do not make it green by
-weakening a vector.
+completion threshold, so the veto never fired and the 200 ms floor let the
+companion speak into an unfinished sentence
+(`docs/findings/b1-gate-measurement-2026-08.md`). `su-uzy9.5` fixed it by
+decoupling the two mechanisms that were both reading that one number, rather
+than by moving the constant, and the gate now holds all four vectors
+(`docs/findings/b1-gate-remeasure-2026-08.md`; the job has been green on `main`
+since 2026-08-13). **The standing rule outlives the red: never make this suite
+green by weakening a vector.** A failure here is a measurement result to
+escalate, per `docs/on-device-quiet-companion-recommendation.md` — which is why
+it still runs as its own step, ahead of and separate from the rest of the Kit.
 
-That measurement is the job's **only** expected red. A second test was red when
-this work started and is not any more:
+A second test was red when this work started and is not any more:
 `AnalystPromptTests.testGrowingTranscriptLeavesEarlierChunksByteIdentical` failed
 on a clean `main` too (197 tests, 1 failure at c8c0365). It compared whole
 `SystemBlock` values as the transcript grows, but `cached` marks where the cache
 breakpoint sits and that marker legitimately advances onto each newly-frozen
 chunk; the chunk *text* is byte-identical, which is what a cache hit actually
-needs. Filed as `su-3885` and **fixed on `main` in #56**, so the rest of the Kit
-is green: 197 tests, 0 failures. Nothing ran `swift test` before this workflow
-existed, which is how it stayed red unnoticed — and is the case for the workflow.
+needs. Filed as `su-3885` and **fixed on `main` in #56** (197 tests, 1 failure →
+0 at that point). With `su-uzy9.5`'s fix on top, the whole suite is green: 201
+tests, 0 failures. Nothing ran `swift test` before this workflow existed, which
+is how it stayed red unnoticed — and is the case for the workflow.
 
 ### App gates (the target `swift test` cannot reach)
 
