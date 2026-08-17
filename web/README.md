@@ -176,13 +176,16 @@ is the point: the linguistic EOU returns `0.6` for a bare unpunctuated ending �
 own "no strong cue" default, the *absence* of a cue rather than a finished thought —
 and one shared `0.5` collapsed that into "complete", so the veto did not extend and
 the gate did not hold. That is how an uncued mid-thought pause defeated B1, and why it
-holds now the two are split ([re-measure](../docs/findings/b1-gate-remeasure-2026-08.md)).
+holds now that the two are split
+([re-measure](../docs/findings/b1-gate-remeasure-2026-08.md)).
 
-The slider still moves one boundary rather than one of two that can silently disagree
-— the live app derives the gate's runtime value from the detector's knob
-(`gateConfigFromTurnKnobs`) — and because only that one is tunable, dragging it past
-`0.8` would invert the pair, so the detector floors its own bar at it (`confidentBar()`)
-rather than trusting the order to hold.
+Splitting the bars is not the same failure as mirroring one. The slider still moves a
+single `completionThreshold` in *both* places that read it — the live app derives the
+gate's runtime value from the detector's knob (`gateConfigFromTurnKnobs`) rather than
+re-defaulting it — so that number never becomes two copies which silently disagree. And
+because it is the only tunable one, dragging it past `0.8` would invert it against the
+confident bar, so the detector floors its own bar at it (`confidentBar()`) rather than
+trusting the order to hold.
 
 ### Floor sweep (the feel-test harness)
 
