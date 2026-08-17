@@ -1,5 +1,19 @@
 name: iOS Visual Capture
 
+# STAYS workflow_dispatch ON PURPOSE (su-uzy9.6). This job PRODUCES artifacts —
+# a video and light/dark screenshots — by driving the real UI through a UITest,
+# twice, on a simulator. Its real trigger is a human who wants to look at
+# something. Automating it onto every App PR would make the flakiest job in the
+# repo a blocking check at 10x billing, to produce artifacts nobody reads on a
+# PR.
+#
+# The App target's automatic GATES live in ios-app-gates.yml: same macos-26
+# image, path-filtered push/PR trigger, Gate A3 + B1 + B5. Look there for "does
+# ios/App still build and are the migration tests green", and here for "show me
+# what the app actually looks like doing it".
+#
+# First green end-to-end run: 31768705979 (2026-08-14, macos-26 / Xcode 26.6).
+
 on:
   workflow_dispatch:
 

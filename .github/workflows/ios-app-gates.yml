@@ -1,0 +1,149 @@
+name: iOS app gates
+
+# The first automatically-triggered job that builds the APP target.
+#
+# WHAT WAS MISSING
+# kit-tests.yml (su-uzy9.4, PR #57) gates ShutUpAndListenKit on ubuntu-latest and
+# says so in its own header: "the App target (ios/App, incl.
+# SessionController.swift) is NOT built here — it needs the iOS SDK and a
+# simulator". Nothing built it. So ios/App, the app-hosted test target, and the
+# Release configuration had no automated execution at all — and the two gates the
+# port plan calls non-negotiable (B1, the data-safety gate; B5, the security
+# gate) existed only as commands in a document, to be run by hand on a Mac.
+# This is the macos-26 counterpart that runs them. It retires su-xkmq.4 items 1
+# and 3.
+#
+# WHY A SIBLING WORKFLOW AND NOT A TRIGGER ON ios-visual.yml
+# su-xkmq.4 item 3 is worded "give ios-visual.yml a real trigger", and the bead
+# leaves the shape to the implementer. They are different jobs:
+#   - ios-visual.yml PRODUCES artifacts (video + light/dark screenshots) by
+#     driving the real UI through a UITest, twice. It is a demo/observation tool,
+#     it takes ~10 minutes of simulator time, and UI capture is the flakiest
+#     thing in this repo.
+#   - this workflow GATES. It runs unit tests and reads a Release archive. It is
+#     deterministic and its failures mean something specific.
+# Putting a PR trigger on the capture would make the flakiest job in the repo a
+# blocking check on every App PR, at 10x billing, to produce artifacts nobody
+# reads on a PR. ios-visual.yml stays workflow_dispatch — its real trigger is a
+# human who wants to look at something — and the gating lives here.
+#
+# COST
+# macos runners bill at 10x. Everything below is scoped for that: the paths
+# filter is narrow, superseded PR runs cancel, and there is exactly one job (the
+# checkout + Xcode select + package resolve are paid once, and the three gates
+# are separate STEPS so their verdicts stay legible without paying for a second
+# runner).
+
+# The two paths lists below are duplicated on purpose: GitHub Actions does not
+# support YAML anchors, so the alias that would keep them in sync is not
+# available. Edit both.
+#
+# 'ios/ShutUpAndListenKit/Package.swift' is structure only, not Kit sources. A
+# product rename or a platform-floor change breaks the app's build graph;
+# ordinary Kit source edits are already gated by kit-tests.yml on a 1x runner,
+# and putting the whole package here would put every Kit PR on a 10x runner. An
+# API break that only bites the App surfaces on the next App-touching PR or on a
+# manual dispatch — a deliberate trade, not an oversight.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/App/**'
+      - 'ios/ShutUpAndListenAppTests/**'
+      - 'ios/ShutUpAndListen.xcodeproj/**'
+      - 'ios/ShutUpAndListenKit/Package.swift'
+      - 'ios/scripts/gate-*.sh'
+      - '.github/workflows/ios-app-gates.yml'
+  pull_request:
+    paths:
+      - 'ios/App/**'
+      - 'ios/ShutUpAndListenAppTests/**'
+      - 'ios/ShutUpAndListen.xcodeproj/**'
+      - 'ios/ShutUpAndListenKit/Package.swift'
+      - 'ios/scripts/gate-*.sh'
+      - '.github/workflows/ios-app-gates.yml'
+  # An operator running the gates by hand — e.g. after a Kit change that this
+  # workflow's paths filter deliberately does not catch.
+  workflow_dispatch:
+
+# Cancel superseded runs on a PR; never cancel a run for a commit already on
+# main, where the verdict is the record.
+concurrency:
+  group: ios-app-gates-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  app-gates:
+    # macos-26 (arm64, GA, also reachable as macos-latest) is the image that
+    # carries Xcode 26 — and therefore the iOS 26 SDK. Same image ios-visual.yml
+    # uses, and the same one that ran green end-to-end on 2026-08-14
+    # (run 31768705979), which is where this workflow's simulator handling comes
+    # from.
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        # Every Xcode on this image is 26.x, so the image default is already
+        # correct — but select it explicitly and assert the major so a future
+        # image that re-points the default to 27 fails here, loudly, instead of
+        # silently building against the wrong SDK. The assertion is also what
+        # lets gate-b1-app-tests.sh use `xcresulttool get test-results` with no
+        # legacy fallback.
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          major="$(xcodebuild -version | awk 'NR==1 { split($2, v, "."); print v[1] }')"
+          if [ "$major" != "26" ]; then
+            echo "::error::ios app gates need Xcode 26.x for the iOS 26 SDK; runner default is ${major}.x"
+            exit 1
+          fi
+
+      # No SwiftPM cache step. ios-visual.yml has one, but ShutUpAndListenKit is
+      # a local package with no remote dependencies (Package.swift declares none
+      # — "a pure leaf"), so SourcePackages holds nothing worth restoring.
+
+      # ── Gate A3 — the setting ──
+      # Cheap (seconds, no build) and first, so a dropped exclusion is named at
+      # the top of the log rather than inferred from a symbol dump at the end.
+      - name: Gate A3 — Release excludes the capture seam
+        run: ./ios/scripts/gate-a3-release-exclusions.sh
+
+      # ── Gate B1 — the data-safety gate ──
+      # `!cancelled()` rather than plain success: a failed A3 is a security
+      # finding, not a reason to stop reporting whether the migration tests pass.
+      # Same reasoning kit-tests.yml uses for splitting its two Swift steps —
+      # a step that can be masked by an earlier red step stops being a signal.
+      - name: Gate B1 — app tests actually ran
+        if: ${{ !cancelled() }}
+        run: ./ios/scripts/gate-b1-app-tests.sh
+
+      # ── Gate B5 — the artifact ──
+      # Last because it is the expensive one (a full Release archive), and
+      # `!cancelled()` so a red B1 never hides the security verdict.
+      - name: Gate B5 — Release archive is clean
+        if: ${{ !cancelled() }}
+        run: ./ios/scripts/gate-b5-release-archive.sh
+
+      # The plan asks for both proofs to be attachable to the PR: B1's result
+      # bundle and B5's log are what a reviewer without a Mac reads.
+      #
+      # The two proofs are named EXPLICITLY rather than globbed as
+      # `ios/build/gates/**`, because B5's Release archive is written into that
+      # same directory — `ios/build/gates/sual.xcarchive`, hundreds of MB. A
+      # glob would upload it on every App PR, at 10x-runner upload time plus
+      # artifact storage, to ship a build output nobody reads. Nothing here
+      # needs it: B5's verdict is the log, and the archive is rebuilt by any
+      # re-run. Adding a proof? Add a line — the omission direction is a missing
+      # small file, not a silent hundreds-of-MB upload.
+      - name: Upload gate artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-app-gate-artifacts
+          path: |
+            ios/build/gates/b1-app-tests.xcresult/**
+            ios/build/gates/b5-archive-check.log
+          if-no-files-found: warn
+          retention-days: 14

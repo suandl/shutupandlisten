@@ -256,11 +256,12 @@ To restore the account path on a **paid** team:
 Nothing else changes: the plumbing (`App/Support/AppleSignIn.swift`, the
 sign-in sheet, the Settings account section) is preserved behind the flag.
 
-Note: this branch has been validated headlessly only — the Kit test suite
-runs on Linux and every App file is parse-checked, but the app has not yet
-been built or run on a device or simulator. Background continuation,
-interruption recovery, haptics, and sign-in are device-only claims until a
-hardware pass confirms them.
+Note: no hardware pass yet. The app **has** been built and run on a simulator —
+`ios-visual.yml` run 31768705979 (2026-08-14, macos-26 / Xcode 26.6) drove a
+real session end to end and returned green — and `ios-app-gates.yml` now builds
+the app target on every App-touching PR. But background continuation,
+interruption recovery, haptics, AEC, and sign-in remain device-only claims until
+someone confirms them on a phone.
 
 ## Tests
 
@@ -276,7 +277,7 @@ vectors, exact-output) plus the gate's rule tests, the mode / just-listen
 tests read the vectors from the repo checkout, so run them from a full clone.
 The Swift port's algorithm was additionally cross-checked against all 11
 scenario vectors via an instruction-level mirror at port time. The app target
-itself is not covered by it (see the Building note).
+itself is not covered by it — that is the app gates below.
 
 `.github/workflows/kit-tests.yml` runs exactly this on every push/PR that
 touches the Kit or the vectors — an `ubuntu-latest` runner in the official
@@ -285,26 +286,64 @@ It is the repo's first automatically-triggered iOS job. The suite is split
 across two steps — the B1 measurement alone, then everything else — so that the
 expected-red measurement below cannot mask an unrelated Kit regression.
 
-**One suite member is expected RED, and that is the result, not a break.**
+**The B1 measurement was red, and is not any more — structurally.**
 `B1GateReplayTests` measures the gate against usefulness-bar **B1** ("holds
-silence through an unfinished thought"), and it currently fails on
+silence through an unfinished thought"). It failed on
 `b1-03-unpunctuated-pause-no-cue`: a mid-thought pause carrying no lexical cue
 scores `LinguisticEOU`'s 0.6 "no strong cue" default, which is *above* the 0.5
-completion threshold, so the veto never fires and the 200 ms floor lets the
-companion speak into an unfinished sentence. See
-`docs/findings/b1-gate-measurement-2026-08.md`. Do not make it green by
-weakening a vector.
+completion threshold, so the veto never fired and the 200 ms floor let the
+companion speak into an unfinished sentence
+(`docs/findings/b1-gate-measurement-2026-08.md`). `su-uzy9.5` fixed it by
+decoupling the two mechanisms that were both reading that one number, rather
+than by moving the constant, and the gate now holds all four vectors
+(`docs/findings/b1-gate-remeasure-2026-08.md`; the job has been green on `main`
+since 2026-08-13). **The standing rule outlives the red: never make this suite
+green by weakening a vector.** A failure here is a measurement result to
+escalate, per `docs/on-device-quiet-companion-recommendation.md` — which is why
+it still runs as its own step, ahead of and separate from the rest of the Kit.
 
-That measurement is the job's **only** expected red. A second test was red when
-this work started and is not any more:
+A second test was red when this work started and is not any more:
 `AnalystPromptTests.testGrowingTranscriptLeavesEarlierChunksByteIdentical` failed
 on a clean `main` too (197 tests, 1 failure at c8c0365). It compared whole
 `SystemBlock` values as the transcript grows, but `cached` marks where the cache
 breakpoint sits and that marker legitimately advances onto each newly-frozen
 chunk; the chunk *text* is byte-identical, which is what a cache hit actually
-needs. Filed as `su-3885` and **fixed on `main` in #56**, so the rest of the Kit
-is green: 197 tests, 0 failures. Nothing ran `swift test` before this workflow
-existed, which is how it stayed red unnoticed — and is the case for the workflow.
+needs. Filed as `su-3885` and **fixed on `main` in #56** (197 tests, 1 failure →
+0 at that point). With `su-uzy9.5`'s fix on top, the whole suite is green: 201
+tests, 0 failures. Nothing ran `swift test` before this workflow existed, which
+is how it stayed red unnoticed — and is the case for the workflow.
+
+### App gates (the target `swift test` cannot reach)
+
+The Kit is headless; `App/` is not. `.github/workflows/ios-app-gates.yml` is the
+`macos-26` counterpart that builds the **app target** and runs the port plan's
+non-negotiable gates on every push/PR touching `ios/App`, the app-test target,
+the `.xcodeproj`, the Kit's `Package.swift`, or the gate scripts themselves.
+Each gate is a script you can run by hand on a Mac — the workflow is a thin
+wrapper, the way `capture-demo.sh` is for the visual capture:
+
+| Gate | Script | Proves |
+|---|---|---|
+| **A3** | `ios/scripts/gate-a3-release-exclusions.sh` | All four capture-seam artifacts are named in the app target's *resolved* Release `EXCLUDED_SOURCE_FILE_NAMES`. Seconds, no build. |
+| **B1** | `ios/scripts/gate-b1-app-tests.sh` | The data-safety gate: `MigrationTests`' eight named cases and all of `WriterTests` **actually ran** on a simulator, nonzero and none failed. |
+| **B5** | `ios/scripts/gate-b5-release-archive.sh` | The security gate: a Release archive (built unsigned) carries no `demo-conversation.wav` and no capture-seam type names. |
+
+A3 and B5 are two mechanisms for one property and the plan requires **both, not
+either** — B5 reads symbol *absence*, which dead-stripping can also produce, so
+it cannot by itself prove the source was excluded; A3 reads the intent. B1 is a
+gate rather than a `⌘U` ritual because `-only-testing` fails the build outright
+on an identifier the target does not contain, and because a `jq` assertion over
+the result bundle independently requires that cases ran. **Move B1's selector
+list and its count floor together** — that is §7's rule, and the floor is a
+literal in the script rather than an env knob for the same reason.
+
+The gates run as three steps of one job (one 10x runner, three legible
+verdicts), and the later steps use `if: !cancelled()` so a red gate never hides
+the one after it. Both proofs — B1's `.xcresult` and B5's log — upload as
+`ios-app-gate-artifacts`.
+
+`ios-visual.yml` deliberately stays `workflow_dispatch`: it produces demo video
+and screenshots for a human to look at, and is not a gate.
 
 ## Knobs
 

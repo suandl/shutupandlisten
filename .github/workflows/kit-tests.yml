@@ -23,8 +23,9 @@ name: Kit tests
 # marketplace action to install it.
 #
 # SCOPE: the Kit only. The App target (ios/App, incl. SessionController.swift) is
-# NOT built here — it needs the iOS SDK and a simulator, which is ios-visual.yml's
-# job. See su-xkmq.4 item 3, which tracks giving ios-visual.yml a real trigger.
+# NOT built here — it needs the iOS SDK and a simulator. That is
+# ios-app-gates.yml's job (su-uzy9.6): a path-filtered macos-26 counterpart to
+# this workflow that runs the port plan's Gate A3, B1 and B5 against ios/App.
 
 on:
   push:
@@ -77,13 +78,16 @@ jobs:
       # The REST of the Kit. `if: always()` so the B1 verdict above never hides
       # this one — and `--skip` so this one never re-reports it.
       #
-      # B1GateReplayTests is EXPECTED red (see the step above and
-      # docs/findings/b1-gate-measurement-2026-08.md). Left in the suite it would
-      # pin this step red too, for a reason already reported one step earlier —
-      # and a step that is permanently red cannot tell anyone when something ELSE
-      # in the Kit breaks. Skipping it here costs the measurement nothing: it
-      # still runs, still prints its report, and still fails the job, in its own
-      # step. This is not weakening the bar; it is keeping a second signal alive.
+      # B1GateReplayTests was EXPECTED red when this workflow was written
+      # (docs/findings/b1-gate-measurement-2026-08.md); su-uzy9.5 fixed the gate
+      # structurally and it now holds all four vectors
+      # (docs/findings/b1-gate-remeasure-2026-08.md), green on main since
+      # 2026-08-13. The split stays regardless of colour, because it is about
+      # what a red MEANS, not about a red that was standing: a measurement
+      # failure and a Kit regression are different findings, and either one left
+      # in the other's step can hide it. Skipping the measurement here costs it
+      # nothing — it still runs, still prints its report, and still fails the
+      # job, in its own step.
       - name: Kit test suite (excluding the B1 measurement)
         if: always()
         run: swift test --package-path ios/ShutUpAndListenKit --skip B1GateReplayTests
