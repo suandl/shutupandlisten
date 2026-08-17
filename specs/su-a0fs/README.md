@@ -1,3 +1,8 @@
+---
+name: Site mockups — one ember direction at three settings (su-a0fs)
+description: The three high-fidelity HTML mockups of shutupandlisten.sh produced for su-a0fs (hold, line, cadence) plus the gallery, with one rationale paragraph per mockup and the open questions they raised. A record of the design pass, not a deployed site and not authoritative on the identity; su-02g picks the winner.
+---
+
 # shutupandlisten.sh — site mockups
 
 Three high-fidelity, self-contained HTML mockups of the public site, all
@@ -7,7 +12,7 @@ external requests. Dark mode is the designed experience; switch OS appearance
 for the light translation (`prefers-color-scheme`).
 
 ```
-site/mockups/
+specs/su-a0fs/
   index.html     gallery + the levers table + what carries over from the app
   hold.html      setting 1 — the ring is the page
   line.html      setting 2 — one sentence is the page
