@@ -118,9 +118,13 @@ export function turnKnobParam(key: string): string {
  * preferred value as something re-runnable rather than as a slider position.
  *
  *   ?silenceFloorMs=<200..6000>        the load-bearing one — the patience window
- *   ?incompleteExtensionMs=<0..8000>   extra patience on an `incomplete` verdict
- *   ?completionThreshold=<0..1>        P(complete) boundary (BOTH readers — see
- *                                      gateConfigFromTurnKnobs)
+ *   ?incompleteExtensionMs=<0..8000>   extra patience on a pause that is not
+ *                                      CONFIDENTLY complete (broader than an
+ *                                      `incomplete` verdict — completion-threshold.ts)
+ *   ?completionThreshold=<0..1>        P(complete) boundary for the verdict and for
+ *                                      the gate's rule 2 (see gateConfigFromTurnKnobs)
+ *                                      — NOT the veto's bar, which is the fixed
+ *                                      `confidentCompletionThreshold` and has no param
  *   ?responseDurationMs=<200..4000>    stubbed response length
  *   ?useSmartTurn=<on|off>             the asymmetric veto, or the baseline arm
  *
