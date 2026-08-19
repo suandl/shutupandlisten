@@ -1138,12 +1138,12 @@ and it still runs two stages ahead of the archive at B5.
 **A3 — the direct `EXCLUDED_SOURCE_FILE_NAMES` check.** Archive inspection (B5) is
 a good backstop but a late and indirect one: it reads symbol *absence*, which can
 also be produced by dead-stripping, and it only runs at the very end. Read the
-setting itself, and assert **all four** artifacts by name — a check that greps for
-one of them reports OK while the other three are silently dropped, which is the
+setting itself, and assert **all five** artifacts by name — a check that greps for
+one of them reports OK while the other four are silently dropped, which is the
 whole failure this gate exists to catch:
 
 ```bash
-required='CaptureSeam.swift CaptureURLProtocol.swift CaptureAudioInjector.swift demo-conversation.wav'
+required='CaptureSeam.swift CaptureURLProtocol.swift CaptureAudioInjector.swift demo-conversation.wav capture-fixture.json'
 
 # Deliberately no `set -e`: an unset setting must reach the explicit message
 # below rather than killing the shell on grep's nonzero exit.
@@ -1167,15 +1167,31 @@ if [ -n "$missing" ]; then
   echo "SECURITY: not excluded from the Release build:$missing" >&2
   exit 1
 fi
-echo 'A3 OK — all four capture artifacts excluded in Release'
+echo 'A3 OK — all five capture artifacts excluded in Release'
 ```
 
 Resolved settings are the right thing to read — they reflect what the build will
 actually do after xcconfig layering and any `$(inherited)` expansion, which a
 `grep` of `project.pbxproj` does not. An unset `EXCLUDED_SOURCE_FILE_NAMES` fails
 exactly as a partial one does: `$excluded` is empty, every name is missing, and the
-message names all four. Re-run A3 after Stage 11, since that stage edits the same
+message names all five. Re-run A3 after Stage 11, since that stage edits the same
 file, and keep the output for the PR body (Stage 13).
+
+> **The fifth artifact, `capture-fixture.json`, was added in su-a71zn.** As
+> written on 2026-08-02 this list held four names, and the fixture was copied
+> into the Release bundle by the file-system-synchronized `App/Resources` group
+> the whole time. It was the mildest of the five and never exploitable — no
+> credential in the file, and its only reader, `CaptureSeam.loadFixture()`, is
+> itself `#if DEBUG` **and** on this exclusion list, so no Release binary could
+> read it even while it shipped. What it did contradict is the design intent
+> asserted everywhere else in this plan: that the *whole* capture seam is
+> compiled out of Release. It is now named in all five places that must move
+> together: here, `gate-a3-release-exclusions.sh`, the bundle-side `find` in
+> `gate-b5-release-archive.sh`, the app target's Release config, and the gate
+> table in `ios/README.md`. That spread is why su-uzy9.6 filed this rather than
+> folding a fifth name into the gate it was landing — and the README row, which
+> still read "all four" until this change, is what a one-line pbxproj fix would
+> have left stale.
 
 ### Stage 11 — `project.pbxproj`, part 2: wire the app-test target
 
@@ -1348,12 +1364,12 @@ check() {
 
   fail=0
 
-  # 1. The fixture must not ship — any name match, anywhere in the bundle.
-  #    This is the check dead-stripping cannot fake: a resource is either
-  #    copied into the bundle or it is not.
-  hits=$(find "$APP" -name 'demo-conversation.wav')
+  # 1. Neither capture fixture may ship — any name match, anywhere in the
+  #    bundle. This is the check dead-stripping cannot fake: a resource is
+  #    either copied into the bundle or it is not.
+  hits=$(find "$APP" \( -name 'demo-conversation.wav' -o -name 'capture-fixture.json' \))
   if [ -n "$hits" ]; then
-    echo "SECURITY: demo-conversation.wav present in the archived bundle:" >&2
+    echo "SECURITY: capture fixture present in the archived bundle:" >&2
     echo "$hits" >&2
     fail=1
   fi
@@ -1395,7 +1411,7 @@ check() {
   rm -f "$SYMS"
 
   [ "$fail" -eq 0 ] || { echo 'B5 FAILED: archive is not clean' >&2; return 1; }
-  echo 'B5 OK — no capture fixture, no capture-seam symbols in the Release archive'
+  echo 'B5 OK — no capture fixtures, no capture-seam symbols in the Release archive'
 }
 
 check 2>&1 | tee "$LOG"
@@ -1410,7 +1426,8 @@ stripping can remove a symbol that was compiled in, so a clean `nm`/`strings` do
 not by itself prove the source was excluded — that is A3's job, and it is why the
 two gates are not interchangeable. The resource check is the stronger of the two
 halves here, and the one that fails loudly if the pbxproj merge dropped only the
-`demo-conversation.wav` entry from `EXCLUDED_SOURCE_FILE_NAMES`.
+`demo-conversation.wav` or `capture-fixture.json` entry from
+`EXCLUDED_SOURCE_FILE_NAMES`.
 
 > **Since su-uzy9.6, A3 and B5 are automated too** — `ios/scripts/gate-a3-release-exclusions.sh`
 > and `ios/scripts/gate-b5-release-archive.sh` (which does B4's archive first), run
