@@ -154,8 +154,8 @@ input events (← from the audio source) and output events (→ from the detecto
 | Knob | What it does |
 |------|--------------|
 | Silence floor (patience window) | Minimum silence before a pause may end the turn. The load-bearing tunable. |
-| Incomplete extension | Extra patience when smart-turn reads the pause as "incomplete". |
-| Completion threshold | smart-turn P(complete) cutoff; higher = more patient. Drives **both** readers of that probability — the detector's veto and the gate's rule 2 (see below). |
+| Incomplete extension | Extra patience for any pause smart-turn does not read as *confidently* complete — broader than an `incomplete` verdict; named for its knob (`incompleteExtensionMs`), not its trigger (see below). |
+| Completion threshold | smart-turn P(complete) cutoff for the `complete`/`incomplete` verdict *and* the gate's rule 2; higher = more patient. **Not** the veto's bar — that one is higher and has no slider (see below). |
 | Stubbed response length | How long the canned response "plays". |
 | smart-turn veto | On = floor + veto; off = the patience-only baseline arm. |
 | VAD thresholds (mic) | Silero speech on/off probabilities and redemption frames. |
@@ -165,12 +165,27 @@ remembered slider position: `?silenceFloorMs=750`, `?incompleteExtensionMs=2000`
 `?completionThreshold=0.65`, `?responseDurationMs=900`, `?useSmartTurn=off`. Values
 clamp to the slider's own range; anything blank or unparseable keeps the default.
 
-**One probability, one threshold.** smart-turn's `P(complete)` is thresholded twice —
-by the detector, to decide whether a pause earns the incomplete extension, and by the
-response-hierarchy gate, as rule 2. Those were two independent `0.5`s mirrored by a
-comment; they now share one constant (`completion-threshold.ts`) *and* the live app
-derives the gate's runtime value from the detector's knob (`gateConfigFromTurnKnobs`),
-so the slider moves one boundary rather than one of two that can silently disagree.
+**One probability, two thresholds.** smart-turn's `P(complete)` is read for two
+different jobs, and since su-uzy9.5 each reads its own bar (both in
+`completion-threshold.ts`). The response-hierarchy gate's rule 2 keeps
+`completionThreshold` — the slider above, `0.5` — and holds silence below it. The
+detector's veto reads the higher, knob-less `confidentCompletionThreshold` (`0.8`),
+extending the floor for any pause that is not *confidently* complete. So the band
+**[0.5, 0.8)** buys extra patience while still reading `complete`, and that asymmetry
+is the point: the linguistic EOU returns `0.6` for a bare unpunctuated ending — its
+own "no strong cue" default, the *absence* of a cue rather than a finished thought —
+and one shared `0.5` collapsed that into "complete", so the veto did not extend and
+the gate did not hold. That is how an uncued mid-thought pause defeated B1, and why it
+holds now that the two are split
+([re-measure](../docs/findings/b1-gate-remeasure-2026-08.md)).
+
+Splitting the bars is not the same failure as mirroring one. The slider still moves a
+single `completionThreshold` in *both* places that read it — the live app derives the
+gate's runtime value from the detector's knob (`gateConfigFromTurnKnobs`) rather than
+re-defaulting it — so that number never becomes two copies which silently disagree. And
+because it is the only tunable one, dragging it past `0.8` would invert it against the
+confident bar, so the detector floors its own bar at it (`confidentBar()`) rather than
+trusting the order to hold.
 
 ### Floor sweep (the feel-test harness)
 

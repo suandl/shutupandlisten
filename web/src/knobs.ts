@@ -46,7 +46,9 @@ export const TURN_KNOBS: KnobSpec[] = [
     max: 8000,
     step: 100,
     unit: 'ms',
-    help: 'Extra patience added when smart-turn reads the pause as "incomplete" (trailing conjunction, rising intonation).',
+    // Interpolated rather than spelled "0.8": a hardcoded bar in prose is exactly how
+    // the README came to describe a model the code had stopped implementing (su-mrd60).
+    help: `Extra patience added when smart-turn reads the pause as anything but CONFIDENTLY complete — P(complete) below the fixed confidentCompletionThreshold (${DEFAULT_KNOBS.confidentCompletionThreshold}), which has no knob. A weak cue (trailing conjunction, rising intonation) earns the extension while the verdict still reads "complete".`,
   },
   {
     key: 'completionThreshold',
@@ -96,9 +98,10 @@ export const TURN_KNOBS: KnobSpec[] = [
  * sits BELOW the measured ~270ms warmed EOU cost (smart-turn.ts). The feel-test
  * (su-lou.10.6) landed here; it is the ratified default. Mechanism, though: at a floor
  * under that cost the verdict has not landed when the deadline fires (still null), so
- * the smart-turn veto — which only EXTENDS the floor on an `incomplete` verdict — cannot
- * gate the FIRST evaluation of a pause; it is answered blind. The late verdict arrives
- * as EVIDENCE (spec §4b) that can supersede an in-flight `deciding`, not as the veto.
+ * the smart-turn veto — which only ever EXTENDS the floor, and only on evidence that
+ * the pause is not CONFIDENTLY complete (completion-threshold.ts) — cannot gate the
+ * FIRST evaluation of a pause; it is answered blind. The late verdict arrives as
+ * EVIDENCE (spec §4b) that can supersede an in-flight `deciding`, not as the veto.
  * su-lou.10.8 measures the residual blind-first-evaluation race this opens.
  */
 export const FLOOR_SWEEP_MS: readonly number[] = [1500, 1000, 750, 500, 350, 200];
@@ -118,9 +121,13 @@ export function turnKnobParam(key: string): string {
  * preferred value as something re-runnable rather than as a slider position.
  *
  *   ?silenceFloorMs=<200..6000>        the load-bearing one — the patience window
- *   ?incompleteExtensionMs=<0..8000>   extra patience on an `incomplete` verdict
- *   ?completionThreshold=<0..1>        P(complete) boundary (BOTH readers — see
- *                                      gateConfigFromTurnKnobs)
+ *   ?incompleteExtensionMs=<0..8000>   extra patience on a pause that is not
+ *                                      CONFIDENTLY complete (broader than an
+ *                                      `incomplete` verdict — completion-threshold.ts)
+ *   ?completionThreshold=<0..1>        P(complete) boundary for the verdict and for
+ *                                      the gate's rule 2 (see gateConfigFromTurnKnobs)
+ *                                      — NOT the veto's bar, which is the fixed
+ *                                      `confidentCompletionThreshold` and has no param
  *   ?responseDurationMs=<200..4000>    stubbed response length
  *   ?useSmartTurn=<on|off>             the asymmetric veto, or the baseline arm
  *
