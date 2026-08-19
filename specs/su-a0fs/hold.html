@@ -1,0 +1,396 @@
+<!doctype html>
+<!-- shutupandlisten.sh · site mockup 1 of 3 — HOLD
+     Lever settings: negative space MAX · hook WHISPERED · ring at hero scale.
+     Self-contained. No external requests. Dark-first; light via prefers-color-scheme. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shutupandlisten — site mockup: hold</title>
+<style>
+  /* ── tokens: night paper & ember (ios/mockups/README.md §1) ─────────────
+     --accent is sulAccent verbatim: Color(red:0.91, green:0.67, blue:0.36).
+     Light mode uses the identity table's light ember; sulAccent is defined
+     for the dark surface and fails contrast on paper. See README.md. */
+  :root{
+    --page:#08090B; --bg:#0B0D10; --surface:#12151A; --raised:#191D23;
+    --ink:#E9E4DA; --ink2:#8E9298; --ink3:#565B62; --line:#20242B;
+    --track:rgba(233,228,218,.09);
+    --accent:#E8AB5C; --accent-ink:#E7BE8A; --accent-dim:rgba(232,171,92,.12);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --page:#EFEDE7; --bg:#F7F5F0; --surface:#FFFFFF; --raised:#FBFAF6;
+      --ink:#20232A; --ink2:#5E636B; --ink3:#9EA2A9; --line:#E5E1D8;
+      --track:rgba(30,33,42,.10);
+      --accent:#96661F; --accent-ink:#7C5316; --accent-dim:rgba(150,102,31,.10);
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0; background:var(--page); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased; line-height:1.55}
+  ::selection{background:var(--accent-dim); color:var(--ink)}
+
+  /* the type ramp, unchanged from the app */
+  .caps{font-size:11px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--ink3)}
+  .stamp{font:500 12px/1 ui-monospace,"SF Mono",Menlo,monospace; letter-spacing:.04em; color:var(--ink3)}
+  .q{font-size:24px; line-height:1.42; letter-spacing:-.008em; font-weight:400}
+  .sub{font-size:13px; color:var(--ink2)}
+
+  .wrap{max-width:760px; margin:0 auto; padding:0 32px}
+
+  /* ── the mark: a 14 px ring and the name, and nothing else ────────────── */
+  .mark{position:fixed; top:26px; left:32px; z-index:5; display:flex; align-items:center; gap:10px;
+    font-size:12.5px; font-weight:600; letter-spacing:.01em; color:var(--ink2);
+    mix-blend-mode:normal}
+  .mark svg{display:block}
+
+  /* ── fold: the ring is the page ───────────────────────────────────────── */
+  .fold{min-height:100svh; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    position:relative; padding:120px 32px 96px}
+  .hero{width:min(56vmin,460px); aspect-ratio:1; position:relative}
+  .hero svg{width:100%; height:100%; display:block; animation:breathe 5.8s ease-in-out infinite}
+  .hero .trk{fill:none; stroke:var(--track); stroke-width:1.6}
+  /* the ember arc, held at rest — 0 % of a patience window that never runs here */
+  .hero .arc{fill:none; stroke:var(--accent); stroke-width:1.6; stroke-linecap:round;
+    stroke-dasharray:283; stroke-dashoffset:283;
+    transform:rotate(-90deg); transform-origin:50% 50%;
+    animation:hold 22s cubic-bezier(.4,0,.2,1) infinite}
+  @keyframes breathe{0%,100%{transform:scale(1)} 50%{transform:scale(1.03)}}
+  @keyframes hold{
+    0%,6%   {stroke-dashoffset:283; opacity:0}
+    16%     {opacity:.9}
+    52%     {stroke-dashoffset:196; opacity:.9}   /* it waits, and waits */
+    64%     {stroke-dashoffset:196; opacity:.9}
+    82%     {stroke-dashoffset:206; opacity:0}    /* you resume — it dissolves */
+    100%    {stroke-dashoffset:283; opacity:0}
+  }
+
+  .whisper{margin:64px 0 0; max-width:42ch; text-align:center; font-size:15px; color:var(--ink2);
+    letter-spacing:.005em}
+  .scrollcue{position:absolute; bottom:34px; left:50%; transform:translateX(-50%);
+    display:flex; flex-direction:column; align-items:center; gap:10px}
+  .scrollcue .rule{width:1px; height:44px; background:linear-gradient(var(--line),transparent)}
+
+  /* ── the long quiet middle ────────────────────────────────────────────── */
+  .breath{padding:34vh 0}
+  .breath.tight{padding:22vh 0}
+  .say{font-size:clamp(21px,3.4vw,30px); line-height:1.5; font-weight:400; letter-spacing:-.012em;
+    max-width:22ch}
+  .say em{font-style:normal; color:var(--accent-ink)}
+  .after{margin-top:28px; max-width:44ch; color:var(--ink2); font-size:15px}
+
+  /* the three tenses, at the smallest size the mark is ever drawn */
+  .tenses{display:flex; gap:44px; flex-wrap:wrap; margin-top:56px}
+  .tense{display:flex; align-items:center; gap:12px}
+  .tense .t{font-size:13px; color:var(--ink2)}
+  .m{display:inline-block}   /* transform/scale does not apply to inline boxes */
+  .m .trk{fill:none; stroke:var(--track); stroke-width:2}
+  .m .arc{fill:none; stroke:var(--accent); stroke-width:2; stroke-linecap:round;
+    transform:rotate(-90deg); transform-origin:50% 50%}
+  .m .pt{fill:var(--accent)}
+  .m.b{animation:breathe 5.8s ease-in-out infinite}
+  .m.f .arc{stroke-dasharray:69; animation:mfill 9s ease-in-out infinite}
+  @keyframes mfill{0%{stroke-dashoffset:69} 55%,70%{stroke-dashoffset:24} 88%,100%{stroke-dashoffset:69; opacity:0}}
+  .m.p .pt{animation:glow 5.8s ease-in-out infinite}
+  @keyframes glow{0%,100%{opacity:.55} 50%{opacity:1}}
+
+  /* ── section heads ────────────────────────────────────────────────────── */
+  h2{margin:0 0 26px; font-size:11px; font-weight:600; letter-spacing:.2em; text-transform:uppercase;
+    color:var(--ink3); display:flex; align-items:center; gap:16px}
+  h2::after{content:""; flex:1; height:1px; background:var(--line)}
+
+  /* ── the prompt block ─────────────────────────────────────────────────── */
+  .picker{position:relative}
+  .picker > .r{position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; margin:0}
+  .tabs{display:flex; gap:4px; margin-bottom:22px; flex-wrap:wrap}
+  .tabs label{cursor:pointer; padding:9px 15px 10px; border-radius:999px; font-size:13px; color:var(--ink3);
+    border:1px solid transparent; transition:color .25s ease, border-color .25s ease, background .25s ease;
+    -webkit-tap-highlight-color:transparent}
+  .tabs label:hover{color:var(--ink2)}
+  #a:checked ~ .tabs label[for=a],
+  #b:checked ~ .tabs label[for=b],
+  #c:checked ~ .tabs label[for=c]{color:var(--ink); border-color:var(--line); background:var(--surface)}
+  /* the one place ember appears in this section: which variant is live */
+  #a:checked ~ .tabs label[for=a]::before,
+  #b:checked ~ .tabs label[for=b]::before,
+  #c:checked ~ .tabs label[for=c]::before{
+    content:""; display:inline-block; width:5px; height:5px; border-radius:50%;
+    background:var(--accent); margin-right:9px; vertical-align:1.5px}
+  #a:focus-visible ~ .tabs label[for=a],
+  #b:focus-visible ~ .tabs label[for=b],
+  #c:focus-visible ~ .tabs label[for=c]{outline:2px solid var(--accent); outline-offset:2px}
+
+  .dest{min-height:20px; margin-bottom:18px; font-size:13px; color:var(--ink2)}
+  .dest > span{display:none}
+  #a:checked ~ .dest .d1, #b:checked ~ .dest .d2, #c:checked ~ .dest .d3{display:inline}
+  .dest b{color:var(--ink); font-weight:600}
+
+  .sheet{border:1px solid var(--line); border-radius:18px; background:var(--bg); overflow:hidden}
+  .sheet .bar{display:flex; align-items:center; gap:12px; padding:13px 18px; border-bottom:1px solid var(--line);
+    background:var(--surface)}
+  .sheet .bar .file{font:400 12px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink2)}
+  .sheet .bar .len{margin-left:auto}
+  .bar .file > span, .bar .len > span{display:none}
+  #a:checked ~ .sheet .bar .f1, #b:checked ~ .sheet .bar .f2, #c:checked ~ .sheet .bar .f3,
+  #a:checked ~ .sheet .bar .l1, #b:checked ~ .sheet .bar .l2, #c:checked ~ .sheet .bar .l3{display:inline}
+
+  .panes{position:relative}
+  .panes::after{content:""; position:absolute; left:0; right:0; bottom:0; height:96px; pointer-events:none;
+    background:linear-gradient(transparent,var(--bg))}
+  pre.pane{display:none; margin:0; padding:24px 22px 60px; max-height:340px; overflow:auto;
+    font:400 13px/1.72 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink2);
+    white-space:pre-wrap; word-break:break-word}
+  #a:checked ~ .sheet .panes .pane:nth-of-type(1),
+  #b:checked ~ .sheet .panes .pane:nth-of-type(2),
+  #c:checked ~ .sheet .panes .pane:nth-of-type(3){display:block}
+  pre.pane .k{color:var(--ink)}          /* section headings inside the prompt */
+  pre.pane .e{color:var(--accent-ink)}   /* the one instruction that is the product */
+
+  .acts{display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-top:20px}
+  .cbx{position:absolute; width:1px; height:1px; opacity:0; pointer-events:none}
+  .btn{cursor:pointer; display:inline-flex; align-items:center; gap:10px; padding:12px 20px; border-radius:999px;
+    border:1px solid var(--line); background:var(--surface); color:var(--ink); font-size:13.5px; font-weight:600;
+    transition:border-color .3s ease, color .3s ease; -webkit-tap-highlight-color:transparent}
+  .btn:hover{border-color:var(--ink3)}
+  .cbx:focus-visible + .btn{outline:2px solid var(--accent); outline-offset:2px}
+  .btn .on{display:none}
+  .cbx:checked + .btn{border-color:var(--accent); color:var(--accent-ink)}
+  .cbx:checked + .btn .off{display:none}
+  .cbx:checked + .btn .on{display:inline}
+  .btn .tick{width:13px; height:13px}
+  .hint{font-size:12.5px; color:var(--ink3)}
+
+  /* ── share + the link preview ─────────────────────────────────────────── */
+  .linkrow{display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:38px}
+  .url{font:400 13.5px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--ink2);
+    border:1px solid var(--line); border-radius:999px; padding:12px 18px; background:var(--surface)}
+  .url b{color:var(--ink); font-weight:400}
+
+  .ogwrap{container-type:inline-size; max-width:600px}
+  .og{aspect-ratio:1200/630; border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    background:var(--page); position:relative; display:flex; align-items:center; justify-content:center}
+  .og .ring{width:34cqw; aspect-ratio:1}
+  .og .ring svg{width:100%; height:100%; display:block}
+  .og .ring .trk{fill:none; stroke:var(--track); stroke-width:1.4}
+  .og .wordmark{position:absolute; left:6cqw; bottom:5.4cqw; font-size:3.1cqw; font-weight:600;
+    letter-spacing:.01em; color:var(--ink2)}
+  .og .dot{position:absolute; right:6cqw; bottom:6.4cqw; width:1.5cqw; height:1.5cqw; border-radius:50%;
+    background:var(--accent)}
+  .ogmeta{margin-top:14px; display:flex; gap:16px; flex-wrap:wrap; align-items:baseline}
+
+  /* ── footer ───────────────────────────────────────────────────────────── */
+  footer{margin-top:22vh; border-top:1px solid var(--line); padding:34px 0 90px; color:var(--ink3); font-size:13px}
+  footer a{color:var(--ink2); text-decoration:none; border-bottom:1px solid var(--line)}
+  footer a:hover{color:var(--ink); border-bottom-color:var(--ink3)}
+  .foot-note{max-width:52ch; margin:0 0 18px; line-height:1.7}
+
+  /* the annotation layer — mockup furniture, not part of the design */
+  .anno{position:fixed; right:18px; bottom:18px; z-index:6; max-width:280px; font-size:11.5px; line-height:1.6;
+    color:var(--ink3); background:var(--surface); border:1px solid var(--line); border-radius:14px;
+    padding:13px 15px}
+  .anno b{display:block; color:var(--ink2); font-size:10.5px; font-weight:600; letter-spacing:.18em;
+    text-transform:uppercase; margin-bottom:7px}
+  @media (max-width:900px){ .anno{display:none} }
+
+  @media (prefers-reduced-motion: reduce){
+    html{scroll-behavior:auto}
+    *{animation:none !important; transition:none !important}
+    .hero .arc{stroke-dashoffset:196; opacity:.9}
+    .m.f .arc{stroke-dashoffset:24}
+  }
+</style>
+
+<div class="mark">
+  <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.4" opacity=".55"/></svg>
+  shutupandlisten
+</div>
+
+<main>
+  <!-- ═══════════════ the fold: one ring, one line ═══════════════ -->
+  <section class="fold">
+    <div class="hero" aria-hidden="true">
+      <svg viewBox="0 0 100 100">
+        <circle class="trk" cx="50" cy="50" r="45"/>
+        <circle class="arc" cx="50" cy="50" r="45"/>
+      </svg>
+    </div>
+    <p class="whisper">Nothing here is going to interrupt you.</p>
+    <div class="scrollcue">
+      <div class="rule"></div>
+      <div class="caps">what it is</div>
+    </div>
+  </section>
+
+  <div class="wrap">
+    <!-- ═══════════════ the claim, said once ═══════════════ -->
+    <section class="breath">
+      <p class="say">It is a prompt. You paste it into the voice mode you already pay for.
+      Then it <em>stops helping you.</em></p>
+      <p class="after">No summaries. No “so what I’m hearing is.” No coaching beat at the end
+      of your sentence. It stays out of the way while you lay an idea out, and when the idea
+      has actually landed it pulls on exactly one thread of it.</p>
+    </section>
+
+    <!-- ═══════════════ the mark, explained by using it ═══════════════ -->
+    <section class="breath tight">
+      <h2>the patience window</h2>
+      <p class="q" style="max-width:30ch; margin:0">Most pauses are not the end of a thought.
+      A pause is you gathering the next sentence.</p>
+      <div class="tenses">
+        <div class="tense">
+          <span class="m b"><svg width="26" height="26" viewBox="0 0 26 26"><circle class="trk" cx="13" cy="13" r="11"/></svg></span>
+          <span class="t">it listens</span>
+        </div>
+        <div class="tense">
+          <span class="m f"><svg width="26" height="26" viewBox="0 0 26 26"><circle class="trk" cx="13" cy="13" r="11"/><circle class="arc" cx="13" cy="13" r="11"/></svg></span>
+          <span class="t">it waits you out</span>
+        </div>
+        <div class="tense">
+          <span class="m p"><svg width="26" height="26" viewBox="0 0 26 26"><circle class="trk" cx="13" cy="13" r="11"/><circle class="pt" cx="13" cy="2" r="2.4"/></svg></span>
+          <span class="t">one question</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ the prompt ═══════════════ -->
+    <section class="breath tight" id="prompt">
+      <h2>take it</h2>
+      <div class="picker">
+        <input class="r" type="radio" name="prov" id="a" checked>
+        <input class="r" type="radio" name="prov" id="b">
+        <input class="r" type="radio" name="prov" id="c">
+
+        <div class="tabs">
+          <label for="a">Claude</label>
+          <label for="b">ChatGPT</label>
+          <label for="c">Gemini</label>
+        </div>
+
+        <p class="dest">
+          <span class="d1">Paste into <b>Projects → custom instructions</b>, then talk to the project in voice mode.</span>
+          <span class="d2">Paste into <b>Create a GPT → Instructions</b>. It applies to that GPT’s voice mode too.</span>
+          <span class="d3">Paste into <b>Gems → Instructions</b>. Tuned for Gemini’s habit of announcing itself first.</span>
+        </p>
+
+        <div class="sheet">
+          <div class="bar">
+            <span class="file"><span class="f1">prompts/claude.md</span><span class="f2">prompts/chatgpt.md</span><span class="f3">prompts/gemini.md</span></span>
+            <span class="len stamp"><span class="l1">85 lines</span><span class="l2">80 lines</span><span class="l3">99 lines</span></span>
+          </div>
+          <div class="panes">
+<pre class="pane">Role: You are an idea-dictation partner. Someone is dictating an
+idea out loud — thinking it through in long, unhurried thoughts —
+and your job is to stay out of the way while they do, then, once
+the idea is fully out, pull on one thread to help them articulate
+it further.
+
+<span class="k">## During dictation: stay silent</span>
+
+While the thinker is still laying an idea out, say nothing. Do not
+interject.
+
+<span class="e">In practice this means most of your turns are empty.</span> When the idea
+is still unfolding, reply with nothing at all — an empty response.
+No placeholder, no dash, no single word, no space; just return
+nothing. Filling the silence is the failure.
+
+* no minimal acknowledgments ("yeah", "mm", "right") — they are
+  noise against a train of thought
+* no mid-stream reflections or echoes of their words
+* no summaries, no "so the idea is…"
+* a pause is not your cue to speak</pre>
+<pre class="pane">Role: You are a quiet thought companion for exploratory thinking
+and idea capture.
+
+Your job is to help the speaker continue thinking, not to solve,
+explain, summarize, coach, or conclude.
+
+Everything you write is spoken aloud by a voice, immediately,
+exactly as written. Write only the words to be said — nothing that
+exists on a page.
+
+<span class="k">Your default response hierarchy:</span>
+
+<span class="e">1. Silence</span>
+2. Minimal acknowledgment
+3. Short momentum-preserving reflection
+4. One brief follow-up question
+
+Escalate slowly. Most pauses should not become questions.</pre>
+<pre class="pane">Role: You are an idea-dictation partner. Someone is dictating an
+idea out loud — thinking it through in long, unhurried thoughts —
+and your job is to stay out of the way while they do.
+
+<span class="k">## Everything you say is spoken aloud</span>
+
+Everything you write is read out by a voice, immediately, exactly
+as written. Write only the words to be said — nothing that exists
+on a page:
+
+* no markdown, no asterisks, no bullets, no headings, no
+  numbering, no emoji — all of it is read out as noise
+* no stage directions, action text, or emotes of any kind
+* never narrate your own behaviour, tone, or inner state
+
+<span class="e">Never preface, explain, or announce what you are about to do.</span>
+No "Sure," no "Got it," no "I'll just listen." Say the thing
+itself or say nothing — a turn spent describing your own
+restraint is not restraint, it is an interruption with better
+manners.</pre>
+          </div>
+        </div>
+
+        <div class="acts">
+          <input class="cbx" type="checkbox" id="cp">
+          <label class="btn" for="cp">
+            <span class="off">Copy the prompt</span>
+            <span class="on"><svg class="tick" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 7.5 5.5 11 12 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> Copied</span>
+          </label>
+          <span class="hint">or read it on GitHub</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ share ═══════════════ -->
+    <section class="breath tight">
+      <h2>send it to someone who won’t stop talking</h2>
+      <div class="linkrow">
+        <span class="url">shutupandlisten<b>.sh</b></span>
+        <input class="cbx" type="checkbox" id="cp2">
+        <label class="btn" for="cp2">
+          <span class="off">Copy link</span>
+          <span class="on"><svg class="tick" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 7.5 5.5 11 12 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> Copied</span>
+        </label>
+      </div>
+
+      <div class="ogwrap">
+        <div class="og">
+          <div class="ring"><svg viewBox="0 0 100 100" aria-hidden="true"><circle class="trk" cx="50" cy="50" r="45"/></svg></div>
+          <div class="wordmark">shutupandlisten.sh</div>
+          <div class="dot"></div>
+        </div>
+      </div>
+      <div class="ogmeta">
+        <span class="stamp">1200 × 630</span>
+        <span class="sub">An empty ring, the name, one ember point. In a feed of screenshots and gradients it reads as a hole in the page.</span>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <div class="wrap">
+      <p class="foot-note">The prompt is free and always will be. A native iOS app that does this
+      without a browser tab — with the waiting handled properly instead of by a language model
+      guessing at silence — is in progress.</p>
+      <a href="#">github.com/…/shutupandlisten</a>
+    </div>
+  </footer>
+</main>
+
+<div class="anno">
+  <b>Mockup 1 · hold</b>
+  Negative space pushed hardest; the hook is a whisper under a 56 vmin ring.
+  The page opens with almost nothing on it and makes you wait for the argument —
+  the interaction is the thesis.
+</div>
