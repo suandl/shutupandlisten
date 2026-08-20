@@ -440,6 +440,7 @@
 					CaptureURLProtocol.swift,
 					CaptureAudioInjector.swift,
 					"demo-conversation.wav",
+					"capture-fixture.json",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "shutupandlisten listens while you think out loud so it can wait for a thought to land before saying anything.";

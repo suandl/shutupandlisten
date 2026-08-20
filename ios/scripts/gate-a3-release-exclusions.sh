@@ -4,7 +4,7 @@
 # (Stage 10, "A3 — the direct EXCLUDED_SOURCE_FILE_NAMES check").
 #
 # THE SETTING HALF of the security gate. Reads the app target's *resolved*
-# Release build settings and asserts that all four capture-seam artifacts are
+# Release build settings and asserts that all five capture-seam artifacts are
 # named in EXCLUDED_SOURCE_FILE_NAMES. Its companion, gate-b5-release-archive.sh,
 # reads the built artifact instead. The plan is explicit that these are BOTH
 # required, not either: "A3 proved the setting; this proves the artifact."
@@ -29,15 +29,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"          # ios/
 PROJECT="$ROOT/ShutUpAndListen.xcodeproj"
 TARGET="ShutUpAndListen"
 
-# All four, by name. A check that greps for one of them reports OK while the
-# other three are silently dropped — which is the whole failure this gate exists
+# All five, by name. A check that greps for one of them reports OK while the
+# other four are silently dropped — which is the whole failure this gate exists
 # to catch.
 #
-# NOTE: capture-fixture.json is deliberately NOT asserted here. It is a canned
-# listener/analyst response with no credential in it, and it is not on the plan's
-# list — but it IS still copied into the Release bundle today. Tracked separately
-# (su-a71zn); do not fold it in here without moving the plan's list first.
-required='CaptureSeam.swift CaptureURLProtocol.swift CaptureAudioInjector.swift demo-conversation.wav'
+# capture-fixture.json joined this list in su-a71zn, and the plan's Gate A3 list
+# moved in the same commit. It is the mildest of the five: no credential in it,
+# and its only reader — CaptureSeam.loadFixture() — is itself `#if DEBUG` and
+# excluded, so a Release binary could not read the file even back when it did
+# ship. It is asserted anyway, because the design intent stated everywhere else
+# is that the WHOLE capture seam is compiled out of Release, and a fixture left
+# sitting in the bundle is that claim being false in the one place a reviewer
+# can actually check it.
+required='CaptureSeam.swift CaptureURLProtocol.swift CaptureAudioInjector.swift demo-conversation.wav capture-fixture.json'
 
 excluded=$(xcodebuild -project "$PROJECT" \
                       -target "$TARGET" \
@@ -59,4 +63,4 @@ if [ -n "$missing" ]; then
   echo "SECURITY: not excluded from the Release build:$missing" >&2
   exit 1
 fi
-echo 'A3 OK — all four capture artifacts excluded in Release'
+echo 'A3 OK — all five capture artifacts excluded in Release'

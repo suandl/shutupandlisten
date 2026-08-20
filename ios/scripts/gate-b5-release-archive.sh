@@ -87,12 +87,18 @@ check() {
 
   fail=0
 
-  # 1. The fixture must not ship — any name match, anywhere in the bundle.
-  #    This is the check dead-stripping cannot fake: a resource is either
-  #    copied into the bundle or it is not.
-  hits=$(find "$APP" -name 'demo-conversation.wav')
+  # 1. Neither capture fixture may ship — any name match, anywhere in the
+  #    bundle. This is the check dead-stripping cannot fake: a resource is
+  #    either copied into the bundle or it is not.
+  #
+  #    capture-fixture.json joined this check in su-a71zn, together with its
+  #    Release EXCLUDED_SOURCE_FILE_NAMES entry and the plan's Gate A3 list.
+  #    Both fixtures sit in the file-system-synchronized App/Resources group,
+  #    so both are copied into EVERY configuration unless that setting names
+  #    them — which is what makes this find the artifact-side proof for both.
+  hits=$(find "$APP" \( -name 'demo-conversation.wav' -o -name 'capture-fixture.json' \))
   if [ -n "$hits" ]; then
-    echo "SECURITY: demo-conversation.wav present in the archived bundle:" >&2
+    echo "SECURITY: capture fixture present in the archived bundle:" >&2
     echo "$hits" >&2
     fail=1
   fi
@@ -134,7 +140,7 @@ check() {
   rm -f "$SYMS"
 
   [ "$fail" -eq 0 ] || { echo 'B5 FAILED: archive is not clean' >&2; return 1; }
-  echo 'B5 OK — no capture fixture, no capture-seam symbols in the Release archive'
+  echo 'B5 OK — no capture fixtures, no capture-seam symbols in the Release archive'
 }
 
 check 2>&1 | tee "$LOG"

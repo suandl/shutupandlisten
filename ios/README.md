@@ -324,9 +324,9 @@ wrapper, the way `capture-demo.sh` is for the visual capture:
 
 | Gate | Script | Proves |
 |---|---|---|
-| **A3** | `ios/scripts/gate-a3-release-exclusions.sh` | All four capture-seam artifacts are named in the app target's *resolved* Release `EXCLUDED_SOURCE_FILE_NAMES`. Seconds, no build. |
+| **A3** | `ios/scripts/gate-a3-release-exclusions.sh` | All five capture-seam artifacts are named in the app target's *resolved* Release `EXCLUDED_SOURCE_FILE_NAMES`. Seconds, no build. |
 | **B1** | `ios/scripts/gate-b1-app-tests.sh` | The data-safety gate: `MigrationTests`' eight named cases and all of `WriterTests` **actually ran** on a simulator, nonzero and none failed. |
-| **B5** | `ios/scripts/gate-b5-release-archive.sh` | The security gate: a Release archive (built unsigned) carries no `demo-conversation.wav` and no capture-seam type names. |
+| **B5** | `ios/scripts/gate-b5-release-archive.sh` | The security gate: a Release archive (built unsigned) carries neither capture fixture (`demo-conversation.wav`, `capture-fixture.json`) nor any capture-seam type name. |
 
 A3 and B5 are two mechanisms for one property and the plan requires **both, not
 either** — B5 reads symbol *absence*, which dead-stripping can also produce, so
