@@ -9,13 +9,6 @@
 
 import SwiftUI
 
-extension Color {
-    /// The app's ONE accent — a warm, low-glare amber. Defined in code for
-    /// now; migrates to an asset-catalog `AccentColor` in Wave 3a. Every view
-    /// that needs the accent should use this, not a SwiftUI primary.
-    static let sulAccent = Color(red: 0.91, green: 0.67, blue: 0.36)
-}
-
 struct PatienceRing: View {
     enum Phase: Equatable {
         /// No session — a faint resting ring.
