@@ -17,7 +17,7 @@ ios/
   ShutUpAndListen.xcodeproj   Xcode 26 project (file-system-synchronized)
   App/                        SwiftUI app target (iOS 26+)
     Audio/                    capture graph (VAD, AEC, interruptions), STT, TTS
-    UI/                       session screen + patience ring, library, settings
+    UI/                       session screen + horizon line, library, settings
     Support/                  SwiftData records, crash recovery, keychain, account
     Intents/                  App Intents — Siri / Shortcuts / Action button
   ShutUpAndListenKit/         Swift package: the pure core + Claude adapter
@@ -103,10 +103,12 @@ is hidden behind a developer gate: tap the version row in Settings five
 times.
 
 - **Talk-first root** — the app opens *into* the session screen: one tap to
-  talk. The stage is a single breathing **patience ring**
-  (`App/UI/PatienceRing.swift`) in one warm accent — an inner glow answers
-  the mic level while you talk, and the ring fills as the patience window
-  runs; resumed speech dissolves it. Three lowercase state words
+  talk. The stage is a single **horizon line**
+  (`App/UI/HorizonLine.swift`) in one warm accent — a hairline that
+  *brightens* rather than fills. It burns with your voice while you talk (the
+  "am I being heard" answer) and gathers weight while a pause is held; resumed
+  speech lets it settle. It carries no percentage and has no end to arrive at,
+  because a pause is not a deadline. Three lowercase state words
   (listening / waiting / speaking) replace status chrome; the transcript
   collapses to a one-line peek (tap for the full flowing text). Library and
   settings live behind toolbar icons.

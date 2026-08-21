@@ -1,10 +1,12 @@
 // The live session screen — the waiting IS the interface.
 //
-// The root of the app (talk-first): a level-responsive ring (PatienceRing) sits
-// above the accumulating transcript, which is the running stage. At most three
-// ambient states are ever named — listening / waiting / speaking — in one small
-// lowercase word. Below the transcript, a single distinct "suggested" hint line
-// carries the analyst's top candidate (silent — it never speaks). When the gate
+// The root of the app (talk-first): a level-responsive horizon line
+// (HorizonLine) sits above the accumulating transcript, which is the running
+// stage — a hairline that brightens with your voice and gathers weight while a
+// pause is held, never filling toward an end. At most three ambient states are
+// ever named — listening / waiting / speaking — in one small lowercase word.
+// Below the transcript, a single distinct "suggested" hint line carries the
+// analyst's top candidate (silent — it never speaks). When the gate
 // does speak, the reply lands inline in the transcript with a gentle haptic.
 // Between sessions the transcript collapses to a one-line peek (tap for the full
 // text in a sheet). The library and settings live behind toolbar icons.
@@ -32,10 +34,10 @@ struct SessionView: View {
     @State private var signInReason: SessionErrorKind = .accountRequired
     #endif
 
-    // The ring's displayed fill — animated here so it never snaps: linear
-    // 0.1 s while the controller ticks the window, a slow ease back to zero
-    // when speech resumes.
-    @State private var ringFill: Double = 0
+    // How deep into the patience window the horizon is drawn — animated here
+    // so it never snaps: linear 0.1 s while the controller ticks the window, a
+    // slow ease back to zero when speech resumes.
+    @State private var patienceDepth: Double = 0
 
     // A spoken listener line lands as a light haptic (no card — the line itself
     // lives inline in the transcript). Tracked by id so the cue fires once.
@@ -136,10 +138,10 @@ struct SessionView: View {
         .onChange(of: controller.patienceProgress) { _, progress in
             if let progress {
                 // The controller's 0.1 s tick — consume it linearly.
-                withAnimation(.linear(duration: 0.12)) { ringFill = progress }
+                withAnimation(.linear(duration: 0.12)) { patienceDepth = progress }
             } else {
                 // Speech resumed (or the window resolved): dissolve, never snap.
-                withAnimation(.easeOut(duration: 1.6)) { ringFill = 0 }
+                withAnimation(.easeOut(duration: 1.6)) { patienceDepth = 0 }
             }
         }
         .onChange(of: controller.machineState) { _, state in
@@ -164,7 +166,7 @@ struct SessionView: View {
         .onChange(of: controller.isRunning) { _, running in
             if running {
                 lastSpokenID = nil
-                ringFill = 0
+                patienceDepth = 0
             } else {
                 withAnimation(.easeOut(duration: 1)) { showPatienceTip = false }
             }
@@ -178,17 +180,17 @@ struct SessionView: View {
         #endif
     }
 
-    // ── the stage: ring + one word ──
+    // ── the stage: horizon + one word ──
 
     private var stage: some View {
         VStack(spacing: 32) {
-            PatienceRing(
-                phase: ringPhase,
-                fill: ringFill,
+            HorizonLine(
+                phase: horizonPhase,
+                patience: patienceDepth,
                 levelDb: controller.inputLevelDb
             )
-            .frame(width: 220, height: 220)
-            .accessibilityIdentifier("session.ring")
+            .frame(height: 140)
+            .accessibilityIdentifier("session.horizon")
 
             VStack(spacing: 14) {
                 Text(stateWord)
@@ -199,7 +201,7 @@ struct SessionView: View {
                     patienceTip
                 }
             }
-            // Reserve room so the tip's arrival doesn't shove the ring.
+            // Reserve room so the tip's arrival doesn't shove the horizon.
             .frame(minHeight: 64, alignment: .top)
         }
         .padding(.horizontal, 24)
@@ -229,7 +231,7 @@ struct SessionView: View {
         .transition(.move(edge: .top).combined(with: .opacity))
     }
 
-    private var ringPhase: PatienceRing.Phase {
+    private var horizonPhase: HorizonLine.Phase {
         guard controller.isRunning, !controller.isInterrupted else { return .idle }
         switch controller.machineState {
         case .listening: return .listening
