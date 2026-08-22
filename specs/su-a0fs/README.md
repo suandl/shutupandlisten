@@ -15,7 +15,7 @@ for the light translation (`prefers-color-scheme`).
 specs/su-a0fs/
   index.html     gallery + the levers table + what carries over from the app
   hold.html      setting 1 — the ring is the page
-  line.html      setting 2 — one sentence is the page
+  line.html      setting 2 — one sentence is the page (the chosen direction)
   cadence.html   setting 3 — the evidence is the page
   README.md      this file
 ```
@@ -30,10 +30,15 @@ is committed); hosting is tracked separately in su-av11. These are mockups.
 The site extends the identity already shipped for the iOS app. It does not get
 its own visual language. Sources of truth, in order:
 
-1. `ios/App/UI/PatienceRing.swift` — `Color.sulAccent`, `RGB(0.91, 0.67, 0.36)`,
-   the app's one accent, and the ring itself.
+1. `ios/App/UI/Accent.swift` — `Color.sulAccent`, `RGB(0.91, 0.67, 0.36)`, the
+   app's one accent; and `ios/App/UI/HorizonLine.swift`, the shipped hero.
 2. `ios/mockups/README.md` §1 — the night-paper/ember palette, the quiet type
-   ramp, the three tenses of the ring, the motion rules.
+   ramp, the horizon line, the motion rules.
+
+> **The patience ring is retired (su-9fb0s, su-g1n9s).** `index.html` and
+> `cadence.html` still draw it — they are the two directions that were not
+> chosen, kept as a record rather than re-rendered. `line.html`, the chosen
+> direction, has no mark at all: the wordmark carries the identity alone.
 
 The thesis from `ios/mockups/index.html` is the site's thesis too: *silence is
 the product, the design should look like it.* In a feed of loud AI landing
@@ -73,10 +78,11 @@ AI, and we fixed it.** The hook — "Every AI is desperate to help. This one
 which is the whole ember-rationing principle demonstrated in a single line.
 Under it, the response hierarchy is set as a four-rung editorial ladder
 (silence, acknowledgment, reflection, one question) with silence in ember at the
-top, so the product's actual behaviour is legible in about eight seconds. The
-ring retreats to a 15 px signature beside the wordmark and one appearance on the
-OG card — the least ring of the three, on purpose, because here the *type* is
-the brand mark. This is the most immediately shareable version and the most
+top, so the product's actual behaviour is legible in about eight seconds. It
+carries no mark at all: the ring used to retreat here to a 15 px signature
+beside the wordmark plus one appearance on the OG card, and both were struck
+when the ring was retired (su-g1n9s). Nothing replaced them, which suits this
+setting — here the *type* is the brand mark. This is the most immediately shareable version and the most
 conventional in structure; its risk is that with no proof beneath it, the claim
 has to be taken on faith.
 
@@ -99,11 +105,13 @@ documentation: it is doing work rather than stopping traffic.
 ## 3. What is held constant
 
 The point of three settings is that only the settings differ. Identical across
-all three files: palette tokens, the type ramp, the ring's construction and
-motion, the provider selector, the copy affordance, the share row, the footer,
-every word of the three prompt excerpts, and the paste instructions.
+all three files: palette tokens, the type ramp, the provider selector, the copy
+affordance, the share row, the footer, every word of the three prompt excerpts,
+and the paste instructions. (The ring's construction and motion used to be on
+this list too. It no longer is: `line.html` has no mark since the ring was
+retired, so the three files are no longer identical in that one respect.)
 
-What varies is exactly four levers — negative space, hook volume, ring usage,
+What varies is exactly four levers — negative space, hook volume, mark usage,
 and OG strategy. The table in `index.html` lays them out side by side, including
 the failure mode each setting risks.
 
@@ -132,22 +140,23 @@ that variant carries and the others don't (`prompts/gemini.md`, PR #50).
 
 ## 4. Open questions
 
-1. **Two embers are in the repo and they are not the same colour.**
-   `PatienceRing.swift` ships `sulAccent` = `RGB(0.91, 0.67, 0.36)` = `#E8AB5C`.
-   The identity table in `ios/mockups/README.md` says ember = `#D9A15E`, and the
-   four files in `ios/mockups/` render that value. Per this bead's direction the
-   shipped Swift value wins, so these site mockups use `#E8AB5C` — which means
-   the two mockup sets are visibly different ambers if opened side by side.
-   Wave 3a has to pick one for the asset catalog. Recommend `sulAccent`, and
-   updating `ios/mockups/` to match rather than the reverse.
+1. ~~**Two embers are in the repo and they are not the same colour.**~~
+   **Resolved (su-g1n9s).** `#E8AB5C` is the canonical ember, it lives in
+   `ios/App/UI/Accent.swift` as `sulAccent` = `RGB(0.91, 0.67, 0.36)`, and
+   `ios/mockups/` was repointed to match rather than the reverse — as this
+   question recommended. The two mockup sets are now the same amber. (The
+   Swift constant used to live in `PatienceRing.swift`; that file was deleted
+   when the ring was retired, which is why the token moved to `Accent.swift`.)
 2. **The accent does not survive light mode, and that is not a bug in the
    mockups.** `sulAccent` on night paper is 9.6:1 — excellent. On the light
-   `#F7F5F0` background it is **1.9:1**, unusable for text or a thin arc. So
-   light mode swaps in the identity table's light ember `#96661F` (4.6:1). That
-   makes the accent a *pair* of tokens, not one value. If the asset catalog
-   ships a single `AccentColor`, light mode will silently break. Does the
-   catalog get a light variant, or does light mode ship later (open question 8
-   in the app's own README)?
+   `#F7F5F0` background it is **1.9:1**, unusable for text or a thin bright
+   element. So light mode swaps in the identity table's light ember `#96661F`
+   (4.6:1). That makes the accent a *pair* of tokens, not one value.
+   **Partly answered: light mode ships later.** Dark-first ships alone, so a
+   single `AccentColor` in the catalog is safe for now. Retiring the ring did
+   not escape this — the horizon line is also a thin bright element, and its
+   brightness mechanic inverts against light paper. That remains unsolved
+   design work, not a colour lookup.
 3. **The copy button is the one place the pure-HTML/CSS constraint has to
    bend.** su-02g's constraint is honoured here — there is no script on any
    page, the selector and the copy confirmation are CSS state. But a real copy
@@ -163,11 +172,12 @@ that variant carries and the others don't (`prompts/gemini.md`, PR #50).
    a prompt is edited. If the site ever gets even a trivial build step, that is
    the first thing to generate. Until then it is a stale-copy hazard on the one
    surface that must look precise.
-6. **Motion timing disagrees with the shipped ring, mildly.** These pages use
-   the paper spec — 5.8 s breath, ±3%. `PatienceRing.swift` breathes at 4 s,
-   ±1%, and only while *waiting* (a listening ring is static). The site hero is
-   not a live session so a permanent slow breath reads correctly there, but if
-   the two are meant to be the same mark, one of the two numbers should move.
+6. **Motion timing disagrees with the shipped app, mildly.** These pages use
+   the paper spec — 5.8 s breath, ±3%. `HorizonLine.swift` breathes at 4 s and
+   moves only while *waiting* or *deciding* (a listening line is static). The
+   site hero is not a live session, so a permanent slow breath reads correctly
+   there. Less pressing than it was: the chosen direction carries no mark, so
+   the two are no longer trying to be the same object.
 7. **Claude is the default tab.** That is the repo's lead variant, but the
    largest paste-in audience is probably ChatGPT. Default to the biggest
    audience, or to the variant we think is best?
