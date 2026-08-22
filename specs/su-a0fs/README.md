@@ -15,7 +15,7 @@ for the light translation (`prefers-color-scheme`).
 specs/su-a0fs/
   index.html     gallery + the levers table + what carries over from the app
   hold.html      setting 1 — the ring is the page
-  line.html      setting 2 — one sentence is the page
+  line.html      setting 2 — one sentence is the page (the chosen direction)
   cadence.html   setting 3 — the evidence is the page
   README.md      this file
 ```
@@ -78,10 +78,11 @@ AI, and we fixed it.** The hook — "Every AI is desperate to help. This one
 which is the whole ember-rationing principle demonstrated in a single line.
 Under it, the response hierarchy is set as a four-rung editorial ladder
 (silence, acknowledgment, reflection, one question) with silence in ember at the
-top, so the product's actual behaviour is legible in about eight seconds. The
-ring retreats to a 15 px signature beside the wordmark and one appearance on the
-OG card — the least ring of the three, on purpose, because here the *type* is
-the brand mark. This is the most immediately shareable version and the most
+top, so the product's actual behaviour is legible in about eight seconds. It
+carries no mark at all: the ring used to retreat here to a 15 px signature
+beside the wordmark plus one appearance on the OG card, and both were struck
+when the ring was retired (su-g1n9s). Nothing replaced them, which suits this
+setting — here the *type* is the brand mark. This is the most immediately shareable version and the most
 conventional in structure; its risk is that with no proof beneath it, the claim
 has to be taken on faith.
 
@@ -104,11 +105,13 @@ documentation: it is doing work rather than stopping traffic.
 ## 3. What is held constant
 
 The point of three settings is that only the settings differ. Identical across
-all three files: palette tokens, the type ramp, the ring's construction and
-motion, the provider selector, the copy affordance, the share row, the footer,
-every word of the three prompt excerpts, and the paste instructions.
+all three files: palette tokens, the type ramp, the provider selector, the copy
+affordance, the share row, the footer, every word of the three prompt excerpts,
+and the paste instructions. (The ring's construction and motion used to be on
+this list too. It no longer is: `line.html` has no mark since the ring was
+retired, so the three files are no longer identical in that one respect.)
 
-What varies is exactly four levers — negative space, hook volume, ring usage,
+What varies is exactly four levers — negative space, hook volume, mark usage,
 and OG strategy. The table in `index.html` lays them out side by side, including
 the failure mode each setting risks.
 

@@ -207,8 +207,8 @@ the choreography — a static line at the same weight and brightness.
    was adopted and shipped. See "The horizon line" above. What remains open is
    not *whether*, but how the mark behaves on small surfaces, and what the app
    icon becomes; both are Wave 3a design work with no incumbent answer.
-2. **How loud may the question moment be?** Current staging: dim + contract +
-   one soft haptic + card + TTS. Too theatrical for the tenth time? Options:
+2. **How loud may the question moment be?** Current staging: dim + the line
+   quieting + one soft haptic + card + TTS. Too theatrical for the tenth time? Options:
    scale staging down after N sessions; make the haptic optional; or keep
    theatre only for gate-earned questions and mute it for invited
    pull-a-thread ones.
@@ -251,5 +251,6 @@ the choreography — a static line at the same weight and brightness.
 | App icon | **S**, unstarted | none | **Open — no incumbent answer.** The ring used to be the assumed icon; it is retired and nothing replaced it. No `.xcassets` exists in `ios/`, so nothing is blocked on it. |
 | Mark on small surfaces (Live Activity, Dynamic Island, lists) | ? | none | **Open design work.** The horizon line is specified as the session-screen hero only; how it reads below hero scale is undecided and deliberately not answered on paper. |
 
-Suggested order of conversation: session screen (already in flight) →
-identity tokens → Live Activity (trust story) → threads → idea page.
+Suggested order of conversation: session screen (shipped — the horizon line
+landed in su-9fb0s) → identity tokens → Live Activity (trust story) → threads →
+idea page.
