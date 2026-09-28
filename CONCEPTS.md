@@ -17,6 +17,25 @@ meaning — use them as written, and map synonyms back to them.
   minimal acknowledgment → short momentum-preserving reflection → one brief
   follow-up question. Escalate slowly; most pauses should not become questions.
 
+## Positioning
+
+- **the premise** — "Agents talk too much. Voice recorders don't talk at all.
+  This one listens." The product is defined against two familiar neighbors:
+  voice agents (ChatGPT voice and the like) that fill every pause with summary,
+  coaching, and follow-ups; and voice recorders (voice memos, dictation) that
+  capture everything and push back on nothing. shutupandlisten sits between
+  them: silent by default, and it earns every interjection.
+
+- **the job** — Thinking out loud: getting a half-formed thought out of your
+  head and further along than it started. Capture (the transcript) and
+  communication (what you later do with it) are byproducts, not the pitch —
+  leading with them puts the product in the crowded dictation/notes category.
+
+- **the proof beat** — The moment that makes the premise believable: a long
+  stretch of silence, then one short question that engages the specific thing
+  the speaker said and moves it forward. Demos and onboarding should land this
+  beat; "just the right amount" is a claim, the proof beat is the evidence.
+
 ## Eval harness roles
 
 - **listener** — The system under test: the model + prompt producing the
