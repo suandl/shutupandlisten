@@ -24,7 +24,12 @@ meaning — use them as written, and map synonyms back to them.
   voice agents (ChatGPT voice and the like) that fill every pause with summary,
   coaching, and follow-ups; and voice recorders (voice memos, dictation) that
   capture everything and push back on nothing. shutupandlisten sits between
-  them: silent by default, and it earns every interjection.
+  them: silent by default, and it earns every interjection. The premise is the
+  *setup*; the *claim* is the question — "it stays quiet, then asks the one
+  question you hadn't thought of." Silence alone is copyable (ChatGPT's
+  GPT-Live can be told to stay quiet); never summarizing back and asking one
+  specific question is not. See
+  `docs/brainstorms/2026-09-28-positioning-and-discovery.md`.
 
 - **the job** — Thinking out loud: getting a half-formed thought out of your
   head and further along than it started. Capture (the transcript) and
