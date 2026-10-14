@@ -1,7 +1,12 @@
 # The check index: the review checks this repo makes available. Each entry names
-# a check, points at the method that governs it, and states one line of purpose.
-# Whether a check applies is a judgment the method states in prose and triage
-# reads; it is not recorded here.
+# a check, points at the method that governs it, states one line of purpose, and
+# names the phase it gates. Whether a check applies is a judgment the method
+# states in prose and triage reads; it is not recorded here.
+#
+# A check's phase is the stage by which it must read green. The phases are
+# ordered pre-open < open-as-draft < ready-for-review < merge. A check that reads
+# only the diff is pre-open. demo is open-as-draft because it delivers its visual
+# to the PR, so it runs once the refinery has opened the PR as a draft.
 #
 # The index is read from the commit under review, so a branch is judged against
 # the index it carries. assets/scripts/review-checks.sh (the gc-toolkit pack) is
@@ -9,28 +14,33 @@
 # every anchor that does not opt out; triage may widen the check_set to any check
 # declared here, and may not invent one.
 #
-# A check's method is pack content shared by every rig. This repo points arch,
-# pm, and demo at its own references through docs/review-<check>.md extensions,
-# which the dispatch appends to the method: the architecture spine, the product
-# references, and the web-harness capture engine live here, not at the pack's
+# A check's method is pack content shared by every rig. This repo adds to the
+# arch, pm, and demo methods through docs/review-<check>.md extensions, which the
+# dispatch appends to the method: the architecture spine, the product references,
+# and how to capture this repo's visual surfaces live here, not at the pack's
 # default paths.
 
 [checks.correctness]
 method = "formulas/mol-review.toml"
 purpose = "Is the change correct and safe as merged?"
+phase = "pre-open"
 
 [checks.triage]
 method = "skills/review-triage/SKILL.md"
 purpose = "Which specialist checks does this diff warrant?"
+phase = "pre-open"
 
 [checks.demo]
-method = "skills/gc-demo-script/SKILL.md + skills/demo-capture/SKILL.md"
-purpose = "Was the operator-watched surface recorded doing the thing?"
+method = "skills/review-demo/SKILL.md"
+purpose = "Does this change need a visual to be understood, and is the right one delivered?"
+phase = "open-as-draft"
 
 [checks.arch]
 method = "skills/review-arch/SKILL.md"
 purpose = "Does the change fit the architecture, and is any architecture change justified and documented in the same PR?"
+phase = "pre-open"
 
 [checks.pm]
 method = "skills/review-pm/SKILL.md"
 purpose = "Does the change solve the right user problem, and present it so the operator can judge?"
+phase = "pre-open"
