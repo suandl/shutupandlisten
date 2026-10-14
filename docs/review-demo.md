@@ -1,9 +1,13 @@
 # Demo check — shutupandlisten visual surfaces
 
 A review can capture the `web/` harness, a browser app, and the HTML mockups of
-the iOS app's screens under `ios/mockups/`. The pack has no capture path for the
-iOS app itself, so a change a person must see in the app is a visual the review
-cannot produce, and the generic method's note for that case applies.
+the iOS app's screens under `ios/mockups/`. The iOS app itself has no capture
+path a review uses. The pack has none, and this repo's
+`.github/workflows/ios-visual.yml`, which records the app on a simulator, is
+left for a person to dispatch on purpose (its header says why). A change a
+person must see in the app is therefore a visual the review cannot produce. The
+generic method's note for that case applies, and it can name that workflow as
+what would produce the visual.
 
 ## Capturing the web harness
 
@@ -41,6 +45,6 @@ page the diff changes, for example:
 
 ## Committed demo clips
 
-The MP4s under `web/e2e/demos/` are stored in git-LFS (`.gitattributes`). The
-reviewed commit holds a pointer to each clip, not the clip itself, so
-`demo-repo-artifact.sh deliver` refuses them.
+Every MP4 this repo commits is stored in git-LFS (`.gitattributes`), the demo
+clips under `web/e2e/demos/` included. The reviewed commit holds a pointer to
+each clip, not the clip itself, so `demo-repo-artifact.sh deliver` refuses them.
