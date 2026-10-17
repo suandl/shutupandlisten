@@ -4,7 +4,7 @@
 # in .beads/ are this file and identity.toml, which holds the project id that
 # gc treats as canonical.
 #
-# The root .gitignore already ignores all of .beads/* except those two files.
+# The root .gitignore already ignores all of .beads/* except those files.
 # This file restates the rules beside the data, so the intent is
 # self-documenting and survives edits to the root .gitignore.
 

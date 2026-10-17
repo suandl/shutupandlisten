@@ -20,9 +20,10 @@ output/
 # When loomington runs this repo as a `gc` rig, gc and bd keep machine-local
 # state under .beads/: the Dolt server's files, locks, routes and backups, and
 # config.yaml and metadata.json, which gc rewrites at runtime. All of it stays
-# untracked, so the rig checkout stays clean and fast-forwards. Two files are
-# tracked. identity.toml holds the project id that gc treats as canonical, and
-# .beads/.gitignore restates these rules beside the files.
+# untracked, so the rig checkout stays clean and fast-forwards. The tracked
+# files in .beads/ are identity.toml, which holds the project id that gc treats
+# as canonical, and .beads/.gitignore, which restates these rules beside the
+# files.
 .beads/*
 !.beads/.gitignore
 !.beads/identity.toml
